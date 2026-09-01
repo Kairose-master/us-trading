@@ -10,6 +10,7 @@ import { useLiveChannel } from "@/hooks/useLiveSocket"
 import type { PipelineLogLine, PipelineSnapshot } from "@/lib/types"
 import { PipelineDag } from "./pipeline-dag"
 import { NodeInspector } from "./node-inspector"
+import { AutoTradeCard } from "./auto-trade-card"
 
 export function PipelinePageClient() {
   const [selected, setSelected] = useState<string | null>(null)
@@ -72,6 +73,8 @@ export function PipelinePageClient() {
           hint="시세 틱 · 뉴스 스트림 통합"
         />
       </div>
+
+      <AutoTradeCard />
 
       <div className={cn("grid gap-4", selected ? "xl:grid-cols-[1fr_360px]" : "")}>
         <Card className="p-3">

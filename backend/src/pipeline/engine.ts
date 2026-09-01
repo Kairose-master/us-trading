@@ -496,6 +496,7 @@ export class PipelineEngine extends EventEmitter {
         };
         this.signals.unshift(signal);
         if (this.signals.length > 100) this.signals.length = 100;
+        this.emit("signal", signal);
         exNode.pushSample(
           ["ts", "symbol", "side", "strength%", "risk"],
           [ts.slice(11, 19), t.symbol, side, signal.strengthPct, blocked ?? "PASS"],

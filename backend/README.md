@@ -40,11 +40,22 @@ src/
     news.ts           # 비정형 수집기 — Google News RSS (키 불필요) + MOCK 폴백
     scorer.ts         # 렉시콘 기반 헤드라인 채점 (결정적, LLM 불필요)
     tracker.ts        # 심볼별 신뢰도 가중 EMA + 채점 피드
+  trade/
+    execute.ts        # 주문 실행 공용 경로 — 수동/자동/MCP 전부 여기로 (리스크 관문 1회)
+    auto-trader.ts    # 자동매매 실행기 — 파이프라인 신호 → 주문 (기본 OFF, 겹겹의 가드)
+  mcp/
+    server.ts         # POST /mcp — Handsel office가 이 백엔드를 워커로 탈부착하는 접점
+    tools.ts          # 단일 string 인자 툴들 (거래 툴은 MCP_TRADING=true에서만)
   api/
     routes.ts         # 프론트 스펙 그대로의 REST
     wsRelay.ts        # /ws/live — 프론트용 릴레이
-    state.ts          # 인메모리 상태 + 목 시뮬레이터
+    state.ts          # 인메모리 상태 + 목 시뮬레이터 (+모의 체결)
 ```
+
+## Handsel office 연동 + 자동매매
+
+`docs/handsel-office.md` 참고 — 등록된 테스트넷 에이전트(US Trading Desk),
+부착/분리 절차, MCP 툴 목록, 자동매매의 6겹 안전층이 거기 있다.
 
 ## 데이터/ML 파이프라인 (정형 + 비정형 통합)
 

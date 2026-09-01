@@ -313,6 +313,8 @@ export class PipelineSim {
   feed: ScoredNews[] = []
   onLog: ((line: PipelineLogLine) => void) | null = null
   onNews: ((scored: ScoredNews[]) => void) | null = null
+  /** 실행 신호 — 자동매매 실행기(목엔진)가 구독한다 */
+  onSignal: ((sig: { symbol: string; side: "buy" | "sell"; strengthPct: number; reason: string; blocked: string | null }) => void) | null = null
 
   constructor(
     private trackedSymbols: string[],
@@ -491,17 +493,19 @@ export class PipelineSim {
         const amountUsd = (Math.abs(t.driftPct) / 100) * this.risk.totalEquityUsd()
         const blocked = this.risk.check({ amountUsd, side, resultingSymbolWeightPct: t.targetWeightPct })
         exNode.pushSample(["ts", "symbol", "side", "strength%", "risk"], [short, t.symbol, side, Math.abs(t.driftPct), blocked ?? "PASS"])
+        const reason = `앙상블 알파 ${t.alpha >= 0 ? "+" : ""}${t.alpha}, 비중 괴리 ${t.driftPct}%p`
         this.log(
           "execution-router",
           blocked
             ? `${t.symbol} ${side.toUpperCase()} 신호 차단 — ${blocked}`
-            : `${t.symbol} ${side.toUpperCase()} 신호 (${Math.abs(t.driftPct).toFixed(1)}%p) — 앙상블 알파 ${t.alpha >= 0 ? "+" : ""}${t.alpha}`,
+            : `${t.symbol} ${side.toUpperCase()} 신호 (${Math.abs(t.driftPct).toFixed(1)}%p) — ${reason}`,
         )
+        this.onSignal?.({ symbol: t.symbol, side, strengthPct: Math.abs(t.driftPct), reason, blocked })
       }
     })
   }
 
-  private log(node: string, message: string) {
+  log(node: string, message: string) {
     const line: PipelineLogLine = { ts: new Date().toISOString(), node, message }
     this.logs.unshift(line)
     if (this.logs.length > LOG_MAX) this.logs.length = LOG_MAX

@@ -1,4 +1,5 @@
 import type {
+  AutoTradeStatus,
   Balance,
   Candle,
   EquityPoint,
@@ -207,4 +208,20 @@ export async function getSentiment(): Promise<SentimentOverview> {
 export async function getSentimentFeed(limit = 50): Promise<ScoredNews[]> {
   await delay(100)
   return getEngine().pipeline.feed.slice(0, limit)
+}
+
+// ===== 자동매매 =====
+
+// GET /api/autotrade
+export async function getAutoTrade(): Promise<AutoTradeStatus> {
+  await delay(100)
+  return getEngine().getAutoTradeStatus()
+}
+
+// POST /api/autotrade {enabled} — 409 {error} if it cannot be enabled
+export async function setAutoTrade(enabled: boolean): Promise<AutoTradeStatus> {
+  await delay(150)
+  const res = getEngine().setAutoTrade(enabled)
+  if (!res.ok) throw new ApiError(409, res.error)
+  return getEngine().getAutoTradeStatus()
 }

@@ -13,14 +13,18 @@ import { kisWs } from "./kis/ws.js";
 import { logger } from "./core/logger.js";
 import { pipeline } from "./pipeline/engine.js";
 import { newsIngestor } from "./sentiment/news.js";
+import { handleMcpRequest } from "./mcp/server.js";
+import { autoTrader } from "./trade/auto-trader.js";
 
 const app = express();
 app.use(cors({ origin: ["http://localhost:3000"], credentials: false }));
 app.use(express.json());
 
 // 프론트-백엔드 간 간단 토큰 인증 (개인용)
+// /mcp는 자체 토큰(MCP_AUTH_TOKEN)으로 인증한다 — Handsel이 저장하는 정적
+// Authorization 헤더가 그 토큰이므로 이 미들웨어에서는 통과시킨다.
 app.use((req, res, next) => {
-  if (req.path === "/health") return next();
+  if (req.path === "/health" || req.path === "/mcp") return next();
   const auth = req.headers.authorization;
   if (auth !== `Bearer ${config.API_AUTH_TOKEN}`) {
     return res.status(401).json({ error: "unauthorized" });
@@ -29,6 +33,7 @@ app.use((req, res, next) => {
 });
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+app.post("/mcp", (req, res) => void handleMcpRequest(req, res));
 app.use("/api", router);
 
 const server = http.createServer(app);
@@ -102,6 +107,9 @@ if (config.MOCK_DATA) {
   const seeds: Record<string, number> = { NVDA: 172.6, TSLA: 312.5, AAPL: 228.4, MSFT: 462.1, GOOGL: 189.3 };
   for (const [sym, px] of Object.entries(seeds)) state.ensureQuote(sym, sym, "NAS", px);
 }
+
+// 자동매매 실행기 — 파이프라인 신호에 배선 (기본 OFF, env/REST/MCP로 토글)
+autoTrader.attach();
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {

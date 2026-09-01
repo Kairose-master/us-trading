@@ -229,6 +229,29 @@ export interface SentimentOverview {
   sources: Array<{ name: string; count: number }>
 }
 
+// ===== 자동매매 (백엔드 /api/autotrade 응답과 동일 형태) =====
+
+export interface AutoTradeRecord {
+  ts: string
+  symbol: string
+  side: OrderSide
+  qty: number
+  refPrice: number
+  orderId: string | null
+  outcome: "accepted" | "blocked" | "error"
+  detail: string
+}
+
+export interface AutoTradeStatus {
+  enabled: boolean
+  startedAt: string | null
+  killSwitchActive: boolean
+  mock: boolean
+  kisMode: "mock" | "real"
+  executedToday: number
+  recent: AutoTradeRecord[]
+}
+
 // WebSocket relay message shapes (WS /ws/live)
 export type WsMessage =
   | { ch: `quote:${string}`; data: { last: number; change: number; changePct: number; bid: number; ask: number; volume: number; ts: string } }
