@@ -7,6 +7,22 @@
 Handsel이 잡을 디스패치하면 이 서버의 툴이 호출되고, 그 텍스트 출력이
 Handsel의 독립 채점을 거쳐 통과 시에만 보수가 지급된다.
 
+## 공개 배포 (라이브)
+
+터널 대신 **Vercel에 상주하는 읽기 전용 워커**가 공개 접점이다
+(`mcp-worker/` — 컨테이너/터널 수명과 무관하게 유지):
+
+| 항목 | 값 |
+|---|---|
+| URL | `https://us-trading-mcp-worker-godavid123-3215s-projects.vercel.app/api/mcp` |
+| 툴 | `us_market_report` · `us_price_lookup` · `us_news_sentiment` · `us_rebalance_draft` |
+| 데이터 | Yahoo Finance v8 chart (시세/일봉) + Google News RSS → 렉시콘 채점 — 매 호출 실계산 |
+| 권한 | 읽기 전용 — 계좌/주문/자동매매 능력 자체가 없음 (로컬 백엔드 전용) |
+| 인증 | `MCP_AUTH_TOKEN` env 설정 시 Bearer 필수, 미설정 시 공개 |
+
+로컬 백엔드의 `/mcp`(주문·자동매매 툴 포함)는 여전히 존재한다 — KIS 키가
+있는 머신에서 띄우고 터널로 노출하면 같은 방식으로 부착할 수 있다.
+
 ## 등록된 실제 에이전트 (테스트넷)
 
 | 항목 | 값 |
@@ -15,6 +31,23 @@ Handsel의 독립 채점을 거쳐 통과 시에만 보수가 지급된다.
 | agent id | `Jy7J_W42s6goF2rH944JX` |
 | 지갑 | `0xCb174f9E6ff6eabc48D180776834a5aA894Bd721` |
 | 환경 | Handsel V2 rehearsal (Base Sepolia 테스트넷 — 실돈 아님) |
+| 배선 | `connect_mcp_worker` → 위 Vercel URL의 `us_market_report` (proxy 모드) — 2026-09-01 완료 |
+
+## 라이브 배선 기록 (2026-09-01, 테스트넷)
+
+1. `test_mcp_connector` → "It takes a single string, so it works as a worker" ✅
+2. `connect_mcp_worker`(US Trading Desk → `us_market_report`, proxy) ✅
+3. `hire_office`(securities-desk, scope "NVDA, AAPL, TSLA, MSFT", $4) — 4개 롤이
+   전부 이 워커의 툴에 배선됨:
+   Chart Analyst→`us_price_lookup`(assisted) · News Analyst→`us_news_sentiment`(assisted)
+   · Quant Modeler→`us_market_report`(proxy) · Rebalance Planner→`us_rebalance_draft`(proxy)
+4. `confirm_delegation`(dlg-XusTbnGDn6) → 4개 잡 온체인 에스크로 ✅
+5. 신규 롤은 잔고 0으로 시작(콜드스타트) — 본드 $0.08 + 가스 ETH를
+   `fund_agent_usdc`/`fund_agent_eth`로 채워야 클레임 가능했다 (실측)
+6. auto-mine 스윕 → Chart Analyst·News Analyst가 잡을 스스로 클레임 ✅
+
+이 배포에서는 `mint_test_usdc`가 안 된다 (Circle 정식 테스트 USDC 사용 —
+https://faucet.circle.com 에서 받아 에이전트 입금 주소로 보낼 것).
 
 메인넷(https://handsel-main.vercel.app)은 **실제 USDC**가 움직인다.
 테스트넷에서 채점 통과가 안정적으로 확인되기 전에는 메인넷에 붙이지 말 것.
