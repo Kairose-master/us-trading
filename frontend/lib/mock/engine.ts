@@ -15,6 +15,7 @@ import type {
   WsStatus,
 } from "@/lib/types"
 import { getMarketSession } from "@/lib/time"
+import { PipelineSim } from "@/lib/mock/pipeline"
 
 /**
  * In-memory mock of the self-hosted KIS backend.
@@ -110,9 +111,11 @@ class MockEngine {
   apiUsagePct = 35
   private listeners = new Set<Listener>()
   private tickTimer: ReturnType<typeof setTimeout> | null = null
+  private lastPipelineEmit = 0
   private lastSession: MarketSession = getMarketSession()
   private orderSeq = 100
   private logCache = new Map<string, StrategyLog[]>()
+  pipeline: PipelineSim
 
   constructor() {
     for (const s of SYMBOLS) {
@@ -127,6 +130,30 @@ class MockEngine {
     }
     this.startOfDayEquity = this.totalEquityUsd() - 61.4
     this.seedOrders()
+
+    // 데이터/ML 파이프라인 시뮬레이터 — 백엔드 pipeline/engine.ts와 동일 계산
+    this.pipeline = new PipelineSim(
+      SYMBOLS.map((s) => s.symbol),
+      {
+        maxSymbolWeightPct: this.riskLimits.maxSymbolWeightPct,
+        check: ({ amountUsd, side, resultingSymbolWeightPct }) => {
+          if (this.killSwitchActive) return "킬스위치 활성화 상태 — 모든 주문 차단됨"
+          if (amountUsd > this.riskLimits.maxOrderAmountUsd) return `1회 최대 주문금액($${this.riskLimits.maxOrderAmountUsd}) 초과`
+          if (side === "buy" && resultingSymbolWeightPct > this.riskLimits.maxSymbolWeightPct)
+            return `종목당 최대 비중(${this.riskLimits.maxSymbolWeightPct}%) 초과`
+          return null
+        },
+        currentWeightPct: (symbol) => {
+          const pos = this.positions.find((p) => p.symbol === symbol)
+          if (!pos) return 0
+          const total = this.totalEquityUsd()
+          return total > 0 ? ((pos.qty * (this.symbols.get(symbol)?.last ?? 0)) / total) * 100 : 0
+        },
+        totalEquityUsd: () => this.totalEquityUsd(),
+      },
+    )
+    this.pipeline.onLog = (line) => this.emit({ ch: "pipeline:log", data: line })
+    this.pipeline.onNews = (scored) => this.emit({ ch: "sentiment", data: { scored } })
   }
 
   private seedOrders() {
@@ -223,6 +250,25 @@ class MockEngine {
           ts: nowIso(),
         },
       })
+    }
+    // 파이프라인 시뮬레이터에 틱 공급 → 1초 스로틀로 스냅샷 방송
+    for (const s of this.symbols.values()) {
+      if (s.halted) continue
+      const spread = this.spreadOf(s)
+      this.pipeline.onTick({
+        symbol: s.symbol,
+        last: s.last,
+        bid: s.last - spread,
+        ask: s.last + spread,
+        bidSize: Math.round(100 + Math.random() * 900),
+        askSize: Math.round(100 + Math.random() * 900),
+        volume: s.volume,
+      })
+    }
+    const now = Date.now()
+    if (now - this.lastPipelineEmit > 1000) {
+      this.lastPipelineEmit = now
+      this.emit({ ch: "pipeline", data: this.pipeline.snapshot() })
     }
     // occasionally emit positions refresh
     if (Math.random() < 0.2) {

@@ -33,11 +33,40 @@ src/
   strategy/
     engine.ts         # 전략 등록/시작/정지/틱 디스패치
     strategies/rsiReversal.ts  # 예시 전략 (배선 확인용)
+  pipeline/
+    engine.ts         # 실시간 데이터/ML 파이프라인 DAG (아래 섹션 참고)
+    types.ts
+  sentiment/
+    news.ts           # 비정형 수집기 — Google News RSS (키 불필요) + MOCK 폴백
+    scorer.ts         # 렉시콘 기반 헤드라인 채점 (결정적, LLM 불필요)
+    tracker.ts        # 심볼별 신뢰도 가중 EMA + 채점 피드
   api/
     routes.ts         # 프론트 스펙 그대로의 REST
     wsRelay.ts        # /ws/live — 프론트용 릴레이
     state.ts          # 인메모리 상태 + 목 시뮬레이터
 ```
+
+## 데이터/ML 파이프라인 (정형 + 비정형 통합)
+
+정형 소스(시세 틱)와 비정형 소스(뉴스 헤드라인)를 하나의 DAG로 처리한다:
+
+```
+INGESTION            FEATURES            MODELS            STRATEGY        EXECUTION
+시세 틱 ──────┬──▶ 기술적 지표 ─────▶ 기술 알파 ──┐
+              └──▶ 마이크로구조 ──────┘            ├─▶ 알파 앙상블 ─▶ 포트폴리오 구성 ─▶ 실행 라우터
+뉴스 스트림 ─────▶ 감성 점수 ────────▶ 감성 알파 ──┘
+```
+
+- **모든 노드 지표는 실측값** — 레이턴시는 `performance.now()`, 처리량은 최근 10초 창.
+- 실행 라우터는 **신호까지만** 만든다. 신호도 `riskManager.check()`를 통과해야 하며,
+  실제 주문 발행은 기존 주문 경로(kisClient)의 몫.
+- 뉴스는 실모드에서 Google News RSS(키 불필요)를 심볼별로 폴링하고,
+  MOCK_DATA/실패 시 합성 헤드라인으로 폴백한다 (`source` 필드로 구분).
+- 감성 채점은 렉시콘 기반으로 결정적 — 점수에 기여한 단어가 `evidence`로 남아 감사 가능.
+
+REST: `GET /api/pipeline` · `/api/pipeline/nodes/:id` · `/api/pipeline/logs`
+· `/api/pipeline/targets` · `/api/pipeline/signals` · `/api/sentiment` · `/api/sentiment/feed`
+WS 채널: `pipeline`(1초 스냅샷) · `pipeline:log` · `sentiment`
 
 ## 실연결 전 검증 체크리스트 (중요)
 

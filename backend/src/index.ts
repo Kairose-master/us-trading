@@ -11,6 +11,8 @@ import { OuMeanReversion } from "./strategy/strategies/ouMeanReversion.js";
 import { riskManager } from "./risk/riskManager.js";
 import { kisWs } from "./kis/ws.js";
 import { logger } from "./core/logger.js";
+import { pipeline } from "./pipeline/engine.js";
+import { newsIngestor } from "./sentiment/news.js";
 
 const app = express();
 app.use(cors({ origin: ["http://localhost:3000"], credentials: false }));
@@ -84,6 +86,22 @@ const makeCtx = (s: Strategy): StrategyContext => ({
 });
 
 state.on("tick", (q) => engine.dispatchTick(q, makeCtx));
+
+// ===== 데이터/ML 파이프라인 배선 =====
+// 정형(시세 틱) + 비정형(뉴스) 소스를 하나의 DAG로 처리한다.
+const trackedSymbols = [
+  ...new Set([...state.positions.map((p) => p.symbol), "NVDA", "TSLA", "AAPL", "MSFT", "GOOGL"]),
+];
+pipeline.start(trackedSymbols);
+state.on("tick", (q) => pipeline.onTick(q));
+newsIngestor.setSymbols(trackedSymbols);
+newsIngestor.on("news", (items) => pipeline.onNews(items));
+newsIngestor.start();
+// 파이프라인이 추적하는 비보유 심볼도 시세가 흐르도록 시드 (MOCK 모드)
+if (config.MOCK_DATA) {
+  const seeds: Record<string, number> = { NVDA: 172.6, TSLA: 312.5, AAPL: 228.4, MSFT: 462.1, GOOGL: 189.3 };
+  for (const [sym, px] of Object.entries(seeds)) state.ensureQuote(sym, sym, "NAS", px);
+}
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {

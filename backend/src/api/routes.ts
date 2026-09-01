@@ -9,6 +9,7 @@ import { tokenManager } from "../kis/auth.js";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
 import { currentMarketSession, nextRegularOpenEt } from "../core/marketSession.js";
+import { pipeline } from "../pipeline/engine.js";
 import type { Exchange, Order } from "../kis/types.js";
 
 export const router = Router();
@@ -255,6 +256,51 @@ router.post("/risk/killswitch", (_req, res) => {
   riskManager.activateKillSwitch();
   const stoppedStrategies = engine.stopAll();
   res.json({ ok: true, stoppedStrategies });
+});
+
+// ===== 파이프라인 =====
+
+router.get("/pipeline", (_req, res) => {
+  res.json(pipeline.snapshot());
+});
+
+router.get("/pipeline/nodes/:id", (req, res) => {
+  const detail = pipeline.nodeDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: "노드 없음" });
+  res.json(detail);
+});
+
+router.get("/pipeline/logs", (req, res) => {
+  const limit = Number(req.query.limit ?? 100);
+  res.json(pipeline.logs.slice(0, limit));
+});
+
+router.get("/pipeline/targets", (_req, res) => {
+  res.json(pipeline.portfolioTargets);
+});
+
+router.get("/pipeline/signals", (req, res) => {
+  const limit = Number(req.query.limit ?? 50);
+  res.json(pipeline.signals.slice(0, limit));
+});
+
+// ===== 감성 =====
+
+router.get("/sentiment", (_req, res) => {
+  const t = pipeline.tracker;
+  const index = t.marketIndex();
+  res.json({
+    index,
+    label: index > 0.15 ? "BULLISH" : index < -0.15 ? "BEARISH" : "NEUTRAL",
+    totalMentions: t.totalMentions(),
+    symbols: t.bySymbol(),
+    sources: t.sources(),
+  });
+});
+
+router.get("/sentiment/feed", (req, res) => {
+  const limit = Number(req.query.limit ?? 50);
+  res.json(pipeline.tracker.feed.slice(0, limit));
 });
 
 // ===== 시스템 =====
