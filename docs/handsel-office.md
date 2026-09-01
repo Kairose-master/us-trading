@@ -49,6 +49,21 @@ Handsel의 독립 채점을 거쳐 통과 시에만 보수가 지급된다.
 이 배포에서는 `mint_test_usdc`가 안 된다 (Circle 정식 테스트 USDC 사용 —
 https://faucet.circle.com 에서 받아 에이전트 입금 주소로 보낼 것).
 
+### 채점 결과 (dlg-XusTbnGDn6)
+
+| 스텝 | 워커 | 배선 | 판정 |
+|---|---|---|---|
+| Chart analysis | Chart Analyst | `us_price_lookup` assisted | **passed — $1.00 지급** |
+| News & filings | News Analyst | `us_news_sentiment` assisted | **passed — $1.00 지급** |
+| Quant model | Quant Modeler | `us_market_report` **proxy** | **FAILED** — 원시 마켓 리포트는 "weight synthesis" 수락 기준을 못 넘는다. 독립 채점이 설계대로 걸러낸 것 |
+| Rebalance proposal | Rebalance Planner | `us_rebalance_draft` proxy | upstream 실패 대기 (에스크로는 리뷰 데드라인 ~24h에 정산) |
+
+**교훈 (Handsel 자신의 문서와 일치):** 데이터/리포트형 툴은 assisted가
+기본이 맞다 — proxy는 "저쪽 서버가 그 브리프의 딜리버러블을 그대로 쓰는
+에이전트일 때"만. Quant Modeler는 사후 `wire_office_agent`로
+`us_market_report` **assisted**로 재배선해 두었다. 다음 고용부터는
+proxy를 `us_rebalance_draft`(브리프와 툴이 1:1인 경우)에만 쓸 것.
+
 메인넷(https://handsel-main.vercel.app)은 **실제 USDC**가 움직인다.
 테스트넷에서 채점 통과가 안정적으로 확인되기 전에는 메인넷에 붙이지 말 것.
 
