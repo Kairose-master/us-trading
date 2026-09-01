@@ -69,6 +69,17 @@ export interface PipelineSnapshot {
   edges: PipelineEdge[];
 }
 
+/** 파이프라인이 소비하는 최소 틱 형태 — KIS Quote도, Upbit 티커도 이 모양이면 흐른다 */
+export interface PipelineTick {
+  symbol: string;
+  last: number;
+  bid: number;
+  ask: number;
+  bidSize: number;
+  askSize: number;
+  volume: number;
+}
+
 // ===== 파이프라인 내부 데이터 =====
 
 export interface TechnicalFeatures {

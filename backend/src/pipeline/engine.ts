@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { performance } from "node:perf_hooks";
-import type { Quote } from "../kis/types.js";
 import type {
+  PipelineTick,
   AlphaValue,
   ExecutionSignal,
   MicrostructureFeatures,
@@ -219,10 +219,29 @@ function stdevPct(prices: number[]): number {
 
 // ===== 엔진 =====
 
+/**
+ * 포트폴리오/리스크 컨텍스트 — 엔진을 자산군에서 분리한다.
+ * 미국주식 인스턴스는 state+riskManager를, 크립토 인스턴스는 Upbit 데스크의
+ * 페이퍼 홀딩과 자체 한도를 주입한다. 통화 단위는 컨텍스트가 일관되기만 하면 된다.
+ */
+export interface PipelineContext {
+  positionOf(symbol: string): { qty: number; price: number } | null;
+  positionsCount(): number;
+  equity(): number;
+  maxWeightPct(): number;
+  riskCheck(p: {
+    amount: number;
+    side: "buy" | "sell";
+    resultingOpenPositions: number;
+    resultingSymbolWeightPct: number;
+  }): string | null;
+}
+
 export class PipelineEngine extends EventEmitter {
   nodes = new Map<string, NodeRuntime>();
   tracker = new SentimentTracker();
   status: "active" | "stopped" = "stopped";
+  private ctx: PipelineContext;
 
   private prices = new Map<string, number[]>();
   private lastVolume = new Map<string, number>();
@@ -242,8 +261,9 @@ export class PipelineEngine extends EventEmitter {
   private lastSnapshotEmit = 0;
   private startedAt: string | null = null;
 
-  constructor() {
+  constructor(ctx: PipelineContext) {
     super();
+    this.ctx = ctx;
     for (const def of NODE_DEFS) this.nodes.set(def.id, new NodeRuntime(def));
   }
 
@@ -256,7 +276,7 @@ export class PipelineEngine extends EventEmitter {
 
   // ---- 정형 레인: 시세 틱 ----
 
-  onTick(q: Quote) {
+  onTick(q: PipelineTick) {
     if (this.status !== "active") return;
     const ts = new Date().toISOString();
 
@@ -438,13 +458,13 @@ export class PipelineEngine extends EventEmitter {
       const alphas = [...this.ensembleAlpha.values()];
       const positive = alphas.filter((a) => a.alpha > 0.05);
       const sumPos = positive.reduce((acc, a) => acc + a.alpha, 0);
-      const cap = riskManager.limits.maxSymbolWeightPct;
-      const equity = state.balance.totalEquityUsd;
+      const cap = this.ctx.maxWeightPct();
+      const equity = this.ctx.equity();
 
       return alphas
         .map((a) => {
-          const pos = state.positions.find((p) => p.symbol === a.symbol);
-          const curWeight = equity > 0 && pos ? ((pos.curPrice * pos.qty) / equity) * 100 : 0;
+          const pos = this.ctx.positionOf(a.symbol);
+          const curWeight = equity > 0 && pos ? ((pos.price * pos.qty) / equity) * 100 : 0;
           const target =
             a.alpha > 0.05 && sumPos > 0 ? Math.min(cap, (a.alpha / sumPos) * Math.min(100, cap * positive.length)) : 0;
           return {
@@ -478,12 +498,12 @@ export class PipelineEngine extends EventEmitter {
         this.signalCooldown.set(t.symbol, now);
 
         const side = t.driftPct > 0 ? "buy" : "sell";
-        const pos = state.positions.find((p) => p.symbol === t.symbol);
-        const amountUsd = (Math.abs(t.driftPct) / 100) * state.balance.totalEquityUsd;
-        const blocked = riskManager.check({
-          amountUsd,
+        const pos = this.ctx.positionOf(t.symbol);
+        const amount = (Math.abs(t.driftPct) / 100) * this.ctx.equity();
+        const blocked = this.ctx.riskCheck({
+          amount,
           side,
-          resultingOpenPositions: state.positions.length + (side === "buy" && !pos ? 1 : 0),
+          resultingOpenPositions: this.ctx.positionsCount() + (side === "buy" && !pos ? 1 : 0),
           resultingSymbolWeightPct: t.targetWeightPct,
         });
         const signal: ExecutionSignal = {
@@ -559,4 +579,22 @@ export class PipelineEngine extends EventEmitter {
   }
 }
 
-export const pipeline = new PipelineEngine();
+/** 미국주식 컨텍스트 — 기존 state + riskManager를 그대로 주입 */
+const usEquityContext: PipelineContext = {
+  positionOf: (symbol) => {
+    const p = state.positions.find((pos) => pos.symbol === symbol);
+    return p ? { qty: p.qty, price: p.curPrice } : null;
+  },
+  positionsCount: () => state.positions.length,
+  equity: () => state.balance.totalEquityUsd,
+  maxWeightPct: () => riskManager.limits.maxSymbolWeightPct,
+  riskCheck: (p) =>
+    riskManager.check({
+      amountUsd: p.amount,
+      side: p.side,
+      resultingOpenPositions: p.resultingOpenPositions,
+      resultingSymbolWeightPct: p.resultingSymbolWeightPct,
+    }),
+};
+
+export const pipeline = new PipelineEngine(usEquityContext);

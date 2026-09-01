@@ -23,6 +23,24 @@ Handsel의 독립 채점을 거쳐 통과 시에만 보수가 지급된다.
 로컬 백엔드의 `/mcp`(주문·자동매매 툴 포함)는 여전히 존재한다 — KIS 키가
 있는 머신에서 띄우고 터널로 노출하면 같은 방식으로 부착할 수 있다.
 
+2026-09-01 v1.1: 같은 워커에 **Upbit 크립토 툴 3종** 추가 —
+`upbit_price_lookup` · `upbit_market_report` · `upbit_backtest_report`
+(실캔들 365일 백테스트: 연환산 vs 단순보유, Sharpe, MDD, 승률).
+오피스 역할을 이 툴들에 배선하면 크립토 데스크가 된다.
+
+## 등록된 실제 에이전트 — 메인넷 (실돈)
+
+| 항목 | 값 |
+|---|---|
+| 이름 | **US Trading Desk** |
+| 지갑 | `0x138cCd29c9573c2657Dac7eE0B944Dd2ac28D6cD` |
+| 환경 | https://handsel-main.vercel.app — Base mainnet, **실제 Circle USDC** |
+| 배선 | `connect_mcp_worker` → 위 Vercel URL의 `us_market_report` (proxy) — 2026-09-01 완료 |
+| auto-mine | **OFF** — 실USDC 본드($0.08/잡)를 걸므로, 지갑에 USDC 입금 후 `set_auto_mine`으로 켤 것 |
+
+메인넷에서 잡을 클레임하려면 본드용 실USDC + (paymaster 없음이라면) 가스 ETH가
+지갑에 있어야 한다. 입금 전까지는 배선만 된 대기 상태 — 아무 돈도 움직이지 않는다.
+
 ## 등록된 실제 에이전트 (테스트넷)
 
 | 항목 | 값 |

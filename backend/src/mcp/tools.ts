@@ -4,6 +4,9 @@ import { autoTrader } from "../trade/auto-trader.js";
 import { executeOrder } from "../trade/execute.js";
 import { config } from "../config.js";
 import { currentMarketSession } from "../core/marketSession.js";
+import { cryptoDesk, CRYPTO_MARKETS } from "../crypto/desk.js";
+import { upbit } from "../crypto/upbit.js";
+import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 
 /**
  * MCP 워커 툴 — Handsel office가 이 백엔드를 워커로 탈부착하는 표면.
@@ -229,7 +232,98 @@ const autoTradeTool: McpToolDef = {
   },
 };
 
+// ===== 크립토 (Upbit) 읽기 전용 툴 =====
+
+const upbitPriceLookup: McpToolDef = {
+  name: "upbit_price_lookup",
+  description:
+    "Live Upbit KRW-market quotes for the coins in the query (BTC/ETH/XRP/SOL/DOGE): price, 24h change, high/low, volume. Real public Upbit data at call time.",
+  inputSchema: QUERY_SCHEMA("Free text naming coins, e.g. 'BTC ETH price'"),
+  handler: (query) => {
+    const wanted = new Set((query.toUpperCase().match(/\b[A-Z]{2,5}\b/g) ?? []).map((s) => `KRW-${s}`));
+    const quotes = cryptoDesk.quotes().filter((q) => wanted.size === 0 || wanted.has(q.market));
+    if (quotes.length === 0) {
+      return `해당 마켓의 시세가 아직 없습니다. 추적 중: ${CRYPTO_MARKETS.join(", ")}\n${envLine()}`;
+    }
+    const lines = quotes.map(
+      (q) =>
+        `${q.market}: ₩${q.priceKrw.toLocaleString()} (${q.changePct >= 0 ? "+" : ""}${q.changePct}%) high=₩${q.high.toLocaleString()} low=₩${q.low.toLocaleString()} vol24h=${q.volume24h.toFixed(2)}`,
+    );
+    return [...lines, envLine()].join("\n");
+  },
+};
+
+const upbitPipelineReport: McpToolDef = {
+  name: "upbit_market_report",
+  description:
+    "Crypto desk report: live Upbit pipeline metrics, per-coin ensemble alpha, portfolio targets, news sentiment with evidence words, and recent signals. All measured from live Upbit + Google News data.",
+  inputSchema: QUERY_SCHEMA("Focus coins or 'all'"),
+  handler: () => {
+    const snap = cryptoDesk.pipeline.snapshot();
+    const t = cryptoDesk.pipeline.tracker;
+    const targets = cryptoDesk.pipeline.portfolioTargets
+      .slice(0, 6)
+      .map((x) => `  ${x.symbol} alpha=${x.alpha >= 0 ? "+" : ""}${x.alpha} target=${x.targetWeightPct}% drift=${x.driftPct}%p`);
+    const sent = t
+      .bySymbol()
+      .filter((s) => s.mentions > 0)
+      .map((s) => `  ${s.symbol} ${s.label} ${s.score >= 0 ? "+" : ""}${s.score} (${s.mentions} mentions)${s.topDriver ? ` — "${s.topDriver.slice(0, 70)}"` : ""}`);
+    const quotes = cryptoDesk.quotes().map((q) => `  ${q.market} ₩${q.priceKrw.toLocaleString()} (${q.changePct >= 0 ? "+" : ""}${q.changePct}%)`);
+    return [
+      `UPBIT CRYPTO DESK — pipeline ${snap.status}, nodes ${snap.nodesActive}/${snap.nodesTotal}, latency ${snap.latencyMs.toFixed(2)}ms, alphaStability ${snap.alphaStability}`,
+      `QUOTES:`,
+      ...quotes,
+      `ALPHA TARGETS:`,
+      ...(targets.length ? targets : ["  (none yet)"]),
+      `NEWS SENTIMENT:`,
+      ...(sent.length ? sent : ["  (no scored headlines yet)"]),
+      envLine(),
+    ].join("\n");
+  },
+};
+
+const upbitBacktestReport: McpToolDef = {
+  name: "upbit_backtest_report",
+  description:
+    "Run a REAL backtest on live Upbit daily candles and report Sharpe, annualized return vs buy&hold, max drawdown, win rate, trades. Query names a market (default KRW-BTC) and optionally a signal id: vol-spike-reversion | rsi-reversion | momentum-20 | vol-regime (default: all four, 365 days).",
+  inputSchema: QUERY_SCHEMA("e.g. 'KRW-ETH momentum-20' or 'BTC all signals'"),
+  handler: async (query) => {
+    const up = query.toUpperCase();
+    const coin = (up.match(/\b(BTC|ETH|XRP|SOL|DOGE)\b/) ?? ["BTC"])[0];
+    const market = `KRW-${coin}`;
+    const named = SIGNALS.filter((s) => query.toLowerCase().includes(s.id));
+    const signals = named.length > 0 ? named : SIGNALS;
+    const candles = (await upbit.dayCandles(market, 365)).map((c) => ({
+      t: c.candle_date_time_utc.slice(0, 10),
+      o: c.opening_price,
+      h: c.high_price,
+      l: c.low_price,
+      c: c.trade_price,
+      v: c.candle_acc_trade_volume,
+    }));
+    const rows = signals.map((s) => {
+      const bt = runBacktest(candles, s, market);
+      const m = bt.metrics;
+      return `  ${s.name} [${s.id}]: annual=${m.annualReturnPct}% (B&H ${m.benchmarkReturnPct}%) sharpe=${m.sharpe} MDD=${m.maxDrawdownPct}% winRate=${m.winRatePct}% trades=${m.trades} exposure=${m.exposurePct}%`;
+    });
+    return [
+      `# Upbit backtest — ${market}, ${candles.length} daily candles (${candles[0]?.t} ~ ${candles[candles.length - 1]?.t})`,
+      `convention: signal at close t → position for t+1 return; long/cash only (no lookahead, no shorting)`,
+      ...rows,
+      envLine(),
+    ].join("\n");
+  },
+};
+
 export function mcpTools(): McpToolDef[] {
-  const readOnly = [priceLookup, pipelineReport, sentimentReport, accountBalance];
+  const readOnly = [
+    priceLookup,
+    pipelineReport,
+    sentimentReport,
+    accountBalance,
+    upbitPriceLookup,
+    upbitPipelineReport,
+    upbitBacktestReport,
+  ];
   return config.MCP_TRADING ? [...readOnly, placeOrder, autoTradeTool] : readOnly;
 }

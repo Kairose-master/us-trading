@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Activity, Briefcase, ClipboardList, LayoutDashboard, MessageSquareText, Network, ShieldAlert, TrendingUp } from "lucide-react"
+import { Activity, Bitcoin, Briefcase, ClipboardList, LayoutDashboard, MessageSquareText, Network, ShieldAlert, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useSettings } from "@/components/settings-provider"
 
@@ -13,6 +13,7 @@ const NAV = [
   { href: "/strategies", label: "전략", icon: Activity },
   { href: "/pipeline", label: "파이프라인", icon: Network },
   { href: "/sentiment", label: "센티먼트", icon: MessageSquareText },
+  { href: "/crypto", label: "크립토", icon: Bitcoin },
   { href: "/risk", label: "리스크", icon: ShieldAlert },
 ]
 

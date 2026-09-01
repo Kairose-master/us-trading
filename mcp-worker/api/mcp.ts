@@ -340,6 +340,262 @@ const TOOLS: ToolDef[] = [
   },
 ];
 
+// ===== 크립토 (Upbit — 공개 API, 키 불필요) =====
+
+const COINS = ["BTC", "ETH", "XRP", "SOL", "DOGE"];
+
+function extractCoins(query: string): string[] {
+  const up = query.toUpperCase();
+  const found = COINS.filter((c) => new RegExp(`\\b${c}\\b`).test(up));
+  return found.length > 0 ? found : ["BTC", "ETH"];
+}
+
+interface UpbitCandle {
+  t: string;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+  v: number;
+}
+
+async function upbitTickers(coins: string[]): Promise<Array<{ market: string; price: number; changePct: number; high: number; low: number; vol24h: number }>> {
+  const markets = coins.map((c) => `KRW-${c}`).join(",");
+  const res = await fetch(`https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets)}`, {
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) return [];
+  const data = (await res.json()) as Array<{ market: string; trade_price: number; signed_change_rate: number; high_price: number; low_price: number; acc_trade_volume_24h: number }>;
+  return data.map((t) => ({
+    market: t.market,
+    price: t.trade_price,
+    changePct: +(t.signed_change_rate * 100).toFixed(2),
+    high: t.high_price,
+    low: t.low_price,
+    vol24h: t.acc_trade_volume_24h,
+  }));
+}
+
+async function upbitDayCandles(market: string, n: number): Promise<UpbitCandle[]> {
+  const out: UpbitCandle[] = [];
+  let to: string | null = null;
+  while (out.length < n) {
+    const count = Math.min(200, n - out.length);
+    const toParam: string = to ? `&to=${encodeURIComponent(to)}` : "";
+    const res = await fetch(`https://api.upbit.com/v1/candles/days?market=${market}&count=${count}${toParam}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) break;
+    const batch = (await res.json()) as Array<{ candle_date_time_utc: string; opening_price: number; high_price: number; low_price: number; trade_price: number; candle_acc_trade_volume: number }>;
+    if (batch.length === 0) break;
+    out.push(
+      ...batch.map((c) => ({ t: c.candle_date_time_utc.slice(0, 10), o: c.opening_price, h: c.high_price, l: c.low_price, c: c.trade_price, v: c.candle_acc_trade_volume })),
+    );
+    to = batch[batch.length - 1].candle_date_time_utc;
+    if (batch.length < count) break;
+  }
+  return out.reverse();
+}
+
+// 백테스트 (backend/src/crypto/backtest.ts와 동일 로직·규약: 룩어헤드 없음, 롱/현금만)
+function maAt(vals: number[], end: number, period: number): number {
+  if (end + 1 < period) return NaN;
+  let s = 0;
+  for (let i = end - period + 1; i <= end; i++) s += vals[i];
+  return s / period;
+}
+
+function rvAt(closes: number[], end: number, period: number): number {
+  if (end + 1 < period + 1) return NaN;
+  const rets: number[] = [];
+  for (let i = end - period + 1; i <= end; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const mean = rets.reduce((a, b) => a + b, 0) / rets.length;
+  return Math.sqrt(rets.reduce((a, r) => a + (r - mean) ** 2, 0) / rets.length);
+}
+
+const CRYPTO_SIGNALS: Array<{ id: string; name: string; position: (cs: UpbitCandle[], i: number) => 0 | 1 }> = [
+  {
+    id: "vol-spike-reversion",
+    name: "Volume-spike mean reversion",
+    position: (cs, i) => {
+      for (let k = Math.max(0, i - 2); k <= i; k++) {
+        if (k < 20) continue;
+        const vAvg = maAt(cs.map((c) => c.v), k, 20);
+        if (!Number.isNaN(vAvg) && cs[k].v > vAvg * 2 && cs[k].c < cs[k].o) return 1;
+      }
+      return 0;
+    },
+  },
+  {
+    id: "rsi-reversion",
+    name: "RSI mean reversion (30/55)",
+    position: (cs, i) => {
+      const closes = cs.map((c) => c.c);
+      let held: 0 | 1 = 0;
+      for (let k = 14; k <= i; k++) {
+        const slice = closes.slice(0, k + 1);
+        const r = rsi14(slice);
+        if (held === 0 && r < 30) held = 1;
+        else if (held === 1 && r > 55) held = 0;
+      }
+      return held;
+    },
+  },
+  {
+    id: "momentum-20",
+    name: "20-day momentum trend",
+    position: (cs, i) => {
+      const m = maAt(cs.map((c) => c.c), i, 20);
+      return !Number.isNaN(m) && cs[i].c > m ? 1 : 0;
+    },
+  },
+  {
+    id: "vol-regime",
+    name: "Volatility regime filter",
+    position: (cs, i) => {
+      const closes = cs.map((c) => c.c);
+      const s = rvAt(closes, i, 10);
+      const l = rvAt(closes, i, 60);
+      return !Number.isNaN(s) && !Number.isNaN(l) && s < l * 0.9 ? 1 : 0;
+    },
+  },
+];
+
+function runCryptoBacktest(cs: UpbitCandle[], sig: (typeof CRYPTO_SIGNALS)[number]) {
+  let eq = 1;
+  let bench = 1;
+  let peak = 1;
+  let maxDd = 0;
+  let wins = 0;
+  let held = 0;
+  let trades = 0;
+  let prev: 0 | 1 = 0;
+  const rets: number[] = [];
+  for (let i = 0; i < cs.length - 1; i++) {
+    const pos = sig.position(cs, i);
+    if (pos === 1 && prev === 0) trades++;
+    prev = pos;
+    const r = cs[i + 1].c / cs[i].c - 1;
+    const sr = pos === 1 ? r : 0;
+    eq *= 1 + sr;
+    bench *= 1 + r;
+    rets.push(sr);
+    if (pos === 1) {
+      held++;
+      if (sr > 0) wins++;
+    }
+    peak = Math.max(peak, eq);
+    maxDd = Math.max(maxDd, (peak - eq) / peak);
+  }
+  const years = (cs.length - 1) / 365;
+  const mean = rets.reduce((a, b) => a + b, 0) / Math.max(1, rets.length);
+  const sd = Math.sqrt(rets.reduce((a, r) => a + (r - mean) ** 2, 0) / Math.max(1, rets.length));
+  return {
+    annualPct: years > 0 ? +((Math.pow(eq, 1 / years) - 1) * 100).toFixed(2) : 0,
+    benchPct: +((bench - 1) * 100).toFixed(2),
+    sharpe: sd > 0 ? +((mean / sd) * Math.sqrt(365)).toFixed(2) : 0,
+    mddPct: +(-maxDd * 100).toFixed(2),
+    winRatePct: held > 0 ? +((wins / held) * 100).toFixed(1) : 0,
+    trades,
+    exposurePct: +((held / Math.max(1, cs.length - 1)) * 100).toFixed(1),
+  };
+}
+
+const CRYPTO_TOOLS: ToolDef[] = [
+  {
+    name: "upbit_price_lookup",
+    description:
+      "Live Upbit KRW-market quotes for the coins in the query (BTC/ETH/XRP/SOL/DOGE): price, 24h change, high/low, volume. Real public Upbit data at call time.",
+    inputSchema: QUERY_SCHEMA("Free text naming coins, e.g. 'BTC ETH price'"),
+    handler: async (query) => {
+      const rows = await upbitTickers(extractCoins(query));
+      if (rows.length === 0) return `Upbit 시세를 가져오지 못했습니다.\n${metaLine([])}`;
+      const lines = rows.map(
+        (q) => `${q.market}: ₩${q.price.toLocaleString()} (${q.changePct >= 0 ? "+" : ""}${q.changePct}%) high=₩${q.high.toLocaleString()} low=₩${q.low.toLocaleString()} vol24h=${q.vol24h.toFixed(2)}`,
+      );
+      return [...lines, `[data] Upbit public API · ts=${new Date().toISOString()}`].join("\n");
+    },
+  },
+  {
+    name: "upbit_market_report",
+    description:
+      "Crypto analyst report for the coins in the query (default BTC/ETH): live Upbit price, RSI(14), 20-day momentum, volatility from real daily candles, plus lexicon-scored crypto news sentiment with evidence words. Nothing invented.",
+    inputSchema: QUERY_SCHEMA("Free text naming coins, e.g. 'BTC SOL outlook'"),
+    handler: async (query) => {
+      const coins = extractCoins(query).slice(0, 3);
+      const sections = await Promise.all(
+        coins.map(async (coin) => {
+          const market = `KRW-${coin}`;
+          const [candles, tickers, newsRes] = await Promise.all([
+            upbitDayCandles(market, 90),
+            upbitTickers([coin]),
+            fetch(
+              `https://news.google.com/rss/search?q=${encodeURIComponent(`${coin} crypto`)}&hl=en-US&gl=US&ceid=US:en`,
+              { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+            ).then((r) => (r.ok ? r.text() : "")).catch(() => ""),
+          ]);
+          if (candles.length < 21 || tickers.length === 0) return `## ${market} — no data (skipped, not invented)`;
+          const closes = candles.map((c) => c.c);
+          const rsi = +rsi14(closes).toFixed(1);
+          const mom = +(((closes[closes.length - 1] - closes[closes.length - 21]) / closes[closes.length - 21]) * 100).toFixed(2);
+          const vol = +stdevPct(closes.slice(-60)).toFixed(3);
+          const heads: string[] = [];
+          let sSum = 0;
+          let sDen = 0;
+          const itemRe = /<item>([\s\S]*?)<\/item>/g;
+          let m: RegExpExecArray | null;
+          while ((m = itemRe.exec(newsRes)) !== null && heads.length < 5) {
+            const t = (/<title[^>]*>([\s\S]*?)<\/title>/.exec(m[1])?.[1] ?? "")
+              .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1")
+              .replace(/ - [^-]+$/, "")
+              .trim();
+            if (!t) continue;
+            const sc = scoreHeadline(t);
+            sSum += sc.score * sc.confidence;
+            sDen += sc.confidence;
+            heads.push(`    · [${labelOf(sc.score)} ${signed(sc.score)}] "${t.slice(0, 90)}"${sc.hits.length ? ` evidence: ${sc.hits.join(",")}` : ""}`);
+          }
+          const agg = sDen > 0 ? +(sSum / sDen).toFixed(3) : 0;
+          const tk = tickers[0];
+          return [
+            `## ${market} — ₩${tk.price.toLocaleString()} (${tk.changePct >= 0 ? "+" : ""}${tk.changePct}% 24h)`,
+            `  technicals: RSI14=${rsi} momentum20d=${signed(mom)}% vol(daily)=${vol}%`,
+            `  news sentiment: ${labelOf(agg)} ${signed(agg)} (${heads.length} headlines)`,
+            ...heads,
+          ].join("\n");
+        }),
+      );
+      return [`# Upbit crypto report`, ...sections, `[data] Upbit public API + Google News RSS · lexicon-scored · ts=${new Date().toISOString()}`].join("\n\n");
+    },
+  },
+  {
+    name: "upbit_backtest_report",
+    description:
+      "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: vol-spike-reversion, rsi-reversion, momentum-20, vol-regime. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead.",
+    inputSchema: QUERY_SCHEMA("e.g. 'KRW-ETH momentum-20' or 'BTC all signals'"),
+    handler: async (query) => {
+      const coin = extractCoins(query)[0];
+      const market = `KRW-${coin}`;
+      const named = CRYPTO_SIGNALS.filter((s) => query.toLowerCase().includes(s.id));
+      const signals = named.length > 0 ? named : CRYPTO_SIGNALS;
+      const candles = await upbitDayCandles(market, 365);
+      if (candles.length < 90) return `캔들 부족 (${candles.length}개) — 백테스트 불가\n[data] Upbit public API`;
+      const rows = signals.map((s) => {
+        const r = runCryptoBacktest(candles, s);
+        return `  ${s.name} [${s.id}]: annual=${r.annualPct}% (B&H ${r.benchPct}%) sharpe=${r.sharpe} MDD=${r.mddPct}% winRate=${r.winRatePct}% trades=${r.trades} exposure=${r.exposurePct}%`;
+      });
+      return [
+        `# Upbit backtest — ${market}, ${candles.length} daily candles (${candles[0].t} ~ ${candles[candles.length - 1].t})`,
+        `convention: signal at close t → position for t+1 return; long/cash only (no lookahead, no shorting)`,
+        ...rows,
+        `[data] Upbit public API · ts=${new Date().toISOString()}`,
+      ].join("\n");
+    },
+  },
+];
+
+TOOLS.push(...CRYPTO_TOOLS);
+
 // ===== JSON-RPC =====
 
 function rpcResult(id: unknown, result: unknown) {
@@ -362,7 +618,7 @@ export default async function handler(req: any, res: any) {
       protocol: "MCP Streamable HTTP (POST JSON-RPC)",
       readOnly: true,
       tools: TOOLS.map((t) => t.name),
-      note: "Read-only market analysis worker for Handsel offices. No account/order capability. Trading lives in the private backend.",
+      note: "Read-only market analysis worker for Handsel offices. US stocks + Upbit crypto. No account/order capability. Trading lives in the private backend.",
     });
   }
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
@@ -383,7 +639,7 @@ export default async function handler(req: any, res: any) {
         rpcResult(msg.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "us-trading-mcp-worker", version: "1.0.0", title: "US Trading Desk — read-only analyst" },
+          serverInfo: { name: "us-trading-mcp-worker", version: "1.1.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
         }),
       );
     case "notifications/initialized":

@@ -43,6 +43,10 @@ src/
   trade/
     execute.ts        # 주문 실행 공용 경로 — 수동/자동/MCP 전부 여기로 (리스크 관문 1회)
     auto-trader.ts    # 자동매매 실행기 — 파이프라인 신호 → 주문 (기본 OFF, 겹겹의 가드)
+  crypto/
+    upbit.ts          # Upbit 클라이언트 — 공개(키 불필요, 항상 실데이터) + JWT 개인(주문은 이중 스위치)
+    desk.ts           # 크립토 데스크 — 두 번째 파이프라인 인스턴스, 페이퍼/실주문 3단 가드
+    backtest.ts       # 알파 백테스트 엔진(순수) — 시그널 4종, 룩어헤드 없음, 롱/현금만
   mcp/
     server.ts         # POST /mcp — Handsel office가 이 백엔드를 워커로 탈부착하는 접점
     tools.ts          # 단일 string 인자 툴들 (거래 툴은 MCP_TRADING=true에서만)

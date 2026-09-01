@@ -22,6 +22,20 @@ const Env = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true"),
+  // ===== 크립토 (Upbit) =====
+  // 시세/캔들은 키 없이 공개 API. 키는 계좌 조회/주문에만 필요.
+  UPBIT_ACCESS_KEY: z.string().default(""),
+  UPBIT_SECRET_KEY: z.string().default(""),
+  // 크립토 신호 → 주문 기록(페이퍼). 기본 OFF.
+  CRYPTO_TRADE: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  // 실제 Upbit 주문까지 허용하는 명시적 이중 스위치 (키 + 이 플래그 둘 다 필요)
+  CRYPTO_TRADE_ALLOW_REAL: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   // ===== MCP 워커 (Handsel office 탈부착용) =====
   // /mcp 엔드포인트 인증 토큰 — 비우면 API_AUTH_TOKEN을 그대로 쓴다
   MCP_AUTH_TOKEN: z.string().default(""),

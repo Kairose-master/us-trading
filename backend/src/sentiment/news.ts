@@ -70,13 +70,28 @@ function decodeEntities(s: string): string {
     .replace(/&#39;/g, "'");
 }
 
+export interface NewsIngestorOpts {
+  /** 심볼 → 검색 쿼리 (기본 "{sym} stock"; 크립토 데스크는 "{sym} crypto") */
+  queryFor?: (symbol: string) => string;
+  /** true면 합성 헤드라인 모드 (기본: config.MOCK_DATA) */
+  mockMode?: boolean;
+}
+
 export class NewsIngestor extends EventEmitter {
   private symbols: string[] = [];
   private timer: NodeJS.Timeout | null = null;
   private seen = new Set<string>();
   private cursor = 0;
+  private queryFor: (symbol: string) => string;
+  private mockMode: boolean;
   /** 최근 수집분 (프론트 피드/재기동용) */
   recent: NewsItem[] = [];
+
+  constructor(opts: NewsIngestorOpts = {}) {
+    super();
+    this.queryFor = opts.queryFor ?? ((s) => `${s} stock`);
+    this.mockMode = opts.mockMode ?? config.MOCK_DATA;
+  }
 
   setSymbols(symbols: string[]) {
     this.symbols = [...new Set(symbols)];
@@ -84,7 +99,7 @@ export class NewsIngestor extends EventEmitter {
 
   start() {
     if (this.timer) return;
-    if (config.MOCK_DATA) {
+    if (this.mockMode) {
       this.timer = setInterval(() => this.emitMock(), MOCK_INTERVAL_MS);
       // 첫 헤드라인은 바로
       setTimeout(() => this.emitMock(), 2_000);
@@ -139,7 +154,7 @@ export class NewsIngestor extends EventEmitter {
     const symbol = this.symbols[this.cursor % this.symbols.length];
     this.cursor++;
     try {
-      const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${symbol} stock`)}&hl=en-US&gl=US&ceid=US:en`;
+      const url = `https://news.google.com/rss/search?q=${encodeURIComponent(this.queryFor(symbol))}&hl=en-US&gl=US&ceid=US:en`;
       const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const xml = await res.text();

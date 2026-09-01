@@ -15,6 +15,7 @@ import { pipeline } from "./pipeline/engine.js";
 import { newsIngestor } from "./sentiment/news.js";
 import { handleMcpRequest } from "./mcp/server.js";
 import { autoTrader } from "./trade/auto-trader.js";
+import { cryptoDesk } from "./crypto/desk.js";
 
 const app = express();
 app.use(cors({ origin: ["http://localhost:3000"], credentials: false }));
@@ -110,6 +111,9 @@ if (config.MOCK_DATA) {
 
 // 자동매매 실행기 — 파이프라인 신호에 배선 (기본 OFF, env/REST/MCP로 토글)
 autoTrader.attach();
+
+// 크립토 데스크 (Upbit) — 공개 API 실데이터, MOCK_DATA와 무관하게 기동
+cryptoDesk.start();
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {
