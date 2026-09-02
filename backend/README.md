@@ -43,6 +43,10 @@ src/
   trade/
     execute.ts        # 주문 실행 공용 경로 — 수동/자동/MCP 전부 여기로 (리스크 관문 1회)
     auto-trader.ts    # 자동매매 실행기 — 파이프라인 신호 → 주문 (기본 OFF, 겹겹의 가드)
+  ml/
+    features.ts       # 캔들 → 피처 8종 + 라벨 (룩어헤드 없음, 순수)
+    train.ts          # 로지스틱 회귀 미니배치 SGD — loss/스텝 전부 실측, 시드 고정
+    validate.ts       # walk-forward 검증 — 신뢰할 숫자는 out-of-sample뿐
   crypto/
     upbit.ts          # Upbit 클라이언트 — 공개(키 불필요, 항상 실데이터) + JWT 개인(주문은 이중 스위치)
     desk.ts           # 크립토 데스크 — 두 번째 파이프라인 인스턴스, 페이퍼/실주문 3단 가드

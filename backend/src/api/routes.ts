@@ -15,6 +15,8 @@ import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
+import { walkForwardValidate } from "../ml/validate.js";
+import { DEFAULT_PARAMS } from "../ml/train.js";
 import type { Exchange, Order } from "../kis/types.js";
 
 export const router = Router();
@@ -333,6 +335,36 @@ router.get("/crypto/backtest", async (req, res) => {
       market,
     );
     res.json(bt);
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
+});
+
+// ===== ML (Model Lab) =====
+
+router.get("/ml/train", async (req, res) => {
+  const market = String(req.query.market ?? "KRW-BTC");
+  const days = Math.min(1000, Math.max(200, Number(req.query.days ?? 500)));
+  const params = {
+    learningRate: Math.min(1, Math.max(0.001, Number(req.query.lr ?? DEFAULT_PARAMS.learningRate))),
+    epochs: Math.min(300, Math.max(5, Math.round(Number(req.query.epochs ?? DEFAULT_PARAMS.epochs)))),
+    l2: Math.min(0.1, Math.max(0, Number(req.query.l2 ?? DEFAULT_PARAMS.l2))),
+    batchSize: Math.min(128, Math.max(4, Math.round(Number(req.query.batch ?? DEFAULT_PARAMS.batchSize)))),
+    seed: Math.round(Number(req.query.seed ?? DEFAULT_PARAMS.seed)),
+  };
+  // quantile: 학습셋 예측확률 분위수 — 0.6 = 상위 40% 확신일에만 롱
+  const quantile = Math.min(0.9, Math.max(0.5, Number(req.query.quantile ?? 0.6)));
+  try {
+    const candles = (await upbit.dayCandles(market, days)).map((c) => ({
+      t: c.candle_date_time_utc.slice(0, 10),
+      o: c.opening_price,
+      h: c.high_price,
+      l: c.low_price,
+      c: c.trade_price,
+      v: c.candle_acc_trade_volume,
+    }));
+    const report = walkForwardValidate(candles, market, params, quantile);
+    res.json(report);
   } catch (e) {
     res.status(502).json({ error: (e as Error).message });
   }

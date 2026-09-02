@@ -7,6 +7,9 @@ import { currentMarketSession } from "../core/marketSession.js";
 import { cryptoDesk, CRYPTO_MARKETS } from "../crypto/desk.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
+import { walkForwardValidate } from "../ml/validate.js";
+import { DEFAULT_PARAMS } from "../ml/train.js";
+import { FEATURE_NAMES } from "../ml/features.js";
 
 /**
  * MCP 워커 툴 — Handsel office가 이 백엔드를 워커로 탈부착하는 표면.
@@ -315,6 +318,41 @@ const upbitBacktestReport: McpToolDef = {
   },
 };
 
+const mlAlphaReport: McpToolDef = {
+  name: "ml_alpha_report",
+  description:
+    "Train a REAL logistic-regression alpha model on live Upbit daily candles (walk-forward: 70% train, 30% out-of-sample) and report learned feature weights, training loss curve endpoints, and in-sample vs OUT-OF-SAMPLE backtest metrics. Only the OOS numbers are trustworthy and the report says so. Query names a coin (default BTC).",
+  inputSchema: QUERY_SCHEMA("e.g. 'ETH' or 'BTC threshold 0.6'"),
+  handler: async (query) => {
+    const coin = (query.toUpperCase().match(/\b(BTC|ETH|XRP|SOL|DOGE)\b/) ?? ["BTC"])[0];
+    const market = `KRW-${coin}`;
+    const qMatch = query.match(/0\.\d+/);
+    const quantile = qMatch ? Math.min(0.9, Math.max(0.5, parseFloat(qMatch[0]))) : 0.6;
+    const candles = (await upbit.dayCandles(market, 500)).map((c) => ({
+      t: c.candle_date_time_utc.slice(0, 10),
+      o: c.opening_price,
+      h: c.high_price,
+      l: c.low_price,
+      c: c.trade_price,
+      v: c.candle_acc_trade_volume,
+    }));
+    const r = walkForwardValidate(candles, market, DEFAULT_PARAMS, quantile);
+    const w = r.model.weights.map((v, i) => `${FEATURE_NAMES[i]}=${v}`).join(" ");
+    const first = r.model.epochs[0];
+    const last = r.model.epochs[r.model.epochs.length - 1];
+    return [
+      `# ML alpha report — ${market} (logistic regression, walk-forward)`,
+      `train: ${r.trainRange.from}~${r.trainRange.to} (${r.trainRange.samples} samples, ${r.model.steps} SGD steps) · test(OOS): ${r.testRange.from}~${r.testRange.to}`,
+      `loss: epoch1=${first?.loss} → epoch${last?.epoch}=${last?.loss} · train accuracy ${(r.model.finalAccuracy * 100).toFixed(1)}% · threshold ${r.threshold} (train-prob q${r.quantile})`,
+      `weights: ${w}`,
+      `IN-SAMPLE  : annual=${r.inSample.annualReturnPct}% sharpe=${r.inSample.sharpe} MDD=${r.inSample.maxDrawdownPct}% (참고용 — 과적합 포함)`,
+      `OUT-SAMPLE : annual=${r.outOfSample.annualReturnPct}% (B&H ${r.outOfSample.benchmarkReturnPct}%) sharpe=${r.outOfSample.sharpe} MDD=${r.outOfSample.maxDrawdownPct}% winRate=${r.outOfSample.winRatePct}% trades=${r.outOfSample.trades}`,
+      `신뢰할 수 있는 숫자는 OUT-SAMPLE 뿐이다. convention: t종가 시그널 → t+1 적용, 롱/현금만, 수수료 미반영.`,
+      envLine(),
+    ].join("\n");
+  },
+};
+
 export function mcpTools(): McpToolDef[] {
   const readOnly = [
     priceLookup,
@@ -324,6 +362,7 @@ export function mcpTools(): McpToolDef[] {
     upbitPriceLookup,
     upbitPipelineReport,
     upbitBacktestReport,
+    mlAlphaReport,
   ];
   return config.MCP_TRADING ? [...readOnly, placeOrder, autoTradeTool] : readOnly;
 }
