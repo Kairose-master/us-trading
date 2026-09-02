@@ -82,6 +82,38 @@ https://faucet.circle.com 에서 받아 에이전트 입금 주소로 보낼 것
 `us_market_report` **assisted**로 재배선해 두었다. 다음 고용부터는
 proxy를 `us_rebalance_draft`(브리프와 툴이 1:1인 경우)에만 쓸 것.
 
+### 크립토 오피스 — 1차 실패 → v1.3.0 보강 → 전 단계 통과 (2026-09-02)
+
+**1차 (dlg-iS9iqxbxBy, 워커 v1.2.0): Chart·News 모두 FAILED.** 채점 기준을
+툴 출력이 못 채웠다 — Chart 기준은 "종목별 추세·지지선·저항선·모멘텀 콜,
+가격+날짜 인용"인데 툴에 지지/저항이 아예 없었고, News 기준은
+"헤드라인+날짜+출처 인용"인데 날짜·출처가 빠져 있었다. US 오피스의
+Quant 재제출(assisted)도 같은 이유 부류로 FAILED — 백테스트 리포트로는
+"비중 콜 + 업스트림 인용"이 안 나온다. 실패 escrow는 리뷰 데드라인에 환불.
+
+**보강 (워커 v1.3.0):** `upbit_market_report`에 MA20 추세 판정, 30일
+실캔들 최저 저가/최고 고가를 찍힌 날짜와 함께 지지/저항으로 인용, 20세션
+가격 이동 날짜 쌍, 뉴스 출처+발행일 표기. `upbit_rebalance_draft` 신설 —
+코인별 목표 비중을 "based on CHART/NEWS" 근거 숫자(날짜 포함)와 함께 산출.
+
+**2차 (dlg-lBj38w4o4v, $4): 4단계 전부 passed — 각 $1.00 지급.**
+
+| 스텝 | 배선 (전부 assisted) | 판정 |
+|---|---|---|
+| Chart analysis | `upbit_market_report` v1.3 | **passed** |
+| News & filings | `upbit_market_report` v1.3 | **passed** |
+| Quant model | `upbit_rebalance_draft` | **passed** |
+| Rebalance proposal | `upbit_rebalance_draft` | **passed** |
+
+주목할 점: 통과한 Quant 딜리버러블이 자기 툴 출력의 결함(바스켓 3번째
+다리에 XRP가 대신 끼어든 것, 자기 뉴스 점수와 News 워커 판정의 부호
+불일치)을 **스스로 적발·제외**하고 근거를 남겼다 — 파이프라인의 교차검증이
+실제로 작동한 사례.
+
+**교훈 2:** 수락 기준(acceptance criteria)은 채점자가 문자 그대로 본다.
+툴 출력이 기준의 각 항목을 실데이터로 채우는지 먼저 대조할 것 — 없는
+항목은 assisted 에이전트가 지어내지 않고(정직), 그대로 FAILED가 된다.
+
 메인넷(https://handsel-main.vercel.app)은 **실제 USDC**가 움직인다.
 테스트넷에서 채점 통과가 안정적으로 확인되기 전에는 메인넷에 붙이지 말 것.
 
