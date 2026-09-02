@@ -63,6 +63,8 @@ class CryptoDesk extends EventEmitter {
   paperPositions = new Map<string, { qty: number; avgKrw: number }>();
   orders: CryptoOrder[] = [];
   lastTickers = new Map<string, UpbitTicker>();
+  /** 스캐너가 넘긴 알트 현재가 — 다음 폴링 전까지 에쿼티 계산의 폴백 (로테이션 직후 스냅샷이 보유분을 빠뜨리던 실측 버그) */
+  private altPrices = new Map<string, number>();
   lastError: string | null = null;
   paperSince: string | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -97,8 +99,8 @@ class CryptoDesk extends EventEmitter {
     let eq = this.paperCashKrw;
     // paperPositions 키는 심볼("BTC") — 티커 키는 마켓("KRW-BTC")
     for (const [sym, p] of this.paperPositions) {
-      const t = this.lastTickers.get(`KRW-${sym}`);
-      if (t) eq += p.qty * t.trade_price;
+      const px = this.lastTickers.get(`KRW-${sym}`)?.trade_price ?? this.altPrices.get(`KRW-${sym}`) ?? 0;
+      eq += p.qty * px;
     }
     return eq;
   }
@@ -327,6 +329,7 @@ class CryptoDesk extends EventEmitter {
     if (config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys()) {
       return { orders: [], skipped: [], error: "스캐너 로테이션은 페이퍼 전용 — 실주문 모드에서는 거부한다 (페이퍼 기록으로 증명이 먼저)" };
     }
+    for (const [m, px] of priceOf) if (px > 0) this.altPrices.set(m, px);
     const price = (market: string) => priceOf.get(market) ?? this.lastTickers.get(market)?.trade_price ?? 0;
     // 현재 에쿼티 (스캐너 가격 우선 — 데스크 미추적 알트 포함)
     let equity = this.paperCashKrw;
@@ -436,8 +439,8 @@ class CryptoDesk extends EventEmitter {
       equityKrw: Math.round(this.equityKrw()),
       cashKrw: Math.round(this.paperCashKrw),
       positions: [...this.paperPositions.entries()].map(([symbol, p]) => {
-        const t = this.lastTickers.get(`KRW-${symbol}`);
-        return { symbol, qty: p.qty, avgKrw: Math.round(p.avgKrw), curKrw: t?.trade_price ?? 0 };
+        const cur = this.lastTickers.get(`KRW-${symbol}`)?.trade_price ?? this.altPrices.get(`KRW-${symbol}`) ?? 0;
+        return { symbol, qty: p.qty, avgKrw: Math.round(p.avgKrw), curKrw: cur };
       }),
       orders: this.orders.slice(0, 20),
       lastError: this.lastError,
