@@ -127,13 +127,16 @@ export function buildDecision(p: {
   output: string;
   statusText: string;
   gate?: DecisionGate;
+  /** 오피스 단계 수 — 전부 Completed여야 결정이 유효하다 (기본 4 = 구 securities-desk) */
+  expectedSteps?: number;
   now?: Date;
 }): DecisionRecord {
   const gate = p.gate ?? DEFAULT_GATE;
   const steps = parseSteps(p.statusText, p.delegationId);
   const reasons: string[] = [];
-  const allPassed = steps.length >= 4 && steps.every((s) => s.status === "Completed");
-  if (steps.length < 4) reasons.push(`단계 ${steps.length}/4 만 확인됨`);
+  const expected = p.expectedSteps ?? 4;
+  const allPassed = steps.length >= expected && steps.every((s) => s.status === "Completed");
+  if (steps.length < expected) reasons.push(`단계 ${steps.length}/${expected} 만 확인됨`);
   const failed = steps.filter((s) => s.status !== "Completed");
   if (failed.length) reasons.push(`채점 미통과/미완 단계: ${failed.map((s) => `${s.name}(${s.status})`).join(", ")}`);
 

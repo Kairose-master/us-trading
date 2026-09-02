@@ -6,6 +6,7 @@ import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel, type HandselConnector } from "./handsel-client.js";
 import { buildDecision, delegationHeadline, renderConversation, DEFAULT_GATE, type DecisionRecord } from "./decision.js";
+import { OFFICE_ROSTER, OFFICE_STEP_COUNT, OFFICE_TEMPLATE_ID } from "./roster.js";
 
 /**
  * 오피스 결정 루프 — "모델들이 대화하고, 자율 결정하고, 그 결정이 매매가 된다."
@@ -43,6 +44,8 @@ export interface OfficeRun {
   markets?: string[];
   /** escrow 재시도 횟수 (escrow-pending에서만 의미) */
   retries?: number;
+  /** 이 run이 고용한 오피스의 단계 수 (구 4단계 run.json에는 없다 → 4) */
+  steps?: number;
   budgetUsd: number;
   headline: string | null;
   decision: DecisionRecord | null;
@@ -64,21 +67,16 @@ function save(run: OfficeRun, extra?: { conversation?: string }) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * 오피스 역할(노드) → 각자 전용 실도구. 네 역할이 같은 툴을 나눠 쓰지 않는다:
- *  chart  → upbit_market_report  (실캔들: 추세·지지/저항·모멘텀, HMM/GARCH 한 줄)
- *  news   → upbit_news_report    (Google News RSS: 출처·날짜·근거어, 없으면 "없음")
- *  quant  → upbit_quant_report   (HMM belief·전이행렬, GARCH, VaR/ES/MDD, Kelly 상한)
- *  rebal  → upbit_rebalance_draft(비중 초안 — 위 셋의 산출물을 브리프로 받아 결정 JSON)
- */
+/** 로스터(office/roster.ts) → hire_office 커넥터. 툴이 있는 역할만; 위원장은 플랫폼 에이전트 */
 function connectors(): HandselConnector[] {
   const server_url = config.OFFICE_WORKER_URL;
-  return [
-    { role_id: "chart-analyst", server_url, tool_name: "upbit_market_report", mode: "assisted", label: "us-trading worker — chart desk" },
-    { role_id: "news-analyst", server_url, tool_name: "upbit_news_report", mode: "assisted", label: "us-trading worker — news desk" },
-    { role_id: "quant-modeler", server_url, tool_name: "upbit_quant_report", mode: "assisted", label: "us-trading worker — quant desk (HMM/GARCH/Kelly)" },
-    { role_id: "rebalance-planner", server_url, tool_name: "upbit_rebalance_draft", mode: "assisted", label: "us-trading worker — rebalance desk" },
-  ];
+  return OFFICE_ROSTER.filter((r) => r.tool).map((r) => ({
+    role_id: r.id,
+    server_url,
+    tool_name: r.tool!,
+    mode: "assisted" as const,
+    label: `us-trading worker — ${r.name}`,
+  }));
 }
 
 class OfficeLoop {
@@ -132,7 +130,7 @@ class OfficeLoop {
     const coins = pool.map((m) => m.replace("KRW-", "")).join(", ");
     const scope =
       `${pool.join(", ")} — Upbit crypto basket (${coins}). ` +
-      `Final deliverable of the Rebalance proposal MUST end with a fenced json block exactly like ` +
+      `The FINAL deliverable (Investment committee decision) MUST end with a fenced json block exactly like ` +
       "```json\n{\"targets\":[{\"market\":\"KRW-XXX\",\"weightPct\":0}],\"cashPct\":0}\n```" +
       ` — one entry per basket market with target weight percent (0 if excluded), weights sum ≤ 100, per-market cap ${DEFAULT_GATE.maxWeightPct}%. This block is machine-read by the trading desk (paper ledger).`;
     return { scope, markets: pool };
@@ -169,6 +167,7 @@ class OfficeLoop {
       scope: "",
       markets: [],
       retries: 0,
+      steps: OFFICE_STEP_COUNT,
       budgetUsd,
       headline: null,
       decision: null,
@@ -183,7 +182,7 @@ class OfficeLoop {
 
       // 1) 고용 (드래프트만 — 돈 안 움직임)
       const hired = await handsel.hireOffice({
-        templateId: "securities-desk",
+        templateId: OFFICE_TEMPLATE_ID,
         scope: built.scope,
         budgetUsd,
         office: config.OFFICE_SLOT,
@@ -259,7 +258,7 @@ class OfficeLoop {
       // 4) 결정
       run.phase = "deciding";
       const output = await handsel.getDelegationOutput(run.id);
-      const decision = buildDecision({ delegationId: run.id, output, statusText, gate: { ...DEFAULT_GATE, allowedMarkets: new Set(markets) } });
+      const decision = buildDecision({ delegationId: run.id, output, statusText, expectedSteps: run.steps ?? 4, gate: { ...DEFAULT_GATE, allowedMarkets: new Set(markets) } });
       run.decision = decision;
       const conversation = renderConversation({ delegationId: run.id, headline, decision, output });
       save(run, { conversation });

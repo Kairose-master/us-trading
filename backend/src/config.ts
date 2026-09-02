@@ -64,7 +64,7 @@ const Env = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true"),
-  OFFICE_BUDGET_USD: z.coerce.number().default(4),
+  OFFICE_BUDGET_USD: z.coerce.number().default(10),
   OFFICE_INTERVAL_H: z.coerce.number().default(24),
   OFFICE_ALLOW_REAL_MONEY: z
     .string()

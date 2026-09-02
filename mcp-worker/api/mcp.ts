@@ -839,6 +839,179 @@ const CRYPTO_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "upbit_flow_report",
+    description:
+      "Order-flow / microstructure desk for the coins in the query (default BTC/ETH): live Upbit order book (best bid/ask, spread in bps, depth imbalance over the top 15 levels), taker buy-vs-sell volume over the last 200 trades, 24h traded value in KRW, and the 5-day volume trend from real daily candles. Real public Upbit data at call time — nothing modeled, nothing invented.",
+    inputSchema: QUERY_SCHEMA("Coins, e.g. 'BTC SOL flow'"),
+    handler: async (query) => {
+      const coins = extractCoins(query).slice(0, 5);
+      const sections = await Promise.all(
+        coins.map(async (coin) => {
+          const market = `KRW-${coin}`;
+          const [ob, trades, candles] = await Promise.all([
+            fetch(`https://api.upbit.com/v1/orderbook?markets=${market}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null) as Promise<Array<{ total_bid_size: number; total_ask_size: number; orderbook_units: Array<{ ask_price: number; bid_price: number; ask_size: number; bid_size: number }> }> | null>,
+            fetch(`https://api.upbit.com/v1/trades/ticks?market=${market}&count=200`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null) as Promise<Array<{ trade_price: number; trade_volume: number; ask_bid: "ASK" | "BID"; timestamp: number }> | null>,
+            upbitDayCandles(market, 30).catch(() => [] as UpbitCandle[]),
+          ]);
+          const o = ob?.[0];
+          if (!o || !trades || trades.length === 0) return `## ${market} — no order-book/trade data (skipped, not invented)`;
+          const units = o.orderbook_units.slice(0, 15);
+          const bestBid = units[0].bid_price;
+          const bestAsk = units[0].ask_price;
+          const mid = (bestBid + bestAsk) / 2;
+          const spreadBps = ((bestAsk - bestBid) / mid) * 1e4;
+          const bidDepth = units.reduce((a, u) => a + u.bid_size * u.bid_price, 0);
+          const askDepth = units.reduce((a, u) => a + u.ask_size * u.ask_price, 0);
+          const imbalance = (bidDepth - askDepth) / (bidDepth + askDepth);
+          let buyVol = 0, sellVol = 0;
+          for (const t of trades) (t.ask_bid === "BID" ? (buyVol += t.trade_volume * t.trade_price) : (sellVol += t.trade_volume * t.trade_price));
+          const takerRatio = buyVol / Math.max(1, buyVol + sellVol);
+          const span = trades.length > 1 ? (trades[0].timestamp - trades[trades.length - 1].timestamp) / 1000 : 0;
+          const vols = candles.map((c) => c.v * c.c);
+          const v5 = vols.slice(-5).reduce((a, b) => a + b, 0) / Math.max(1, Math.min(5, vols.length));
+          const v20 = vols.slice(-25, -5).reduce((a, b) => a + b, 0) / Math.max(1, Math.min(20, Math.max(0, vols.length - 5)));
+          return [
+            `## ${market} — mid ₩${mid.toLocaleString()} · ts=${new Date().toISOString()}`,
+            `  book: best bid ₩${bestBid.toLocaleString()} / ask ₩${bestAsk.toLocaleString()} · spread ${spreadBps.toFixed(2)} bps · top-15 depth bid ₩${Math.round(bidDepth).toLocaleString()} vs ask ₩${Math.round(askDepth).toLocaleString()} · imbalance ${(imbalance * 100).toFixed(1)}% (${imbalance > 0.1 ? "bid-heavy" : imbalance < -0.1 ? "ask-heavy" : "balanced"})`,
+            `  tape (last ${trades.length} trades, ${span.toFixed(0)}s): taker buy ₩${Math.round(buyVol).toLocaleString()} vs sell ₩${Math.round(sellVol).toLocaleString()} · buy share ${(takerRatio * 100).toFixed(1)}% (${takerRatio > 0.58 ? "aggressive buying" : takerRatio < 0.42 ? "aggressive selling" : "two-sided"})`,
+            `  volume trend: 5-day avg value ₩${Math.round(v5).toLocaleString()} vs prior-20-day avg ₩${Math.round(v20).toLocaleString()} → ${v20 > 0 ? ((v5 / v20 - 1) * 100).toFixed(0) : "n/a"}% (${candles.length} candles)`,
+          ].join("\n");
+        }),
+      );
+      return [`# Crypto order-flow desk`, ...sections, `[data] Upbit public API (orderbook, trades/ticks, candles/days) · ts=${new Date().toISOString()}`].join("\n\n");
+    },
+  },
+  {
+    name: "macro_report",
+    description:
+      "Macro / cross-asset desk: real Yahoo Finance daily closes for the US dollar index (DX-Y.NYB), S&P 500 (^GSPC), VIX (^VIX), US 10y yield (^TNX), gold (GC=F), Bitcoin (BTC-USD) and Ethereum (ETH-USD) — last close, 1-day and 20-day change, 60-day range position, plus the 20-day return correlation of BTC with the S&P 500 and the dollar. A risk-on/risk-off read grounded in those numbers only. Nothing invented.",
+    inputSchema: QUERY_SCHEMA("Free text — the assets are fixed; the query is passed through as context"),
+    handler: async () => {
+      const assets: Array<[string, string]> = [["DX-Y.NYB", "US dollar index"], ["^GSPC", "S&P 500"], ["^VIX", "VIX"], ["^TNX", "US 10y yield"], ["GC=F", "Gold"], ["BTC-USD", "Bitcoin"], ["ETH-USD", "Ethereum"]];
+      const series = await Promise.all(
+        assets.map(async ([sym, label]) => {
+          try {
+            const res = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?range=3mo&interval=1d`, {
+              headers: { "User-Agent": "Mozilla/5.0" },
+              signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            });
+            if (!res.ok) return null;
+            const d = (await res.json()) as { chart?: { result?: Array<{ timestamp?: number[]; indicators?: { quote?: Array<{ close?: Array<number | null> }> } }> } };
+            const r = d.chart?.result?.[0];
+            const closes = (r?.indicators?.quote?.[0]?.close ?? []).map((c) => (c == null ? NaN : c));
+            const ts = r?.timestamp ?? [];
+            const pts = closes.map((c, i) => ({ c, t: ts[i] })).filter((p) => Number.isFinite(p.c));
+            return pts.length >= 25 ? { sym, label, pts } : null;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const lines: string[] = [];
+      const rets = new Map<string, number[]>();
+      const skipped: string[] = [];
+      series.forEach((sr, i) => {
+        if (!sr) { skipped.push(assets[i][0]); return; }
+        const c = sr.pts.map((p) => p.c);
+        const last = c[c.length - 1], d1 = c[c.length - 2], d20 = c[c.length - 21];
+        const win = c.slice(-60);
+        const lo = Math.min(...win), hi = Math.max(...win);
+        const pos = hi > lo ? ((last - lo) / (hi - lo)) * 100 : 50;
+        const date = new Date((sr.pts[sr.pts.length - 1].t ?? 0) * 1000).toISOString().slice(0, 10);
+        lines.push(`  ${sr.label} (${sr.sym}): ${last.toFixed(2)} @${date} · 1d ${(((last / d1) - 1) * 100).toFixed(2)}% · 20d ${(((last / d20) - 1) * 100).toFixed(2)}% · 60d range position ${pos.toFixed(0)}%`);
+        const rr: number[] = [];
+        for (let k = c.length - 20; k < c.length; k++) rr.push(Math.log(c[k] / c[k - 1]));
+        rets.set(sr.sym, rr);
+      });
+      const corr = (a?: number[], b?: number[]) => {
+        if (!a || !b || a.length !== b.length) return null;
+        const ma = a.reduce((x, y) => x + y, 0) / a.length, mb = b.reduce((x, y) => x + y, 0) / b.length;
+        let num = 0, da = 0, db = 0;
+        for (let i = 0; i < a.length; i++) { num += (a[i] - ma) * (b[i] - mb); da += (a[i] - ma) ** 2; db += (b[i] - mb) ** 2; }
+        return da > 0 && db > 0 ? num / Math.sqrt(da * db) : null;
+      };
+      const cSpx = corr(rets.get("BTC-USD"), rets.get("^GSPC"));
+      const cDxy = corr(rets.get("BTC-USD"), rets.get("DX-Y.NYB"));
+      const vix = series.find((s) => s?.sym === "^VIX");
+      const vixLast = vix ? vix.pts[vix.pts.length - 1].c : NaN;
+      const spx = series.find((s) => s?.sym === "^GSPC");
+      const spx20 = spx ? spx.pts[spx.pts.length - 1].c / spx.pts[spx.pts.length - 21].c - 1 : NaN;
+      const regime = Number.isFinite(vixLast) && Number.isFinite(spx20) ? (vixLast < 20 && spx20 > 0 ? "risk-on (VIX < 20, S&P up over 20d)" : vixLast > 25 || spx20 < -0.03 ? "risk-off (VIX elevated or S&P down over 20d)" : "mixed") : "undetermined (missing series)";
+      return [
+        `# Macro / cross-asset desk`,
+        lines.join("\n"),
+        `  BTC 20-day return correlation: vs S&P 500 ${cSpx == null ? "n/a" : cSpx.toFixed(2)} · vs dollar index ${cDxy == null ? "n/a" : cDxy.toFixed(2)}`,
+        `  read: ${regime}`,
+        `[data] Yahoo Finance v8 chart (daily closes, 3mo) · ts=${new Date().toISOString()}${skipped.length ? ` | no data (skipped, not invented): ${skipped.join(", ")}` : ""}`,
+      ].join("\n\n");
+    },
+  },
+  {
+    name: "basket_risk_report",
+    description:
+      "Risk desk for a basket of Upbit coins (2-8 in the query): 60-day daily-return correlation matrix, per-coin volatility, basket volatility and historical VaR95/ES95 under equal weights AND inverse-volatility weights, worst 60-day drawdown of the equal-weight basket, and the diversification ratio. Every number is computed at call time from real Upbit daily candles — nothing invented. Says plainly when the basket is effectively one bet.",
+    inputSchema: QUERY_SCHEMA("Coins, e.g. 'BTC ETH SOL XRP'"),
+    handler: async (query) => {
+      const coins = extractCoins(query).slice(0, 8);
+      const data = await Promise.all(coins.map(async (coin) => ({ coin, candles: await upbitDayCandles(`KRW-${coin}`, 61).catch(() => [] as UpbitCandle[]) })));
+      const ok = data.filter((d) => d.candles.length >= 40);
+      const skipped = data.filter((d) => d.candles.length < 40).map((d) => `KRW-${d.coin}`);
+      if (ok.length < 2) return `Need at least 2 coins with 40+ daily candles — got ${ok.length}.\n[data] Upbit public API · skipped: ${skipped.join(", ") || "none"}`;
+      // 공통 날짜로 정렬
+      const n = Math.min(...ok.map((d) => d.candles.length));
+      const R = ok.map((d) => {
+        const c = d.candles.slice(-n).map((x) => x.c);
+        const r: number[] = [];
+        for (let i = 1; i < c.length; i++) r.push(Math.log(c[i] / c[i - 1]));
+        return r;
+      });
+      const m = R.length, T = R[0].length;
+      const mean = R.map((r) => r.reduce((a, b) => a + b, 0) / T);
+      const sd = R.map((r, i) => Math.sqrt(r.reduce((a, x) => a + (x - mean[i]) ** 2, 0) / T));
+      const corr = R.map((ri, i) => R.map((rj, j) => {
+        let s = 0;
+        for (let t = 0; t < T; t++) s += (ri[t] - mean[i]) * (rj[t] - mean[j]);
+        return sd[i] > 0 && sd[j] > 0 ? s / (T * sd[i] * sd[j]) : 0;
+      }));
+      const basketStats = (w: number[]) => {
+        const rets: number[] = [];
+        for (let t = 0; t < T; t++) rets.push(w.reduce((a, wi, i) => a + wi * R[i][t], 0));
+        const mu = rets.reduce((a, b) => a + b, 0) / T;
+        const vol = Math.sqrt(rets.reduce((a, x) => a + (x - mu) ** 2, 0) / T);
+        const sorted = [...rets].sort((a, b) => a - b);
+        const var95 = -sorted[Math.floor(T * 0.05)];
+        const tail = sorted.slice(0, Math.max(1, Math.floor(T * 0.05)));
+        const es95 = -tail.reduce((a, b) => a + b, 0) / tail.length;
+        let eq = 1, peak = 1, mdd = 0;
+        for (const r of rets) { eq *= Math.exp(r); peak = Math.max(peak, eq); mdd = Math.max(mdd, (peak - eq) / peak); }
+        const wavg = w.reduce((a, wi, i) => a + wi * sd[i], 0);
+        return { vol, var95, es95, mdd, divRatio: vol > 0 ? wavg / vol : 1 };
+      };
+      const wEq = Array(m).fill(1 / m);
+      const inv = sd.map((s) => (s > 0 ? 1 / s : 0));
+      const invSum = inv.reduce((a, b) => a + b, 0);
+      const wInv = inv.map((x) => x / invSum);
+      const eq = basketStats(wEq), iv = basketStats(wInv);
+      const avgCorr = m > 1 ? corr.flatMap((row, i) => row.filter((_, j) => j > i)).reduce((a, b) => a + b, 0) / ((m * (m - 1)) / 2) : 0;
+      const names = ok.map((d) => d.coin);
+      const header = `        ${names.map((c) => c.padStart(5)).join(" ")}`;
+      const rows = corr.map((row, i) => `  ${names[i].padStart(5)} ${row.map((x) => x.toFixed(2).padStart(5)).join(" ")}`);
+      return [
+        `# Basket risk desk — ${names.map((c) => `KRW-${c}`).join(", ")} (${T} daily returns to ${ok[0].candles[ok[0].candles.length - 1].t})`,
+        `  per-coin daily σ: ${names.map((c, i) => `${c} ${(sd[i] * 100).toFixed(2)}%`).join(" · ")}`,
+        `  60-day return correlation matrix:\n${header}\n${rows.join("\n")}`,
+        `  average pairwise correlation ${avgCorr.toFixed(2)} → ${avgCorr > 0.75 ? "this basket is effectively ONE bet — diversification is cosmetic" : avgCorr > 0.5 ? "moderately co-moving" : "genuinely diversified"}`,
+        `  equal weights: σ ${(eq.vol * 100).toFixed(2)}%/d · VaR95 ${(eq.var95 * 100).toFixed(2)}% · ES95 ${(eq.es95 * 100).toFixed(2)}% · worst drawdown ${(eq.mdd * 100).toFixed(1)}% · diversification ratio ${eq.divRatio.toFixed(2)}`,
+        `  inverse-vol weights (${names.map((c, i) => `${c} ${(wInv[i] * 100).toFixed(0)}%`).join(", ")}): σ ${(iv.vol * 100).toFixed(2)}%/d · VaR95 ${(iv.var95 * 100).toFixed(2)}% · ES95 ${(iv.es95 * 100).toFixed(2)}% · worst drawdown ${(iv.mdd * 100).toFixed(1)}% · diversification ratio ${iv.divRatio.toFixed(2)}`,
+        `[data] Upbit public API candles/days · computed at call time · ts=${new Date().toISOString()}${skipped.length ? ` | no data (skipped, not invented): ${skipped.join(", ")}` : ""}`,
+      ].join("\n\n");
+    },
+  },
+  {
     name: "upbit_backtest_report",
     description:
       "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: momentum-20, vol-regime (regime/HMM signal lives in the backend backtest). No RSI-style indicators. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead; fee 0.05% + slippage 0.05% per side included.",
@@ -909,7 +1082,7 @@ export default async function handler(req: any, res: any) {
         rpcResult(msg.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "us-trading-mcp-worker", version: "1.5.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
+          serverInfo: { name: "us-trading-mcp-worker", version: "1.6.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
         }),
       );
     case "notifications/initialized":
