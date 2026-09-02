@@ -71,6 +71,9 @@ const Env = z.object({
     .transform((v) => v === "true"),
   OFFICE_BUDGET_USD: z.coerce.number().default(10),
   OFFICE_INTERVAL_H: z.coerce.number().default(24),
+  // ===== 진화 (PyGAD) — 페이퍼 개체군, 실캔들 시험 =====
+  EVOLUTION: z.string().default("true").transform((v) => v === "true"),
+  EVOLUTION_INTERVAL_H: z.coerce.number().default(6),
   OFFICE_ALLOW_REAL_MONEY: z
     .string()
     .default("false")

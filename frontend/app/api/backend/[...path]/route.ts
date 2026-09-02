@@ -31,12 +31,14 @@ const ALLOW_GET: RegExp[] = [
   /^auth\/(config|me)$/,
   /^keys$/,
   /^ops\/supervisor(\/logs)?$/,
+  /^evolution(\/(agents(\/[^/]+)?|log|lineage))?$/,
 ]
 const ALLOW_WRITE: Array<{ method: string; re: RegExp }> = [
   { method: "POST", re: /^auth\/(register|login|logout)$/ },
   { method: "PUT", re: /^keys\/(upbit|kis)$/ },
   { method: "DELETE", re: /^keys\/(upbit|kis)$/ },
   { method: "POST", re: /^ops\/supervisor\/(pause|resume|heal|auto-recovery|[A-Za-z0-9_-]+\/break)$/ },
+  { method: "POST", re: /^evolution\/(step|deploy)$/ },
 ]
 
 async function forward(req: NextRequest, rel: string, method: string, body?: string) {

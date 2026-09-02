@@ -75,6 +75,7 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 - **가짜 미국주식 포지션 제거.** 보유종목·대시보드는 `/api/account/holdings` 실기록(크립토 페이퍼 장부 + 미국 장부 + Yahoo 환율)만 보여준다.
 - **계정·금고.** 로그인 후 Upbit/KIS 키를 AES-256-GCM으로 서버에 저장 — `docs/accounts.md`.
 - **증권 오피스 9역할 플로어.** 차트·뉴스·수급·매크로 → 퀀트 ⇄ 리스크(검토) → 리밸런스 ⇄ 레드팀(검토) → 위원장. `docs/office-loop.md`.
+- **진화 캠페인.** 전략 유전자 개체군이 본 적 없는 60일 실캔들로 시험을 보고, 서로 자본을 위탁하고, 성과 낸 개체는 PyGAD로 복제되고, 굶주리거나 도태된 개체는 죽는다. Handsel 오피스는 lineage mandate·Automaton으로 같은 원리. `/evolution`, `docs/evolution.md`.
 - **Self-healing 수집 감독자.** Yahoo·Upbit·뉴스 수집을 한 감독자가 돌린다 — 지수 백오프 재시도, 회복 시 실제 백필(1분봉 재생·RSS 재수집), BREAK NODE 장애 주입, 오케스트레이터 로그. `docs/self-healing.md`.
 - **파이프라인 모니터.** `/pipeline`이 릴 수준의 실시간 모니터 — 스테이지 열, 빛 하나 = 실제 마이크로배치, 깊이 블러, 노드 상세·라이브 행.
 - **옵시디언 스타일 그래프.** `/office`에서 노드(에이전트·툴·escrow·장부·마켓)와 엣지(핸드오프·검토·결정), 실시간 채점 링.

@@ -17,6 +17,7 @@ import { cryptoDesk } from "./crypto/desk.js";
 import { scannerServer } from "./crypto/scanner-server.js";
 import { startYahooTicks } from "./data/yahoo.js";
 import { officeLoop } from "./office/loop.js";
+import { evolution } from "./evolution/population.js";
 
 const app = express();
 app.use(cors({ origin: config.corsOrigins, credentials: false }));
@@ -61,6 +62,7 @@ autoTrader.attach();
 cryptoDesk.start();
 scannerServer.startAutoLoop();
 officeLoop.startAutoLoop();
+evolution.startAutoLoop();
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {

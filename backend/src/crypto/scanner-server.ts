@@ -72,6 +72,11 @@ class ScannerServer {
   private running: Promise<ScanResult> | null = null;
   lastRotation: { ts: string; orders: number; skipped: string[] } | null = null;
 
+  /** 진화 엔진 등 외부 소비자용 — 같은 캐시를 읽는다 */
+  series(): Promise<{ series: Map<string, BtCandle[]>; valueOf: Map<string, number>; krwMarkets: number }> {
+    return this.loadSeries();
+  }
+
   /** 유동성 상위 유니버스의 캔들 시리즈 (스캔·백테스트 공용, 캐시) */
   private async loadSeries(): Promise<{ series: Map<string, BtCandle[]>; valueOf: Map<string, number>; krwMarkets: number }> {
     if (this.seriesCache && Date.now() - this.seriesCache.at < SCAN_TTL_MS) {

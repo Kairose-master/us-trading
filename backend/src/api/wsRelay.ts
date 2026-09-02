@@ -7,6 +7,7 @@ import { logger } from "../core/logger.js";
 import { pipeline } from "../pipeline/engine.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { supervisor } from "../core/supervisor.js";
+import { evolution } from "../evolution/population.js";
 
 /**
  * 프론트용 WebSocket 릴레이 (/ws/live).
@@ -69,6 +70,8 @@ export function attachWsRelay(server: Server) {
   // 수집 감독자 — 소스 상태·오케스트레이터 로그
   supervisor.on("snapshot", (snap) => broadcast("ops", snap));
   supervisor.on("log", (line) => broadcast("ops:log", line));
+  evolution.on("log", (line) => broadcast("evolution:log", line));
+  evolution.on("generation", (rec) => broadcast("evolution", rec));
 
   kisWs.on("tick", (t) => {
     const q = state.quotes.get(t.symbol);

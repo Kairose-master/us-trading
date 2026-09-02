@@ -392,3 +392,99 @@ export async function supervisorAutoRecovery(on: boolean): Promise<{ ok: true }>
 export async function breakSource(id: string, seconds: number): Promise<{ ok: true }> {
   return write(`ops/supervisor/${encodeURIComponent(id)}/break`, "POST", { seconds })
 }
+
+// ===== 진화 — 전략 개체군 (PyGAD, 페이퍼) =====
+
+export interface EvoGenes {
+  momWindow: number
+  volWindow: number
+  pBullMin: number
+  topK: number
+  capPct: number
+  rebalanceDays: number
+  volTargetPct: number
+  exposureMax: number
+  peerAlloc: number
+  peerTopN: number
+}
+export interface EvoAgent {
+  id: string
+  name: string
+  archetype: string
+  genes: EvoGenes
+  vector: number[]
+  generationBorn: number
+  bornAt: string
+  parents: string[]
+  alive: boolean
+  diedAt: string | null
+  causeOfDeath: string | null
+  capitalKrw: number
+  seedKrw: number
+  peakKrw: number
+  exam: { fitness: number; sharpe: number; totalReturnPct: number; maxDrawdownPct: number; rebalances: number; avgExposure: number } | null
+  fitnessHistory: Array<{ gen: number; fitness: number }>
+  capitalHistory: Array<{ date: string; capitalKrw: number }>
+  lastWeights: Array<{ market: string; weightPct: number }>
+  peers: string[]
+  bottomStreak: number
+  children: number
+}
+export interface EvoGeneration {
+  gen: number
+  at: string
+  examWindow: { from: string; to: string }
+  alive: number
+  births: number
+  deaths: number
+  topFitness: number
+  meanFitness: number
+  championId: string | null
+  engine: string
+  vaultKrw: number
+  totalCapitalKrw: number
+}
+export interface EvoStatus {
+  enabled: boolean
+  intervalHours: number
+  generation: number
+  running: boolean
+  lastGenerationAt: string | null
+  lastMarkedDate: string | null
+  alive: number
+  total: number
+  popMax: number
+  vaultKrw: number
+  totalCapitalKrw: number
+  seedKrw: number
+  examDays: number
+  champion: { id: string; name: string; archetype: string; fitness: number | null } | null
+  archetypes: Array<{ archetype: string; alive: number }>
+  genes: Array<{ key: keyof EvoGenes; min: number; max: number; int: boolean; label: string }>
+  rules: { starveRatio: number; bottomQuantile: number; bottomStreakDeath: number; minAgeGens: number; childShare: number }
+  squad: { members: Array<{ id: string; name: string; archetype: string; fitness: number; capitalKrw: number; lastWeights: Array<{ market: string; weightPct: number }> }>; targets: Array<{ market: string; weightPct: number }> }
+  history: EvoGeneration[]
+}
+export interface EvoLog {
+  ts: string
+  level: "info" | "ok" | "warn" | "error"
+  message: string
+}
+export async function getEvolution(): Promise<EvoStatus> {
+  return req("evolution")
+}
+export async function getEvoAgents(): Promise<EvoAgent[]> {
+  return req("evolution/agents")
+}
+export async function getEvoLog(limit = 80): Promise<EvoLog[]> {
+  return req(`evolution/log?limit=${limit}`)
+}
+export async function getEvoLineage(): Promise<{ configured: boolean; report: string | null; automaton: string | null }> {
+  return req("evolution/lineage")
+}
+export async function evoStep(): Promise<EvoGeneration> {
+  return write("evolution/step", "POST", {})
+}
+export async function evoDeploy(): Promise<{ squad: EvoStatus["squad"]; result: { orders: unknown[]; skipped: string[]; error?: string } }> {
+  return write("evolution/deploy", "POST", {})
+}

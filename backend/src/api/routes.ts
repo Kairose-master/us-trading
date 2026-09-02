@@ -17,6 +17,7 @@ import { scannerServer } from "../crypto/scanner-server.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
 import { supervisor, type Market as SupMarket } from "../core/supervisor.js";
+import { evolution } from "../evolution/population.js";
 import { requireSession } from "../auth/routes.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
@@ -520,5 +521,43 @@ router.post("/ops/supervisor/:id/break", requireSession, (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     res.status(404).json({ error: (e as Error).message });
+  }
+});
+
+// ===== 진화 — 전략 개체군 (페이퍼) =====
+
+router.get("/evolution", (_req, res) => {
+  res.json({ ...evolution.status(), squad: evolution.squad(), history: evolution.history().slice(-120) });
+});
+router.get("/evolution/agents", (_req, res) => {
+  res.json(evolution.agents().map((a) => ({ ...a, capitalHistory: a.capitalHistory.slice(-60), fitnessHistory: a.fitnessHistory.slice(-60) })));
+});
+router.get("/evolution/agents/:id", (req, res) => {
+  const a = evolution.agent(String(req.params.id));
+  if (!a) return res.status(404).json({ error: "개체 없음" });
+  res.json(a);
+});
+router.get("/evolution/log", (req, res) => {
+  res.json(evolution.logs(Number(req.query.limit ?? 100)));
+});
+router.get("/evolution/lineage", async (_req, res) => {
+  try {
+    res.json(await evolution.handselLineage());
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
+});
+router.post("/evolution/step", requireSession, async (_req, res) => {
+  try {
+    res.json(await evolution.step("operator"));
+  } catch (e) {
+    res.status(409).json({ error: (e as Error).message });
+  }
+});
+router.post("/evolution/deploy", requireSession, async (_req, res) => {
+  try {
+    res.json(await evolution.deploySquad("operator deploy"));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
   }
 });
