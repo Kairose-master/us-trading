@@ -47,10 +47,29 @@ export interface UpbitCandle {
   candle_acc_trade_volume: number;
 }
 
+// 공개 API 재시도 — 429(레이트리밋)·5xx·타임아웃은 백오프 후 최대 3회.
+// 호스팅(공유 IP·해외 리전)에서 캔들 요청 절반이 조용히 빠지던 것을 실측한 뒤 추가.
+const RETRIES = 3;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(TIMEOUT) });
-  if (!res.ok) throw new Error(`Upbit ${path} → HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  return (await res.json()) as T;
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(TIMEOUT) });
+      if (res.ok) return (await res.json()) as T;
+      const body = (await res.text()).slice(0, 200);
+      lastErr = new Error(`Upbit ${path} → HTTP ${res.status}: ${body}`);
+      if (res.status !== 429 && res.status < 500) throw lastErr; // 4xx(429 제외)는 재시도 무의미
+      const retryAfter = Number(res.headers.get("retry-after")) || 0;
+      await sleep(Math.max(retryAfter * 1000, 400 * 2 ** attempt));
+    } catch (e) {
+      lastErr = e as Error;
+      if (attempt === RETRIES) break;
+      await sleep(400 * 2 ** attempt);
+    }
+  }
+  throw lastErr ?? new Error(`Upbit ${path} 실패`);
 }
 
 export const upbit = {

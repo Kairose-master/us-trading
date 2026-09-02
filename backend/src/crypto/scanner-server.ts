@@ -26,7 +26,8 @@ const UNIVERSE_SIZE = 30;
 const CANDLE_DAYS = 200;
 const SCAN_TTL_MS = 10 * 60_000;
 const BT_TTL_MS = 60 * 60_000;
-const CONCURRENCY = 4;
+// 동시 2 — 업비트 공개 레이트리밋(초당 10회/IP)을 공유 IP 호스팅에서도 안 넘기게
+const CONCURRENCY = 2;
 const AUTO_ROTATE_MS = 24 * 60 * 60_000;
 
 export interface ScanResult {
@@ -113,6 +114,9 @@ class ScannerServer {
       }
       scores.sort((a, b) => b.score - a.score);
       const portfolio = buildTargets(scores);
+      if (scores.length < UNIVERSE_SIZE * 0.7) {
+        logger.warn("스캐너 유니버스 결손 — 캔들 수집 실패가 많다", { scored: scores.length, wanted: UNIVERSE_SIZE });
+      }
       const data: ScanResult = {
         ts: new Date().toISOString(),
         krwMarkets,
