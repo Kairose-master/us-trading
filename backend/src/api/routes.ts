@@ -447,6 +447,15 @@ router.get("/crypto/scanner/backtest", async (req, res) => {
   }
 });
 
+// 페이퍼 장부 초기화 — 운영자 토큰 직접 호출 전용 (대시보드 프록시 허용 목록에 없다). 포지션·주문·에쿼티 기록을 지우고 시드에서 다시 시작
+router.post("/crypto/paper/reset", (req, res) => {
+  const start = req.body?.startKrw !== undefined ? Number(req.body.startKrw) : undefined;
+  if (start !== undefined && !(start > 0)) return res.status(400).json({ error: "startKrw는 양수" });
+  const r = cryptoDesk.resetPaper(start);
+  controlPlane.onLedgerReset();
+  res.json({ ok: true, ...r, control: { policy: controlPlane.status().policy } });
+});
+
 router.post("/crypto/scanner/rotate", requireSession, async (_req, res) => {
   try {
     const r = await scannerServer.rotate();
@@ -591,6 +600,9 @@ router.get("/control", (_req, res) => {
   res.json(controlPlane.status());
 });
 router.post("/control/autopilot", requireSession, (req, res) => { controlPlane.setAutopilot(Boolean(req.body?.on)); res.json({ ok: true }); });
+// 지속 정지/재개 — 사람 손 하나로 전체 자동 집행을 멈추고 다시 켠다 (상태 파일에 남아 재배포에도 유지)
+router.post("/control/pause", requireSession, (req, res) => { controlPlane.pause(String(req.body?.by ?? "operator")); res.json(controlPlane.status()); });
+router.post("/control/resume", requireSession, (_req, res) => { controlPlane.resume(); res.json(controlPlane.status()); });
 router.post("/control/approve", requireSession, async (_req, res) => {
   try { res.json(await controlPlane.approve()); } catch (e) { res.status(409).json({ error: (e as Error).message }); }
 });

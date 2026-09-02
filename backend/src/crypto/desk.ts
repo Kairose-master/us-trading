@@ -161,6 +161,22 @@ class CryptoDesk extends EventEmitter {
     }
   }
 
+  /** 페이퍼 장부 초기화 — 포지션·주문·에쿼티 기록을 전부 지우고 시드에서 다시 시작한다. 실계좌와 무관(페이퍼 전용) */
+  resetPaper(startKrw = PAPER_START_KRW): { startKrw: number; since: string; clearedOrders: number; clearedPositions: number } {
+    const clearedOrders = this.orders.length, clearedPositions = this.paperPositions.size;
+    this.paperCashKrw = startKrw;
+    this.paperPositions = new Map();
+    this.altPrices.clear();
+    this.orders = [];
+    this.orderSeq = 0;
+    this.paperSince = new Date().toISOString();
+    try { mkdirSync(dirname(EQUITY_FILE), { recursive: true }); writeFileSync(EQUITY_FILE, ""); } catch (e) { logger.warn("에쿼티 기록 초기화 실패", { error: (e as Error).message }); }
+    this.saveState();
+    this.snapshotEquity();
+    logger.warn("페이퍼 장부 초기화", { startKrw, clearedOrders, clearedPositions });
+    return { startKrw, since: this.paperSince, clearedOrders, clearedPositions };
+  }
+
   /** 페이퍼 에쿼티 커브 (JSONL → 배열) */
   paperEquity(limit = 2000): Array<{ ts: string; equityKrw: number; cashKrw: number; positions: number }> {
     try {

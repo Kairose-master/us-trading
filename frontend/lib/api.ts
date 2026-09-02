@@ -578,6 +578,11 @@ export interface ControlPolicy {
 }
 export interface ControlStatus {
   autopilot: boolean
+  paused: boolean
+  pausedAt: string | null
+  pausedBy: string | null
+  unattended: boolean
+  scheduler: { everyMin: number; lastTickAt: string | null; nextEligibleAt: string | null }
   mode: string
   killSwitch: boolean
   policy: ControlPolicy
@@ -608,6 +613,12 @@ export async function setEngine(id: ControlEngineId, patch: { enabled?: boolean;
 }
 export async function setControlPolicy(patch: Partial<ControlPolicy>): Promise<{ ok: true }> {
   return write("control/policy", "POST", patch)
+}
+export async function pauseControl(): Promise<ControlStatus> {
+  return write("control/pause", "POST", { by: "operator" })
+}
+export async function resumeControl(): Promise<ControlStatus> {
+  return write("control/resume", "POST", {})
 }
 export async function arbitrateNow(): Promise<ControlDecision | null> {
   return write("control/arbitrate", "POST", {})

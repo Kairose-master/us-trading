@@ -66,6 +66,7 @@ scannerServer.startAutoLoop();
 officeLoop.startAutoLoop();
 evolution.startAutoLoop();
 // 제어 평면: 가격은 크립토 데스크 티커(보유분 폴백 포함), 귀속은 하루 한 번 일봉으로
+controlPlane.startScheduler();
 controlPlane.attachPrices(() => {
   const m = new Map<string, number>();
   for (const q of cryptoDesk.quotes()) m.set(q.market, q.priceKrw);

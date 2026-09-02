@@ -60,6 +60,10 @@ export interface EngineState {
 }
 interface State {
   autopilot: boolean;
+  /** 지속 정지 — 운영자가 명시적으로 멈춘 상태. 재부팅·재배포에도 유지되고, 켜져 있으면 아무것도 집행되지 않는다 */
+  paused: boolean;
+  pausedAt: string | null;
+  pausedBy: string | null;
   engines: Record<EngineId, EngineState>;
   proposals: Proposal[];
   decisions: Decision[];
@@ -70,15 +74,21 @@ interface State {
 }
 
 const FILE = join(process.cwd(), "data", "control", "state.json");
-const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 5, minIntervalMin: 30, proposalTtlH: 30, eta: 8 };
+// 집행 간격 60분·최소 회전 8% — 15분마다 오는 신호 제안까지 전부 집행하면 장부가 잔거래로 오염된다 (2026-09-02 실제로 그랬다)
+const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, minIntervalMin: 60, proposalTtlH: 30, eta: 8 };
 
 function fresh(): State {
   const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0 }])) as unknown as Record<EngineId, EngineState>;
-  return { autopilot: config.CONTROL_AUTOPILOT, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY };
+  return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY };
 }
 function readState(): State {
   try {
-    if (existsSync(FILE)) { const st = JSON.parse(readFileSync(FILE, "utf-8")) as State; st.policy = { ...DEFAULT_POLICY, ...st.policy }; const f = fresh(); for (const e of ENGINES) st.engines[e.id] ??= f.engines[e.id]; return st; }
+    if (existsSync(FILE)) {
+      const st = JSON.parse(readFileSync(FILE, "utf-8")) as State; st.policy = { ...DEFAULT_POLICY, ...st.policy }; const f = fresh(); for (const e of ENGINES) st.engines[e.id] ??= f.engines[e.id];
+      // 오토파일럿은 부팅마다 env 기본값으로 — 사람 손 없이 돌아야 한다. 멈추려면 pause(지속)를 쓴다
+      st.autopilot = config.CONTROL_AUTOPILOT; st.paused ??= false; st.pausedAt ??= null; st.pausedBy ??= null;
+      return st;
+    }
   } catch (e) { logger.warn("제어 평면 상태 복원 실패 — 새로 시작", { error: (e as Error).message }); }
   return fresh();
 }
@@ -95,8 +105,15 @@ class ControlPlane extends EventEmitter {
     const desk = cryptoDesk.status();
     const holdings = desk.positions.map((p) => ({ market: `KRW-${p.symbol}`, weightPct: desk.equityKrw > 0 ? +(((p.qty * p.curKrw) / desk.equityKrw) * 100).toFixed(2) : 0 }));
     const wsum = ENGINES.filter((e) => this.st.engines[e.id].enabled).reduce((a, e) => a + this.st.engines[e.id].weight, 0) || 1;
+    const sinceLastMin = this.st.lastExecutedAt ? (Date.now() - Date.parse(this.st.lastExecutedAt)) / 60_000 : Infinity;
     return {
       autopilot: this.st.autopilot,
+      paused: this.st.paused,
+      pausedAt: this.st.pausedAt,
+      pausedBy: this.st.pausedBy,
+      /** 사람 없이 집행되는 상태인가 — 오토파일럿 ON, 정지 아님, 킬스위치 아님 */
+      unattended: this.st.autopilot && !this.st.paused && !riskManager.killSwitchActive,
+      scheduler: { everyMin: config.CONTROL_TICK_MIN, lastTickAt: this.lastTickAt, nextEligibleAt: Number.isFinite(sinceLastMin) ? new Date(Date.parse(this.st.lastExecutedAt!) + this.st.policy.minIntervalMin * 60_000).toISOString() : null },
       mode: desk.mode,
       killSwitch: riskManager.killSwitchActive,
       policy: this.st.policy,
@@ -162,7 +179,8 @@ class ControlPlane extends EventEmitter {
       contributions: contribs.map(({ engine, weight, confidence, proposalId, targets: tg }) => ({ engine, weight: +weight.toFixed(4), confidence, proposalId, targets: tg })),
       rationale: [...rationale, ...[...who].map(([m, es]) => `${m.replace("KRW-", "")} ← ${[...new Set(es)].join("+")}`)], constraints, turnoverPct: +turnover.toFixed(2), execution: null, by: null,
     };
-    if (riskManager.killSwitchActive) { decision.status = "blocked"; this.push(decision); logger.warn("[control] blocked by kill switch"); return decision; }
+    if (riskManager.killSwitchActive) { decision.status = "blocked"; decision.rationale.push("kill switch active"); this.push(decision); logger.warn("[control] blocked by kill switch"); return decision; }
+    if (this.st.paused) { decision.status = "blocked"; decision.rationale.push(`paused by ${this.st.pausedBy ?? "operator"} at ${this.st.pausedAt ?? "?"} — resume to execute`); this.push(decision); logger.info("[control] blocked — paused"); return decision; }
     const sinceLast = this.st.lastExecutedAt ? (Date.now() - Date.parse(this.st.lastExecutedAt)) / 60_000 : Infinity;
     if (turnover < pol.minTurnoverPct) { decision.status = "skipped"; decision.rationale.push(`turnover ${turnover.toFixed(1)}% < ${pol.minTurnoverPct}% — nothing worth trading`); this.push(decision); return decision; }
     if (sinceLast < pol.minIntervalMin) { decision.rationale.push(`last execution ${sinceLast.toFixed(0)}m ago < ${pol.minIntervalMin}m — held as pending`); this.st.pending = decision; this.emit("pending", decision); return decision; }
@@ -192,7 +210,9 @@ class ControlPlane extends EventEmitter {
     decision.execution = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped, ...(r.error ? { error: r.error } : {}) };
     decision.status = r.error ? "rejected" : "executed"; decision.by = by;
     if (!r.error) { this.st.lastExecutedAt = decision.execution.ts; this.st.proposals = []; }
-    if (this.st.pending?.id === decision.id) this.st.pending = null;
+    // 집행된 결정이 보류 중이던 것을 대체한다 — 같은 id든 재중재로 새로 만든 것이든
+    if (this.st.pending && this.st.pending.id !== decision.id && !r.error) { const old = this.st.pending; old.status = "skipped"; old.rationale.push(`superseded by ${decision.id}`); this.push(old); }
+    if (!r.error || this.st.pending?.id === decision.id) this.st.pending = null;
     this.push(decision);
     logger.info("[control] executed", { by, orders: r.orders.length, error: r.error ?? null });
     this.save(); this.emitState();
@@ -201,6 +221,46 @@ class ControlPlane extends EventEmitter {
 
   approve(): Promise<Decision> { const d = this.st.pending; if (!d) throw new Error("승인 대기 결정 없음"); return this.execute(d, "operator", "approved"); }
   reject(): Decision { const d = this.st.pending; if (!d) throw new Error("승인 대기 결정 없음"); d.status = "rejected"; d.by = "operator"; this.st.pending = null; this.push(d); this.save(); this.emitState(); return d; }
+  /** 장부가 초기화됐다 — 보류 결정·집행 시각을 비우고 정책을 기본값으로. 결정 로그와 엔진 귀속은 남긴다 (역사는 지우지 않는다) */
+  onLedgerReset() {
+    if (this.st.pending) { const d = this.st.pending; d.status = "skipped"; d.rationale.push("paper ledger reset — decision discarded"); this.st.pending = null; this.push(d); }
+    this.st.lastExecutedAt = null;
+    this.st.policy = { ...DEFAULT_POLICY };
+    logger.warn("[control] ledger reset acknowledged — policy back to defaults", this.st.policy);
+    this.save(); this.emitState();
+  }
+
+  /** 지속 정지 — 상태 파일에 남는다. 재배포해도 멈춰 있고, resume 전까지 어떤 결정도 집행되지 않는다 */
+  pause(by = "operator") { this.st.paused = true; this.st.pausedAt = new Date().toISOString(); this.st.pausedBy = by; logger.warn("[control] PAUSED", { by }); this.save(); this.emitState(); }
+  resume() { this.st.paused = false; this.st.pausedAt = null; this.st.pausedBy = null; logger.info("[control] resumed"); this.save(); this.emitState(); void this.arbitrate("resumed").catch(() => undefined); }
+
+  private lastTickAt: string | null = null;
+  private timer: NodeJS.Timeout | null = null;
+  /** 스케줄러 — 사람 없이 돌아가게 하는 부분. 주기마다: 만료 제안 정리 → 보류 결정이 집행 가능해졌으면 새 제안들로 재중재해 집행 */
+  async tick(): Promise<void> {
+    this.lastTickAt = new Date().toISOString();
+    const before = this.st.proposals.length; this.activeProposals();
+    if (this.st.proposals.length !== before) { logger.info("[control] expired proposals dropped", { dropped: before - this.st.proposals.length }); this.save(); }
+    if (this.st.pending && Date.parse(this.st.pending.ts) < Date.now() - this.st.policy.proposalTtlH * 3600_000) {
+      const d = this.st.pending; d.status = "skipped"; d.rationale.push("pending decision expired with its proposals"); this.st.pending = null; this.push(d); this.save(); this.emitState();
+    }
+    if (!this.st.autopilot || this.st.paused || riskManager.killSwitchActive) return;
+    const sinceLast = this.st.lastExecutedAt ? (Date.now() - Date.parse(this.st.lastExecutedAt)) / 60_000 : Infinity;
+    if (this.st.pending && sinceLast >= this.st.policy.minIntervalMin) {
+      logger.info("[control] scheduler — pending decision eligible, re-arbitrating with current proposals");
+      await this.arbitrate("scheduler");
+      this.save(); this.emitState();
+    }
+  }
+  startScheduler() {
+    if (this.timer) return;
+    const every = Math.max(1, config.CONTROL_TICK_MIN) * 60_000;
+    this.timer = setInterval(() => void this.tick().catch((e) => logger.warn("[control] tick failed", { error: (e as Error).message })), every);
+    this.timer.unref();
+    setTimeout(() => void this.tick().catch(() => undefined), 90_000).unref();
+    logger.info("[control] scheduler on", { everyMin: config.CONTROL_TICK_MIN, autopilot: this.st.autopilot, paused: this.st.paused });
+  }
+
   setAutopilot(on: boolean) { this.st.autopilot = on; logger.info("[control] autopilot", { on }); this.save(); this.emitState(); if (on && this.st.pending) void this.arbitrate("autopilot on"); }
   setEngine(id: EngineId, patch: { enabled?: boolean; weight?: number }) {
     const e = this.st.engines[id]; if (!e) throw new Error("unknown engine");

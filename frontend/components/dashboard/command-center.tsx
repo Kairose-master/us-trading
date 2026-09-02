@@ -4,14 +4,16 @@ import { useCallback, useMemo, useState } from "react"
 import Link from "next/link"
 import useSWR from "swr"
 import { toast } from "sonner"
-import { Check, Gavel, Pause, Play, RefreshCw, X } from "lucide-react"
+import { Check, Gavel, OctagonX, Pause, Play, RefreshCw, X } from "lucide-react"
 import {
   ApiError,
   approveDecision,
   arbitrateNow,
   getControl,
   isBackendNotConfigured,
+  pauseControl,
   rejectDecision,
+  resumeControl,
   setAutopilot,
   setEngine,
   type ControlDecision,
@@ -304,10 +306,19 @@ export function CommandCenter() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">command center · 통합 제어 평면</p>
-            <p className="text-sm text-muted-foreground">네 엔진은 제안만 낸다. 중재기가 하나의 목표로 섞고, {s.autopilot ? "오토파일럿이 곧바로" : "운영자가 승인해야"} {s.mode === "paper" ? "페이퍼" : ""} 장부를 회전한다.</p>
+            <p className="text-sm text-muted-foreground">네 엔진은 제안만 낸다. 중재기가 하나의 목표로 섞고, {s.paused ? "지금은 정지 상태라 아무것도 집행하지 않는다." : s.autopilot ? `오토파일럿이 곧바로 ${s.mode === "paper" ? "페이퍼 " : ""}장부를 회전한다. 보류된 결정은 ${s.scheduler.everyMin}분 스케줄러가 집행 간격이 지나면 사람 없이 집행한다.` : "운영자가 승인해야 장부를 회전한다."}</p>
+            <p className={cn("mt-1 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold", s.paused ? "border-rose-500/70 text-rose-400" : s.unattended ? "border-emerald-400/60 text-emerald-300" : "border-amber-400/60 text-amber-300")}>
+              <span className={cn("size-1.5 rounded-full", s.paused ? "bg-rose-400" : s.unattended ? "bg-emerald-400 animate-pulse" : "bg-amber-300")} aria-hidden="true" />
+              {s.paused ? `정지됨 · ${s.pausedBy ?? "operator"} · ${s.pausedAt ? ago(s.pausedAt) : ""}` : s.unattended ? `사람 없이 운행 중 · 가중치 일별 자동 갱신 · 스케줄러 ${s.scheduler.lastTickAt ? ago(s.scheduler.lastTickAt) : "대기"}` : s.killSwitch ? "킬 스위치 — 집행 차단" : "승인제 — 결정마다 사람이 승인"}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {s.killSwitch && <span className="rounded-full border border-rose-500/70 px-2 py-0.5 text-[11px] font-semibold text-rose-400">KILL SWITCH — 집행 차단</span>}
+            {s.paused ? (
+              <button type="button" disabled={busy} onClick={() => void run(() => resumeControl(), "자동 운행 재개 — 보류 결정을 다시 중재")} className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-50"><Play className="size-3.5" aria-hidden="true" /> 자동 운행 재개</button>
+            ) : (
+              <button type="button" disabled={busy} onClick={() => void run(() => pauseControl(), "정지 — 재개 전까지 어떤 결정도 집행되지 않는다 (재배포에도 유지)")} className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/70 px-3 py-1.5 text-xs font-semibold text-rose-400 disabled:opacity-50"><OctagonX className="size-3.5" aria-hidden="true" /> 자동 운행 정지</button>
+            )}
             <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{s.mode === "paper" ? "PAPER" : s.mode.toUpperCase()}</span>
             <button type="button" disabled={busy} onClick={() => void run(() => arbitrateNow(), "중재 실행")} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs disabled:opacity-50"><Gavel className="size-3.5" aria-hidden="true" /> 지금 중재</button>
             <button type="button" disabled={busy} onClick={() => void mutate()} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs" aria-label="새로고침"><RefreshCw className="size-3.5" aria-hidden="true" /></button>
@@ -319,7 +330,7 @@ export function CommandCenter() {
               aria-pressed={s.autopilot}
             >
               {s.autopilot ? <Play className="size-3.5" aria-hidden="true" /> : <Pause className="size-3.5" aria-hidden="true" />}
-              오토파일럿 {s.autopilot ? "ON" : "OFF"}
+              {s.autopilot ? "오토파일럿" : "승인제"}
             </button>
           </div>
         </div>

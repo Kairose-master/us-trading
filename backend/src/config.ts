@@ -52,7 +52,7 @@ const Env = z.object({
   // 알트코인 스캐너 자동 로테이션 (24h 주기, 페이퍼 장부 전용 — 실주문 경로 없음)
   CRYPTO_SCANNER: z
     .string()
-    .default("false")
+    .default("true")
     .transform((v) => v === "true"),
   // ===== 오피스 결정 루프 (Handsel 오피스 대화 → 결정 → 페이퍼 매매) =====
   // Handsel MCP 엔드포인트 — 기본 테스트넷(무가치 USDC). 메인넷(handsel-main)은
@@ -70,14 +70,18 @@ const Env = z.object({
   OFFICE_SLOT: z.coerce.number().default(1),
   OFFICE_LOOP: z
     .string()
-    .default("false")
+    .default("true")
     .transform((v) => v === "true"),
   OFFICE_BUDGET_USD: z.coerce.number().default(10),
   OFFICE_INTERVAL_H: z.coerce.number().default(24),
   // ===== 진화 (PyGAD) — 페이퍼 개체군, 실캔들 시험 =====
   EVOLUTION: z.string().default("true").transform((v) => v === "true"),
   // 제어 평면 자동조종 — 켜면 중재된 결정을 승인 없이 페이퍼 장부에 실행 (실주문은 별도 경계)
+  // 부팅 시 오토파일럿 기본값 — 매 부팅마다 이 값으로 돌아간다. 운영자 토글은 그 부팅 동안만.
+  // 지속적으로 멈추는 스위치는 따로 있다 (POST /control/pause — 상태 파일에 남고 재배포에도 유지)
   CONTROL_AUTOPILOT: z.string().default("true").transform((v) => v === "true"),
+  // 스케줄러 주기(분) — 보류된 결정을 사람 없이 집행하고, 만료된 제안을 치운다
+  CONTROL_TICK_MIN: z.coerce.number().default(5),
   EVOLUTION_INTERVAL_H: z.coerce.number().default(6),
   // 세대마다 스쿼드 타깃을 제어 평면에 제안 (실행은 제어 평면이 정한다)
   EVOLUTION_PROPOSE: z.string().default("true").transform((v) => v === "true"),
