@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
-import { cryptoDesk } from "../crypto/desk.js";
+import { controlPlane } from "../control/plane.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel, type HandselConnector } from "./handsel-client.js";
 import { buildDecision, delegationHeadline, renderConversation, DEFAULT_GATE, type DecisionRecord } from "./decision.js";
@@ -281,11 +281,18 @@ class OfficeLoop {
         run.phase = "rejected";
         logger.info("오피스 결정 거부 — 실행 안 함", { id: run.id, reasons: decision.reasons });
       } else {
-        const scan = await scannerServer.scan();
-        const priceOf = new Map(scan.scores.map((s) => [s.market, s.priceKrw]));
-        const r = cryptoDesk.rotateTo(decision.targets, priceOf, `office ${run.id} — 채점 통과 결정 (${decision.source})`);
-        run.execution = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped, ...(r.error ? { error: r.error } : {}) };
-        run.phase = r.error ? "rejected" : "executed";
+        // 장부 직접 회전 대신 제어 평면 제안 — 확신도 = 통과 단계 비율 (전부 통과했으니 1에 가깝다)
+        const passed = decision.steps.filter((x) => x.status === "Completed").length;
+        const { decision: dc } = await controlPlane.propose({
+          engine: "office",
+          targets: decision.targets,
+          confidence: decision.steps.length ? passed / decision.steps.length : 0,
+          evidence: `${run.id} · ${passed}/${decision.steps.length} graded steps passed · source ${decision.source}`,
+          ref: run.id,
+        });
+        const ex = dc?.execution;
+        run.execution = { ts: new Date().toISOString(), orders: ex?.orders ?? 0, skipped: ex?.skipped ?? [], ...(dc?.status === "executed" ? {} : { error: `control plane: ${dc?.status ?? "no decision"}${dc?.status === "pending" ? " (owner approval)" : ""}` }) };
+        run.phase = dc?.status === "executed" ? "executed" : dc?.status === "pending" ? "executed" : "rejected";
       }
       run.finishedAt = new Date().toISOString();
     } catch (e) {

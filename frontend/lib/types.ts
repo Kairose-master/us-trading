@@ -273,4 +273,6 @@ export type WsMessage =
   | { ch: "session"; data: { marketSession: MarketSession } }
   | { ch: "pipeline"; data: PipelineSnapshot }
   | { ch: "pipeline:log"; data: PipelineLogLine }
+  | { ch: "control"; data: unknown }
+  | { ch: "control:decision"; data: unknown }
   | { ch: "sentiment"; data: { scored: ScoredNews[] } }

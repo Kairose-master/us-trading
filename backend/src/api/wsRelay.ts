@@ -8,6 +8,7 @@ import { pipeline } from "../pipeline/engine.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { supervisor } from "../core/supervisor.js";
 import { evolution } from "../evolution/population.js";
+import { controlPlane } from "../control/plane.js";
 
 /**
  * 프론트용 WebSocket 릴레이 (/ws/live).
@@ -72,6 +73,8 @@ export function attachWsRelay(server: Server) {
   supervisor.on("log", (line) => broadcast("ops:log", line));
   evolution.on("log", (line) => broadcast("evolution:log", line));
   evolution.on("generation", (rec) => broadcast("evolution", rec));
+  controlPlane.on("state", (st) => broadcast("control", st));
+  controlPlane.on("decision", (d) => broadcast("control:decision", d));
 
   kisWs.on("tick", (t) => {
     const q = state.quotes.get(t.symbol);

@@ -1,4 +1,6 @@
 import { upbit } from "./upbit.js";
+import { getDayCandles } from "./candle-store.js";
+import { controlPlane } from "../control/plane.js";
 import { cryptoDesk } from "./desk.js";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
@@ -97,8 +99,8 @@ class ScannerServer {
     const series = new Map<string, BtCandle[]>();
     await mapLimit(top, CONCURRENCY, async (t) => {
       try {
-        const cs = await upbit.dayCandles(t.market, CANDLE_DAYS);
-        if (cs.length >= 61) series.set(t.market, toBt(cs));
+        const cs = await getDayCandles(t.market, CANDLE_DAYS);
+        if (cs.length >= 61) series.set(t.market, cs);
       } catch (e) {
         logger.warn("스캐너 캔들 수집 실패 — 해당 코인 제외", { market: t.market, error: (e as Error).message });
       }
@@ -151,12 +153,22 @@ class ScannerServer {
   }
 
   /** 최신 스캔 타깃으로 페이퍼 장부 로테이션 (페이퍼 전용 — desk가 이중으로 거부) */
+  /** 스캔 → 제어 평면 제안 (실행은 제어 평면의 자동조종/승인이 정한다) */
   async rotate(): Promise<{ ts: string; targets: ScannerPortfolio; orders: number; skipped: string[]; error?: string }> {
     const scan = await this.scan();
-    const priceOf = new Map(scan.scores.map((s) => [s.market, s.priceKrw]));
-    const r = cryptoDesk.rotateTo(scan.portfolio.targets, priceOf, `scanner 상위${scan.portfolio.targets.length} 로테이션 (${scan.ts.slice(0, 10)})`);
-    if (!r.error) this.lastRotation = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped };
-    return { ts: scan.ts, targets: scan.portfolio, orders: r.orders.length, skipped: r.skipped, error: r.error };
+    // 장부를 직접 돌리지 않는다 — 제어 평면에 제안을 낸다. 확신도 = 유니버스 중 강세 belief 비율
+    const bull = scan.scores.filter((x) => x.pBull >= 0.5).length;
+    const confidence = scan.scores.length ? bull / scan.scores.length : 0;
+    const { decision } = await controlPlane.propose({
+      engine: "scanner",
+      targets: scan.portfolio.targets.map((t) => ({ market: t.market, weightPct: t.weightPct })),
+      confidence,
+      evidence: `universe ${scan.universe} · ${bull} in bull regime · top${scan.portfolio.targets.length} by mom/vol, inverse-GARCH weights`,
+      ref: scan.ts,
+    });
+    const r = decision?.execution ?? { orders: 0, skipped: [] as string[], error: decision ? `decision ${decision.status}` : "no decision" };
+    if (decision?.status === "executed") this.lastRotation = { ts: new Date().toISOString(), orders: r.orders, skipped: r.skipped };
+    return { ts: scan.ts, targets: scan.portfolio, orders: r.orders, skipped: r.skipped, error: decision?.status === "executed" ? undefined : r.error };
   }
 
   /** CRYPTO_SCANNER=true일 때: 기동 5분 후 1회, 이후 24h마다 자동 로테이션 */

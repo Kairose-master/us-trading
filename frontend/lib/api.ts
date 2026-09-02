@@ -497,3 +497,89 @@ export async function evoStep(): Promise<EvoGeneration> {
 export async function evoDeploy(): Promise<{ squad: EvoStatus["squad"]; result: { orders: unknown[]; skipped: string[]; error?: string } }> {
   return write("evolution/deploy", "POST", {})
 }
+
+// ── 통합 제어 평면 (control plane) ────────────────────────────────────────
+export type ControlEngineId = "scanner" | "office" | "evolution" | "signals"
+export interface ControlTarget { market: string; weightPct: number }
+export interface ControlProposal {
+  id: string
+  engine: ControlEngineId
+  ts: string
+  expiresAt: string
+  targets: ControlTarget[]
+  confidence: number
+  evidence: string
+  ref: string | null
+}
+export interface ControlDecision {
+  id: string
+  ts: string
+  status: "pending" | "executed" | "rejected" | "skipped" | "blocked"
+  targets: ControlTarget[]
+  cashPct: number
+  contributions: Array<{ engine: ControlEngineId; weight: number; confidence: number; proposalId: string; targets: ControlTarget[] }>
+  rationale: string[]
+  constraints: string[]
+  turnoverPct: number
+  execution: { ts: string; orders: number; skipped: string[]; error?: string } | null
+  by: "autopilot" | "operator" | null
+}
+export interface ControlEngine {
+  id: ControlEngineId
+  name: string
+  nameKo: string
+  description: string
+  enabled: boolean
+  weight: number
+  share: number
+  lastProposal: ControlProposal | null
+  proposals: number
+  cumReturnPct: number
+  days: number
+}
+export interface ControlPolicy {
+  maxWeightPct: number
+  maxPositions: number
+  cashFloorPct: number
+  grossMaxPct: number
+  minTurnoverPct: number
+  minIntervalMin: number
+  proposalTtlH: number
+  eta: number
+}
+export interface ControlStatus {
+  autopilot: boolean
+  mode: string
+  killSwitch: boolean
+  policy: ControlPolicy
+  engines: ControlEngine[]
+  proposals: ControlProposal[]
+  pending: ControlDecision | null
+  decisions: ControlDecision[]
+  lastExecutedAt: string | null
+  lastMarkedDate: string | null
+  holdings: ControlTarget[]
+  equityKrw: number
+  cashKrw: number
+}
+export async function getControl(): Promise<ControlStatus> {
+  return req("control")
+}
+export async function setAutopilot(on: boolean): Promise<{ ok: true }> {
+  return write("control/autopilot", "POST", { on })
+}
+export async function approveDecision(): Promise<ControlDecision> {
+  return write("control/approve", "POST", {})
+}
+export async function rejectDecision(): Promise<ControlDecision> {
+  return write("control/reject", "POST", {})
+}
+export async function setEngine(id: ControlEngineId, patch: { enabled?: boolean; weight?: number }): Promise<{ ok: true }> {
+  return write(`control/engines/${id}`, "POST", patch)
+}
+export async function setControlPolicy(patch: Partial<ControlPolicy>): Promise<{ ok: true }> {
+  return write("control/policy", "POST", patch)
+}
+export async function arbitrateNow(): Promise<ControlDecision | null> {
+  return write("control/arbitrate", "POST", {})
+}

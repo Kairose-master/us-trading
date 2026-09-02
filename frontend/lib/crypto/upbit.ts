@@ -74,34 +74,12 @@ export async function fetchTickers(markets: string[] = CRYPTO_MARKETS): Promise<
 
 /** 일봉 n개 (시간 오름차순) — 200개/호출 페이지네이션 */
 export async function fetchDayCandles(market: string, n: number): Promise<CryptoCandle[]> {
-  const out: CryptoCandle[] = []
-  let to: string | null = null
-  while (out.length < n) {
-    const count = Math.min(200, n - out.length)
-    const toParam: string = to ? `&to=${encodeURIComponent(to)}` : ""
-    const res = await fetch(`${BASE}/candles/days?market=${market}&count=${count}${toParam}`)
-    if (!res.ok) throw new Error(`Upbit candles HTTP ${res.status}`)
-    const batch = (await res.json()) as Array<{
-      candle_date_time_utc: string
-      opening_price: number
-      high_price: number
-      low_price: number
-      trade_price: number
-      candle_acc_trade_volume: number
-    }>
-    if (batch.length === 0) break
-    out.push(
-      ...batch.map((c) => ({
-        t: c.candle_date_time_utc.slice(0, 10),
-        o: c.opening_price,
-        h: c.high_price,
-        l: c.low_price,
-        c: c.trade_price,
-        v: c.candle_acc_trade_volume,
-      })),
-    )
-    to = batch[batch.length - 1].candle_date_time_utc
-    if (batch.length < count) break
+  // 브라우저가 Upbit를 직접 부르지 않는다 — 백엔드 일봉 저장소(레이트리밋·캐시·stale 폴백)를 통해
+  const res = await fetch(`/api/backend/crypto/candles/${encodeURIComponent(market)}?days=${n}`)
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`
+    try { const j = (await res.json()) as { error?: string; code?: string }; msg = j.code === "BACKEND_NOT_CONFIGURED" ? "백엔드 미연결 (BACKEND_TOKEN)" : (j.error ?? msg) } catch { /* noop */ }
+    throw new Error(msg)
   }
-  return out.reverse()
+  return (await res.json()) as CryptoCandle[]
 }

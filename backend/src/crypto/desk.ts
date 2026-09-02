@@ -7,6 +7,7 @@ import { NewsIngestor } from "../sentiment/news.js";
 import { upbit, type UpbitTicker } from "./upbit.js";
 import { config } from "../config.js";
 import { supervisor } from "../core/supervisor.js";
+import { controlPlane } from "../control/plane.js";
 import { logger } from "../core/logger.js";
 
 /**
@@ -186,6 +187,16 @@ class CryptoDesk extends EventEmitter {
     setTimeout(() => this.snapshotEquity(), 30_000).unref(); // 기동 직후 1회
     this.pipeline.start(CRYPTO_MARKETS.map(COIN_OF));
     this.pipeline.on("signal", (sig: ExecutionSignal) => void this.onSignal(sig));
+    // 파이프라인 포트폴리오 타깃 → 제어 평면 제안 (15분마다 한 번, 타깃이 있을 때만)
+    let lastSignalProposal = 0;
+    this.pipeline.on("snapshot", () => {
+      if (Date.now() - lastSignalProposal < 15 * 60_000) return;
+      const pt = this.pipeline.portfolioTargets.filter((t) => t.targetWeightPct > 0);
+      if (pt.length === 0) return;
+      lastSignalProposal = Date.now();
+      const conf = pt.reduce((a, t) => a + Math.abs(t.alpha), 0) / pt.length;
+      void controlPlane.propose({ engine: "signals", targets: pt.map((t) => ({ market: `KRW-${t.symbol}`, weightPct: +t.targetWeightPct.toFixed(2) })), confidence: Math.max(0, Math.min(1, conf)), evidence: `ensemble alpha → portfolio targets for ${pt.length} symbols · mean |alpha| ${conf.toFixed(2)}`, ref: "crypto pipeline" }).catch(() => undefined);
+    });
     this.news.setSymbols(CRYPTO_MARKETS.map(COIN_OF));
     this.news.on("news", (items) => this.pipeline.onNews(items));
     this.news.start();

@@ -5,6 +5,7 @@ import { StatCards } from "@/components/dashboard/stat-cards"
 import { EquityChart } from "@/components/dashboard/equity-chart"
 import { TickerStrip } from "@/components/dashboard/ticker-strip"
 import { MarketCountdown } from "@/components/dashboard/market-countdown"
+import { CommandCenter } from "@/components/dashboard/command-center"
 import { useSystemStatus } from "@/components/shell/kill-switch"
 
 function KillSwitchNotice() {
@@ -30,6 +31,7 @@ export default function DashboardPage() {
       </div>
       <KillSwitchNotice />
       <StatCards />
+      <CommandCenter />
       <div className="grid gap-4 xl:grid-cols-5">
         <div className="xl:col-span-3">
           <EquityChart />

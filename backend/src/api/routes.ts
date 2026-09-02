@@ -18,6 +18,9 @@ import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
 import { supervisor, type Market as SupMarket } from "../core/supervisor.js";
 import { evolution } from "../evolution/population.js";
+import { candleStoreStatus, getDayCandles } from "../crypto/candle-store.js";
+import { controlPlane, type EngineId } from "../control/plane.js";
+import { upbitRateStatus } from "../crypto/upbit.js";
 import { requireSession } from "../auth/routes.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
@@ -90,7 +93,9 @@ router.get("/quotes/:symbol", async (req, res) => {
   const q = state.quotes.get(symbol);
   if (q) return res.json(q);
   if (config.MOCK_DATA) {
-    return res.json(state.ensureQuote(symbol, symbol, "NAS", 100));
+    // Yahoo가 아직 이 종목을 채우지 않았다 — $100 자리표시 시세를 만들어 주던 것을 끝낸다.
+    // 화면은 "시세 미수신"을 그대로 보여주고 다음 폴링에서 다시 받는다.
+    return res.status(503).json({ error: `${symbol} 시세 미수신 (Yahoo 대기)`, code: "QUOTE_PENDING" });
   }
   try {
     const exch = (req.query.exch as Exchange) ?? "NAS";
@@ -560,4 +565,41 @@ router.post("/evolution/deploy", requireSession, async (_req, res) => {
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
   }
+});
+
+
+// ===== 일봉 저장소 — 브라우저가 Upbit를 직접 부르지 않는다 (CORS·레이트리밋·모바일 실패) =====
+
+router.get("/crypto/candles/:market", async (req, res) => {
+  const market = String(req.params.market).toUpperCase();
+  if (!/^KRW-[A-Z0-9]{2,10}$/.test(market)) return res.status(400).json({ error: "마켓 형식: KRW-BTC" });
+  const days = Math.min(400, Math.max(30, Number(req.query.days ?? 200)));
+  try {
+    res.json(await getDayCandles(market, days));
+  } catch (e) {
+    res.status(502).json({ error: `Upbit 캔들 실패: ${(e as Error).message}` });
+  }
+});
+router.get("/crypto/candles", (_req, res) => {
+  res.json({ ...candleStoreStatus(), rate: upbitRateStatus() });
+});
+
+// ===== 제어 평면 — 하나의 목표 포트폴리오 =====
+
+router.get("/control", (_req, res) => {
+  res.json(controlPlane.status());
+});
+router.post("/control/autopilot", requireSession, (req, res) => { controlPlane.setAutopilot(Boolean(req.body?.on)); res.json({ ok: true }); });
+router.post("/control/approve", requireSession, async (_req, res) => {
+  try { res.json(await controlPlane.approve()); } catch (e) { res.status(409).json({ error: (e as Error).message }); }
+});
+router.post("/control/reject", requireSession, (_req, res) => {
+  try { res.json(controlPlane.reject()); } catch (e) { res.status(409).json({ error: (e as Error).message }); }
+});
+router.post("/control/engines/:id", requireSession, (req, res) => {
+  try { controlPlane.setEngine(String(req.params.id) as EngineId, { enabled: typeof req.body?.enabled === "boolean" ? req.body.enabled : undefined, weight: typeof req.body?.weight === "number" ? req.body.weight : undefined }); res.json({ ok: true }); } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+});
+router.post("/control/policy", requireSession, (req, res) => { controlPlane.setPolicy(req.body ?? {}); res.json({ ok: true }); });
+router.post("/control/arbitrate", requireSession, async (_req, res) => {
+  try { res.json(await controlPlane.arbitrate("operator")); } catch (e) { res.status(400).json({ error: (e as Error).message }); }
 });

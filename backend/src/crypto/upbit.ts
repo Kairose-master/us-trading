@@ -53,8 +53,22 @@ export interface UpbitCandle {
 const RETRIES = 3;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// 프로세스 전역 토큰버킷 — Upbit 공개 API는 IP당 초당 10회. 데스크 폴링·스캐너·진화·
+// 백필·워커가 제각각 부르면 합이 넘어 429가 났고, 그게 "캔들을 못 불러오는" 원인이었다.
+// 모든 공개 호출이 이 한 줄을 지난다 (초당 8회, 버스트 8).
+const RATE_PER_SEC = 8;
+let tokens = RATE_PER_SEC;
+const waiters: Array<() => void> = [];
+setInterval(() => { tokens = Math.min(RATE_PER_SEC, tokens + RATE_PER_SEC); while (tokens >= 1 && waiters.length) { tokens -= 1; waiters.shift()!(); } }, 1000).unref();
+function acquire(): Promise<void> {
+  if (tokens >= 1) { tokens -= 1; return Promise.resolve(); }
+  return new Promise((r) => waiters.push(r));
+}
+export function upbitRateStatus() { return { perSec: RATE_PER_SEC, tokens, queued: waiters.length }; }
+
 async function getJson<T>(path: string): Promise<T> {
   let lastErr: Error | null = null;
+  await acquire();
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     try {
       const res = await fetch(`${BASE}${path}`, { signal: AbortSignal.timeout(TIMEOUT) });

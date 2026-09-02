@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendF
 import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
-import { cryptoDesk } from "../crypto/desk.js";
+import { controlPlane } from "../control/plane.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel } from "../office/handsel-client.js";
 import { buildFeatures, dayReturn, evaluate, type FeatureSet } from "./evaluate.js";
@@ -198,12 +198,19 @@ class Evolution extends EventEmitter {
   async deploySquad(reason = "evolution squad") {
     const sq = this.squad();
     if (sq.targets.length === 0) throw new Error("스쿼드 타깃 없음 — 아직 시험을 본 개체가 없다");
-    const scan = await scannerServer.scan();
-    const priceOf = new Map(scan.scores.map((s) => [s.market, s.priceKrw]));
-    const r = cryptoDesk.rotateTo(sq.targets, priceOf, `${reason} — ${sq.members.map((m) => m.name).join("/")}`);
-    this.log(r.error ? "warn" : "ok", r.error ? `DEPLOY refused — ${r.error}` : `DEPLOY squad ${sq.members.map((m) => m.name).join("/")} → paper ledger: ${r.orders.length} orders${r.skipped.length ? `, ${r.skipped.length} skipped` : ""}`);
+    // 장부 직접 회전 대신 제어 평면 제안 — 확신도 = 스쿼드 평균 적합도를 0~1로 (fitness 0 → 0.25, 3 → 1)
+    const avgFit = sq.members.reduce((a, m) => a + m.fitness, 0) / Math.max(1, sq.members.length);
+    const { decision } = await controlPlane.propose({
+      engine: "evolution",
+      targets: sq.targets,
+      confidence: Math.max(0, Math.min(1, 0.25 + avgFit / 4)),
+      evidence: `${reason} · squad ${sq.members.map((m) => `${m.name}(${m.fitness.toFixed(2)})`).join("/")} · exam ${EXAM_DAYS}d unseen`,
+      ref: `gen ${this.st.generation}`,
+    });
+    const r = decision?.execution ?? { orders: 0, skipped: [] as string[], error: decision ? `control plane: ${decision.status}` : "no decision" };
+    this.log(decision?.status === "executed" ? "ok" : "info", decision?.status === "executed" ? `DEPLOY squad ${sq.members.map((m) => m.name).join("/")} → paper ledger via control plane: ${r.orders} orders` : `PROPOSED squad ${sq.members.map((m) => m.name).join("/")} → control plane: ${decision?.status ?? "no decision"}`);
     this.save();
-    return { squad: sq, result: r };
+    return { squad: sq, result: r, decision };
   }
 
   private newAgent(vector: GeneVector, gen: number, parents: string[], seedKrw: number, tribe?: string, nameOverride?: string): Agent {
@@ -406,6 +413,7 @@ class Evolution extends EventEmitter {
       this.st.lastGenerationAt = rec.at;
       mkdirSync(ROOT, { recursive: true });
       appendFileSync(GEN_FILE, JSON.stringify(rec) + "\n");
+      if (config.EVOLUTION_PROPOSE && finalAlive.some((a) => a.exam)) void this.deploySquad(`gen ${gen}`).catch((e) => this.log("warn", `squad proposal failed — ${(e as Error).message}`));
       this.log("ok", `GEN ${gen} done — survivors ${rec.alive}/${POP_MAX} · births ${births} · deaths ${deaths} · mutations ${mutations} · merges ${merges} · forks ${forks} · diversity ${rec.diversity} · top ${rec.topFitness} (${champion?.name ?? "-"}) · mean ${rec.meanFitness} · engine ${engine}`);
       this.save();
       this.emit("generation", rec);

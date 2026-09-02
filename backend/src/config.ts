@@ -73,7 +73,11 @@ const Env = z.object({
   OFFICE_INTERVAL_H: z.coerce.number().default(24),
   // ===== 진화 (PyGAD) — 페이퍼 개체군, 실캔들 시험 =====
   EVOLUTION: z.string().default("true").transform((v) => v === "true"),
+  // 제어 평면 자동조종 — 켜면 중재된 결정을 승인 없이 페이퍼 장부에 실행 (실주문은 별도 경계)
+  CONTROL_AUTOPILOT: z.string().default("true").transform((v) => v === "true"),
   EVOLUTION_INTERVAL_H: z.coerce.number().default(6),
+  // 세대마다 스쿼드 타깃을 제어 평면에 제안 (실행은 제어 평면이 정한다)
+  EVOLUTION_PROPOSE: z.string().default("true").transform((v) => v === "true"),
   OFFICE_ALLOW_REAL_MONEY: z
     .string()
     .default("false")
