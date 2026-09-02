@@ -167,7 +167,7 @@ export function OfficeGraph({ roster, run, onSelect, selected, height = 520 }: {
         for (const e of edges) {
           const a = byId.get(e.a), b = byId.get(e.b)
           if (!a || !b) continue
-          const rest = e.kind === "tool" ? 38 : e.kind === "infra" ? 150 : e.kind === "decision" ? 90 : 120
+          const rest = e.kind === "tool" ? 46 : e.kind === "infra" ? 170 : e.kind === "decision" ? 100 : 130
           const kS = e.kind === "infra" ? 0.004 : e.kind === "tool" ? 0.05 : 0.02
           const dx = b.x - a.x, dy = b.y - a.y
           const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy))
@@ -175,6 +175,12 @@ export function OfficeGraph({ roster, run, onSelect, selected, height = 520 }: {
           const fx = (dx / dist) * f, fy = (dy / dist) * f
           if (!a.fixed) { a.vx += fx; a.vy += fy }
           if (!b.fixed) { b.vx -= fx; b.vy -= fy }
+        }
+        // 툴 위성은 자기 역할 아래쪽에 자리잡게 (라벨 겹침 방지)
+        for (const n of nodes) {
+          if (n.kind !== "tool" || n.fixed) continue
+          const owner = byId.get(n.id.slice(5))
+          if (owner) { n.vx += (owner.x - 26 - n.x) * 0.03; n.vy += (owner.y + 40 - n.y) * 0.03 }
         }
         // 레이어 x 편향(파이프라인이 왼→오로 읽히게) + 중심 중력
         for (const n of nodes) {
@@ -192,7 +198,7 @@ export function OfficeGraph({ roster, run, onSelect, selected, height = 520 }: {
       const { w, h, cam } = st
       ctx.clearRect(0, 0, w, h)
       const bg = ctx.createRadialGradient(w / 2, h / 2, 20, w / 2, h / 2, Math.max(w, h) * 0.75)
-      bg.addColorStop(0, "#111827"); bg.addColorStop(1, "#05070d")
+      bg.addColorStop(0, "#0d120d"); bg.addColorStop(1, "#070907")
       ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h)
       ctx.save()
       ctx.translate(w / 2 + cam.x, h / 2 + cam.y); ctx.scale(cam.k, cam.k)
@@ -252,10 +258,10 @@ export function OfficeGraph({ roster, run, onSelect, selected, height = 520 }: {
           ctx.lineWidth = 1.5; ctx.strokeStyle = "#f8fafc"; ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 8, 0, Math.PI * 2); ctx.stroke()
         }
         // 라벨
-        const showLabel = n.kind !== "tool" || cam.k > 0.9 || focus === n.id || neighbors.has(n.id)
+        const showLabel = n.kind !== "tool" || cam.k > 1.25 || focus === n.id || neighbors.has(n.id)
         if (showLabel) {
           ctx.fillStyle = n.kind === "tool" ? "#94a3b8" : "#e2e8f0"
-          ctx.font = `${n.kind === "role" ? "600 " : ""}${n.kind === "tool" ? 9 : 11}px ui-sans-serif, system-ui, sans-serif`
+          ctx.font = `${n.kind === "role" ? "700 " : ""}${n.kind === "tool" ? 9 : 11.5}px ui-monospace, SFMono-Regular, monospace`
           ctx.textAlign = "center"
           ctx.fillText(n.label, n.x, n.y + n.r + 13)
           if (n.sub && (n.kind !== "tool") && (cam.k > 0.8 || focus === n.id)) {
@@ -344,7 +350,7 @@ export function OfficeGraph({ roster, run, onSelect, selected, height = 520 }: {
 
   const hovered = hoverId ? graph.nodes.find((n) => n.id === hoverId) : null
   return (
-    <div className="relative overflow-hidden rounded-lg border border-border bg-[#05070d]" style={{ height }}>
+    <div className="relative overflow-hidden rounded-lg border border-[#1c221c] bg-[#070907]" style={{ height }}>
       <canvas ref={canvasRef} className="block h-full w-full touch-none" aria-label="증권 오피스 에이전트 그래프" role="img" />
       <div className="pointer-events-none absolute left-3 top-3 flex flex-wrap gap-x-3 gap-y-1 rounded-md bg-black/40 px-2.5 py-1.5 font-mono text-[10px] text-slate-300 backdrop-blur">
         <span><i className="mr-1 inline-block h-2 w-4 border-t border-slate-300 align-middle" />핸드오프</span>
