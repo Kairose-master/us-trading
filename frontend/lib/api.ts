@@ -214,6 +214,24 @@ export interface OfficeDecision {
   roles: Array<{ role: string; excerpt: string }>
 }
 
+export interface OfficeRole {
+  id: string
+  name: string
+  nameKo: string
+  tool: string | null
+  dependsOn: string[]
+  reviewOf?: string
+  stepTitle: string
+  color: string
+}
+
+export interface OfficeRoster {
+  templateId: string
+  roles: OfficeRole[]
+  edges: Array<{ from: string; to: string; kind: "handoff" | "review" }>
+  workerUrl: string
+}
+
 export interface OfficeRun {
   id: string
   startedAt: string
@@ -222,6 +240,8 @@ export interface OfficeRun {
   scope: string
   markets?: string[]
   retries?: number
+  steps?: number
+  stepStatuses?: Record<string, string>
   budgetUsd: number
   headline: string | null
   decision: OfficeDecision | null
@@ -240,6 +260,10 @@ export interface OfficeStatus {
   running: boolean
   current: OfficeRun | null
   gate: { maxWeightPct: number; maxPositions: number }
+}
+
+export async function getOfficeRoster(): Promise<OfficeRoster> {
+  return req("office/roster")
 }
 
 export async function getOfficeStatus(): Promise<OfficeStatus> {

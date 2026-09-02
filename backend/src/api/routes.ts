@@ -15,6 +15,7 @@ import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { officeLoop } from "../office/loop.js";
+import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
@@ -457,6 +458,10 @@ router.post("/crypto/autotrade", (req, res) => {
 });
 
 // ===== 오피스 결정 루프 (대화 → 결정 → 페이퍼 매매) =====
+
+router.get("/office/roster", (_req, res) => {
+  res.json({ templateId: OFFICE_TEMPLATE_ID, roles: OFFICE_ROSTER, edges: rosterEdges(), workerUrl: config.OFFICE_WORKER_URL });
+});
 
 router.get("/office/status", (_req, res) => {
   res.json(officeLoop.status());

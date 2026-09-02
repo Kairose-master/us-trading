@@ -6,7 +6,7 @@ import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel, type HandselConnector } from "./handsel-client.js";
 import { buildDecision, delegationHeadline, renderConversation, DEFAULT_GATE, type DecisionRecord } from "./decision.js";
-import { OFFICE_ROSTER, OFFICE_STEP_COUNT, OFFICE_TEMPLATE_ID } from "./roster.js";
+import { OFFICE_ROSTER, OFFICE_STEP_COUNT, OFFICE_TEMPLATE_ID, roleForStep } from "./roster.js";
 
 /**
  * 오피스 결정 루프 — "모델들이 대화하고, 자율 결정하고, 그 결정이 매매가 된다."
@@ -46,6 +46,8 @@ export interface OfficeRun {
   retries?: number;
   /** 이 run이 고용한 오피스의 단계 수 (구 4단계 run.json에는 없다 → 4) */
   steps?: number;
+  /** 폴링마다 갱신되는 단계별 채점 상태 — 그래프가 실시간으로 읽는다 (role id → 상태) */
+  stepStatuses?: Record<string, string>;
   budgetUsd: number;
   headline: string | null;
   decision: DecisionRecord | null;
@@ -66,6 +68,16 @@ function save(run: OfficeRun, extra?: { conversation?: string }) {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** delegation_status 텍스트 → { roleId: 상태 }. 로스터 접두와 안 맞는 단계는 단계명 그대로 키 */
+function stepStatusesByRole(statusText: string, delegationId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const st of buildDecision({ delegationId, output: "", statusText }).steps) {
+    const role = roleForStep(st.name);
+    out[role ? role.id : st.name] = st.status;
+  }
+  return out;
+}
 
 /** 로스터(office/roster.ts) → hire_office 커넥터. 툴이 있는 역할만; 위원장은 플랫폼 에이전트 */
 function connectors(): HandselConnector[] {
@@ -247,6 +259,7 @@ class OfficeLoop {
         statusText = await handsel.delegationStatus();
         headline = delegationHeadline(statusText, run.id);
         run.headline = headline;
+        run.stepStatuses = stepStatusesByRole(statusText, run.id);
         save(run);
         if (headline && /\[completed\]/.test(headline)) break;
         // 실패로 끝난 단계가 있으면 더 기다릴 이유가 없다 (환불은 Handsel이)
