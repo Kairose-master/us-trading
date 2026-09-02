@@ -364,7 +364,8 @@ class OfficeLoop {
         });
         const ex = dc?.execution;
         run.execution = { ts: new Date().toISOString(), orders: ex?.orders ?? 0, skipped: ex?.skipped ?? [], ...(dc?.status === "executed" ? {} : { error: `control plane: ${dc?.status ?? "no decision"}${dc?.status === "pending" ? " (owner approval)" : ""}` }) };
-        run.phase = dc?.status === "executed" ? "executed" : dc?.status === "pending" ? "executed" : "rejected";
+        // 협의회가 "거래할 가치 없음"으로 건너뛴 것은 오피스 결정의 거부가 아니다 — 결정은 유효했고 장부가 이미 그 근처에 있었을 뿐
+        run.phase = dc?.status === "executed" || dc?.status === "pending" || dc?.status === "skipped" ? "executed" : "rejected";
       }
       run.finishedAt = new Date().toISOString();
     }

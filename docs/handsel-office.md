@@ -215,3 +215,17 @@ handsel `docs/office-connectors.md`)에 맞춰 모든 툴이 `query: string`
 - `us_place_order "buy 2 AAPL"` → `MCP-*` 주문 접수 → 1초 뒤 모의 체결
 - `us_auto_trade on` → 파이프라인 SELL 신호에 `AUTO-TRADE-*` 주문 생성·체결
   (포지션/현금 실반영)
+
+## 2026-09-02 16:14Z 점검 — Handsel 에스크로 경로는 보조, 로컬 협의가 기본
+
+- **dlg-K45DPrXOiZ** (4역할 구 데스크, $4 예산, $2 escrow): 11:55Z 게시 후 4시간 넘게
+  `working` — 차트 Submitted(채점 대기), 뉴스 **Open(아무 워커도 안 잡음)**, 퀀트·리밸런스는
+  상류 대기. 결정·집행 없음. 테스트넷 워커 풀이 그 시간대에 뉴스 잡을 집지 않았다.
+- **dlg-zXUaoEnflJ**: planned 그대로 (escrow 타임아웃 오류 기록, 돈 안 묶임).
+- 프라임 `JaqPNzMyrWqK2xySFLgyz` USDC **$21.28** (faucet 입금 확인). 9역할 플로어 사이클은
+  **시작하지 않았다**: `OFFICE_MODE=local`이 기본이 되어 같은 9역할이 에스크로 없이
+  1분 안에 돌고(`docs/office-loop.md`), 이날 로컬 협의 5건 중 4건이 9/9 수락·집행/보류
+  됐다. Handsel 경로는 `mode:"handsel"`로 수동 호출할 때만 쓴다.
+- 로컬 run `loc-mtk960o9`(15:30Z)가 9/9 수락에 결정 유효인데 `rejected`로 보였던 것은
+  제어 평면이 "회전율 3% < 8% — 거래할 가치 없음"으로 건너뛴 결과를 오피스 루프가
+  거부로 적었기 때문 — 이제 `skipped`는 `executed`(주문 0, 사유 기록)로 적는다.
