@@ -49,6 +49,27 @@ const Env = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true"),
+  // ===== 오피스 결정 루프 (Handsel 오피스 대화 → 결정 → 페이퍼 매매) =====
+  // Handsel MCP 엔드포인트 — 기본 테스트넷(무가치 USDC). 메인넷(handsel-main)은
+  // OFFICE_ALLOW_REAL_MONEY=true 없이는 escrow 거부.
+  HANDSEL_MCP_URL: z.string().default("https://handsel-nu.vercel.app/api/mcp"),
+  // 개인 MCP 토큰 (POST /api/oauth/personal-token 으로 발급, lmk_…)
+  HANDSEL_MCP_TOKEN: z.string().default(""),
+  // escrow를 내는 프라임 에이전트 id (비우면 Handsel이 첫 자금 있는 에이전트)
+  HANDSEL_PRIME_AGENT_ID: z.string().default(""),
+  // 오피스 역할들이 부를 우리 MCP 워커 (공개 HTTPS)
+  OFFICE_WORKER_URL: z.string().default("https://us-trading-mcp-worker.vercel.app/api/mcp"),
+  OFFICE_SLOT: z.coerce.number().default(1),
+  OFFICE_LOOP: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
+  OFFICE_BUDGET_USD: z.coerce.number().default(4),
+  OFFICE_INTERVAL_H: z.coerce.number().default(24),
+  OFFICE_ALLOW_REAL_MONEY: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   // ===== MCP 워커 (Handsel office 탈부착용) =====
   // /mcp 엔드포인트 인증 토큰 — 비우면 API_AUTH_TOKEN을 그대로 쓴다
   MCP_AUTH_TOKEN: z.string().default(""),

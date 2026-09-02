@@ -14,6 +14,7 @@ import { executeOrder } from "../trade/execute.js";
 import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
+import { officeLoop } from "../office/loop.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
@@ -457,6 +458,32 @@ router.post("/crypto/autotrade", (req, res) => {
   const err = cryptoDesk.setTrade(enabled);
   if (err) return res.status(409).json({ error: err });
   res.json(cryptoDesk.status());
+});
+
+// ===== 오피스 결정 루프 (대화 → 결정 → 페이퍼 매매) =====
+
+router.get("/office/status", (_req, res) => {
+  res.json(officeLoop.status());
+});
+
+router.get("/office/runs", (_req, res) => {
+  res.json(officeLoop.list());
+});
+
+router.get("/office/runs/:id", (req, res) => {
+  const r = officeLoop.get(req.params.id);
+  if (!r) return res.status(404).json({ error: "run 없음" });
+  res.json(r);
+});
+
+// 수동 1회 실행 — Handsel escrow(테스트넷 기본)와 페이퍼 회전이 실제로 일어난다
+router.post("/office/run", async (req, res) => {
+  try {
+    const budget = req.body?.budgetUsd !== undefined ? Number(req.body.budgetUsd) : undefined;
+    res.json(await officeLoop.runOnce({ budgetUsd: budget }));
+  } catch (e) {
+    res.status(409).json({ error: (e as Error).message });
+  }
 });
 
 // ===== 시스템 =====

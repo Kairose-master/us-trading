@@ -222,3 +222,56 @@ export async function getCryptoStatus(): Promise<CryptoPaperStatus> {
 export async function getPaperEquity(limit = 2000): Promise<Array<{ ts: string; equityKrw: number; cashKrw: number; positions: number }>> {
   return req(`crypto/paper/equity?limit=${limit}`)
 }
+
+// ===== 증권 오피스 결정 루프 (Handsel 대화 → 결정 → 페이퍼 매매) =====
+
+export interface OfficeDecision {
+  delegationId: string
+  decidedAt: string
+  source: "json-block" | "table" | "lines"
+  targets: Array<{ market: string; weightPct: number }>
+  cashPct: number
+  steps: Array<{ name: string; status: string }>
+  allPassed: boolean
+  executable: boolean
+  reasons: string[]
+  roles: Array<{ role: string; excerpt: string }>
+}
+
+export interface OfficeRun {
+  id: string
+  startedAt: string
+  finishedAt: string | null
+  phase: "hiring" | "escrowed" | "working" | "deciding" | "executed" | "rejected" | "failed"
+  scope: string
+  budgetUsd: number
+  headline: string | null
+  decision: OfficeDecision | null
+  execution: { ts: string; orders: number; skipped: string[]; error?: string } | null
+  error: string | null
+}
+
+export interface OfficeStatus {
+  enabled: boolean
+  configured: boolean
+  handselUrl: string
+  realMoneyHandsel: boolean
+  allowRealMoney: boolean
+  budgetUsd: number
+  intervalHours: number
+  running: boolean
+  current: OfficeRun | null
+  gate: { maxWeightPct: number; maxPositions: number }
+}
+
+export async function getOfficeStatus(): Promise<OfficeStatus> {
+  return req("office/status")
+}
+
+export async function getOfficeRuns(): Promise<OfficeRun[]> {
+  return req("office/runs")
+}
+
+export async function getOfficeRun(id: string): Promise<{ run: OfficeRun; conversation: string | null }> {
+  return req(`office/runs/${encodeURIComponent(id)}`)
+}

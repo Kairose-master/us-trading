@@ -25,6 +25,7 @@ const ALLOW_GET: RegExp[] = [
   /^strategies(\/[^/]+\/logs)?$/,
   /^risk\/limits$/,
   /^crypto\/(status|quotes|signals|paper\/equity|scanner(\/backtest)?|pipeline(\/nodes\/[^/]+|\/logs)?|sentiment(\/feed)?)$/,
+  /^office\/(status|runs(\/[^/]+)?)$/,
 ]
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {

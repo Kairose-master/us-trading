@@ -18,6 +18,7 @@ import { autoTrader } from "./trade/auto-trader.js";
 import { cryptoDesk } from "./crypto/desk.js";
 import { scannerServer } from "./crypto/scanner-server.js";
 import { startYahooTicks } from "./data/yahoo.js";
+import { officeLoop } from "./office/loop.js";
 
 const app = express();
 app.use(cors({ origin: config.corsOrigins, credentials: false }));
@@ -112,6 +113,7 @@ autoTrader.attach();
 // 크립토 데스크 (Upbit) — 공개 API 실데이터, MOCK_DATA와 무관하게 기동
 cryptoDesk.start();
 scannerServer.startAutoLoop();
+officeLoop.startAutoLoop();
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {
