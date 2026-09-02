@@ -66,6 +66,8 @@ scannerServer.startAutoLoop();
 officeLoop.startAutoLoop();
 evolution.startAutoLoop();
 // 제어 평면: 가격은 크립토 데스크 티커(보유분 폴백 포함), 귀속은 하루 한 번 일봉으로
+controlPlane.attachSentiment(() => cryptoDesk.pipeline.tracker.bySymbol().map((x) => ({ market: x.symbol.startsWith("KRW-") ? x.symbol : `KRW-${x.symbol}`, score: x.score, label: x.label, mentions: x.mentions, driver: x.topDriver })));
+controlPlane.attachDrawdown(() => { const s = cryptoDesk.status(); const rows = cryptoDesk.paperEquity(5000); const peak = Math.max(s.paperStartKrw, ...rows.map((r) => r.equityKrw)); return peak > 0 ? Math.max(0, ((peak - s.equityKrw) / peak) * 100) : 0; });
 controlPlane.startScheduler();
 controlPlane.attachPrices(() => {
   const m = new Map<string, number>();

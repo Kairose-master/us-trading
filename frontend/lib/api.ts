@@ -552,6 +552,24 @@ export interface ControlDecision {
   turnoverPct: number
   execution: { ts: string; orders: number; skipped: string[]; error?: string } | null
   by: "autopilot" | "operator" | null
+  council?: {
+    rounds: Array<{ round: number; title: string; positions: Array<{ manager: ControlManagerId; market: string; stance: "SUPPORT" | "OPPOSE" | "ABSTAIN" | "VETO"; weightPct: number | null; reason: string }>; notes: string[] }>
+    tally: Array<{ market: string; supporters: ControlManagerId[]; opposers: ControlManagerId[]; vetoed: boolean; outcome: "ADOPTED" | "REJECTED" | "WITHDRAWN"; weightPct: number; why: string }>
+    summary: string[]
+    quorumMet: boolean
+  }
+}
+export type ControlManagerId = ControlEngineId | "sentiment" | "risk"
+export interface ControlManager {
+  id: ControlManagerId
+  name: string
+  nameKo: string
+  proposes: boolean
+  description: string
+  enabled: boolean
+  weight: number | null
+  lastProposal: ControlProposal | null
+  cumReturnPct: number | null
 }
 export interface ControlEngine {
   id: ControlEngineId
@@ -586,6 +604,7 @@ export interface ControlStatus {
   mode: string
   killSwitch: boolean
   policy: ControlPolicy
+  managers: ControlManager[]
   engines: ControlEngine[]
   proposals: ControlProposal[]
   pending: ControlDecision | null

@@ -47,6 +47,8 @@ const ENGINE_COLOR: Record<ControlEngine["id"], string> = {
   evolution: "#f87171",
   signals: "#34d399",
 }
+const MANAGER_COLOR: Record<string, string> = { ...ENGINE_COLOR, sentiment: "#f472b6", risk: "#fbbf24" }
+const STANCE_CLASS: Record<string, string> = { SUPPORT: "text-emerald-300", OPPOSE: "text-rose-300", ABSTAIN: "text-zinc-500", VETO: "text-rose-400 font-bold" }
 const STATUS_KO: Record<ControlDecision["status"], string> = {
   pending: "승인 대기",
   executed: "집행",
@@ -230,6 +232,29 @@ function DecisionCard({ d, pending, onApprove, onReject, busy }: { d: ControlDec
       <button type="button" onClick={() => setOpen((o) => !o)} className="mt-2 text-[11px] text-muted-foreground underline-offset-2 hover:underline">
         {open ? "근거 접기" : `근거 ${d.rationale.length}줄 · 제약 ${d.constraints.length}건`}
       </button>
+      {open && d.council && (
+        <div className="mt-2 rounded-md border border-border/70 bg-muted/20 p-2">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">협의록 · {d.council.quorumMet ? "정족수 충족" : "정족수 미달 — 현금"}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {d.council.tally.map((t) => (
+              <span key={t.market} className={cn("rounded border px-1.5 py-0.5 font-mono text-[10px]", t.outcome === "ADOPTED" ? "border-emerald-400/50 text-emerald-300" : t.outcome === "REJECTED" ? "border-rose-400/50 text-rose-300" : "border-border text-muted-foreground")} title={t.why}>
+                {sym(t.market)} {t.outcome === "ADOPTED" ? `${t.weightPct}%` : t.outcome} · {t.supporters.join("+") || "—"}{t.opposers.length ? ` vs ${t.opposers.join("+")}` : ""}
+              </span>
+            ))}
+          </div>
+          {d.council.rounds.map((r) => (
+            <details key={r.round} className="mt-1">
+              <summary className="cursor-pointer text-[10px] text-muted-foreground">R{r.round} {r.title} · {r.positions.length ? `${r.positions.length}건` : `${r.notes.length}줄`}</summary>
+              <ul className="mt-0.5 space-y-0.5 font-mono text-[10px]">
+                {r.positions.map((p, i) => (
+                  <li key={i} className="flex gap-1.5"><span className="shrink-0" style={{ color: MANAGER_COLOR[p.manager] }}>{p.manager}</span><span className="shrink-0 text-muted-foreground">{sym(p.market)}</span><span className={cn("shrink-0", STANCE_CLASS[p.stance])}>{p.stance}{p.weightPct !== null ? ` ${p.weightPct}%` : ""}</span><span className="truncate text-muted-foreground" title={p.reason}>{p.reason}</span></li>
+                ))}
+                {r.notes.map((n, i) => <li key={`n${i}`} className="text-amber-300/80">· {n}</li>)}
+              </ul>
+            </details>
+          ))}
+        </div>
+      )}
       {open && (
         <div className="mt-1 grid gap-2 md:grid-cols-2">
           <ul className="space-y-0.5 font-mono text-[10px] text-muted-foreground">
@@ -356,12 +381,23 @@ export function CommandCenter() {
       <div className="grid gap-4 xl:grid-cols-5">
         <Card className="p-4 xl:col-span-2">
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-bold">엔진 · 가중</h2>
-            <span className="text-[10px] text-muted-foreground">일별 실현 수익으로 지수가중 재조정 (η={s.policy.eta})</span>
+            <h2 className="text-sm font-bold">총괄 매니저 협의회</h2>
+            <span className="text-[10px] text-muted-foreground">제안 4 + 감성·리스크 2 · 정족수 = 제안 매니저 2명 · 신호 혼자서는 매수 불가</span>
           </div>
           <div className="space-y-2">
             {s.engines.map((e) => (
               <EngineRow key={e.id} e={e} onChange={(patch) => run(() => setEngine(e.id, patch))} />
+            ))}
+            {(s.managers ?? []).filter((m) => !m.proposes).map((m) => (
+              <div key={m.id} className="rounded-lg border border-dashed border-border p-3">
+                <div className="flex items-center gap-2">
+                  <span className="size-2.5 rounded-full" style={{ background: MANAGER_COLOR[m.id] }} aria-hidden="true" />
+                  <span className="text-sm font-semibold">{m.nameKo}</span>
+                  <span className="font-mono text-[10px] text-muted-foreground">{m.name}</span>
+                  <span className="ml-auto rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">{m.id === "risk" ? "거부권" : "지지·반대"}</span>
+                </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">{m.description}</p>
+              </div>
             ))}
           </div>
         </Card>

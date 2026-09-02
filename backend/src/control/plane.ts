@@ -6,6 +6,7 @@ import { logger } from "../core/logger.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { upbit } from "../crypto/upbit.js";
 import { riskManager } from "../risk/riskManager.js";
+import { MANAGERS, convene, type CouncilResult, type SentimentRead } from "./council.js";
 
 /**
  * 제어 평면 — 대시보드의 엔진들(스캐너·오피스·진화·파이프라인 신호)이 각자 장부를 덮어쓰던
@@ -48,6 +49,8 @@ export interface Decision {
   turnoverPct: number;
   execution: { ts: string; orders: number; skipped: string[]; error?: string } | null;
   by: "autopilot" | "operator" | null;
+  /** 협의록 — 매니저들의 입장·수정·표결. 구 결정에는 없다 */
+  council?: Pick<CouncilResult, "rounds" | "tally" | "summary" | "quorumMet">;
 }
 export interface EngineState {
   id: EngineId;
@@ -97,6 +100,10 @@ class ControlPlane extends EventEmitter {
   private st = readState();
   private priceOf: () => Map<string, number> = () => new Map();
   attachPrices(fn: () => Map<string, number>) { this.priceOf = fn; }
+  private sentimentOf: () => SentimentRead[] = () => [];
+  attachSentiment(fn: () => SentimentRead[]) { this.sentimentOf = fn; }
+  private drawdownOf: () => number = () => 0;
+  attachDrawdown(fn: () => number) { this.drawdownOf = fn; }
 
   private save() { mkdirSync(dirname(FILE), { recursive: true }); const tmp = `${FILE}.tmp`; writeFileSync(tmp, JSON.stringify(this.st)); renameSync(tmp, FILE); }
   private emitState() { this.emit("state", this.status()); }
@@ -117,6 +124,7 @@ class ControlPlane extends EventEmitter {
       mode: desk.mode,
       killSwitch: riskManager.killSwitchActive,
       policy: this.st.policy,
+      managers: MANAGERS.map((m) => { const e = ENGINES.some((x) => x.id === m.id) ? this.st.engines[m.id as EngineId] : null; return { ...m, enabled: e ? e.enabled : true, weight: e ? +e.weight.toFixed(4) : null, lastProposal: e?.lastProposal ?? null, cumReturnPct: e ? +e.cumReturnPct.toFixed(2) : null }; }),
       engines: ENGINES.map((e) => { const s = this.st.engines[e.id]; return { ...e, enabled: s.enabled, weight: +s.weight.toFixed(4), share: s.enabled ? +(s.weight / wsum).toFixed(3) : 0, lastProposal: s.lastProposal, proposals: s.proposals, cumReturnPct: +s.cumReturnPct.toFixed(2), days: s.returns.length }; }),
       proposals: this.activeProposals(),
       pending: this.st.pending,
@@ -152,23 +160,19 @@ class ControlPlane extends EventEmitter {
     const props = this.activeProposals().filter((p) => this.st.engines[p.engine].enabled);
     if (props.length === 0) return null;
     const pol = this.st.policy;
-    const rationale: string[] = [];
-    const constraints: string[] = [];
-    const contribs = props.map((p) => ({ engine: p.engine, weight: this.st.engines[p.engine].weight, confidence: p.confidence, proposalId: p.id, targets: p.targets, eff: this.st.engines[p.engine].weight * (0.25 + 0.75 * p.confidence) }));
-    const effSum = contribs.reduce((a, c) => a + c.eff, 0) || 1;
-    const blend = new Map<string, number>();
-    const who = new Map<string, string[]>();
-    for (const c of contribs) {
-      const share = c.eff / effSum;
-      rationale.push(`${c.engine}: share ${(share * 100).toFixed(0)}% (weight ${c.weight.toFixed(2)} × conf ${c.confidence.toFixed(2)}) · ${c.targets.map((t) => `${t.market.replace("KRW-", "")} ${t.weightPct}%`).join(", ") || "cash"}`);
-      for (const t of c.targets) { blend.set(t.market, (blend.get(t.market) ?? 0) + share * t.weightPct); who.set(t.market, [...(who.get(t.market) ?? []), c.engine]); }
-    }
-    let targets = [...blend].map(([market, w]) => ({ market, weightPct: +w.toFixed(2) })).filter((t) => t.weightPct >= 0.5).sort((a, b) => b.weightPct - a.weightPct);
-    for (const t of targets) if (t.weightPct > pol.maxWeightPct) { constraints.push(`${t.market} ${t.weightPct}% → cap ${pol.maxWeightPct}%`); t.weightPct = pol.maxWeightPct; }
-    if (targets.length > pol.maxPositions) { constraints.push(`${targets.length} positions → max ${pol.maxPositions} (dropped ${targets.slice(pol.maxPositions).map((t) => t.market.replace("KRW-", "")).join(",")})`); targets = targets.slice(0, pol.maxPositions); }
-    let gross = targets.reduce((a, t) => a + t.weightPct, 0);
-    const grossMax = Math.min(pol.grossMaxPct, 100 - pol.cashFloorPct);
-    if (gross > grossMax) { const k = grossMax / gross; constraints.push(`gross ${gross.toFixed(1)}% → ${grossMax}% (scaled ×${k.toFixed(2)})`); targets = targets.map((t) => ({ ...t, weightPct: +(t.weightPct * k).toFixed(2) })); gross = grossMax; }
+    const contribs = props.map((p) => ({ engine: p.engine, weight: this.st.engines[p.engine].weight, confidence: p.confidence, proposalId: p.id, targets: p.targets }));
+    // 협의회 — 매니저들이 시장별로 입장을 내고 수정하고 표결한다. 가중평균은 더 이상 없다
+    const holdings = this.status().holdings;
+    const council = convene({
+      proposals: props.map((p) => ({ manager: p.engine, targets: p.targets, confidence: p.confidence, evidence: p.evidence, ageMin: (Date.now() - Date.parse(p.ts)) / 60_000 })),
+      standing: ENGINES.map((e) => ({ id: e.id, name: e.name, nameKo: e.nameKo, weight: this.st.engines[e.id].weight, enabled: this.st.engines[e.id].enabled })),
+      sentiment: this.sentimentOf(),
+      risk: { killSwitch: riskManager.killSwitchActive, drawdownPct: this.drawdownOf(), policy: { maxWeightPct: pol.maxWeightPct, maxPositions: pol.maxPositions, cashFloorPct: pol.cashFloorPct, grossMaxPct: pol.grossMaxPct }, holdings },
+    });
+    const targets = council.targets;
+    const gross = targets.reduce((a, t) => a + t.weightPct, 0);
+    const constraints = [...council.constraints];
+    const rationale = [...council.summary, ...council.tally.map((t) => `${t.market.replace("KRW-", "")}: ${t.outcome}${t.outcome === "ADOPTED" ? ` ${t.weightPct}%` : ""} — ${t.why}`)];
     if (riskManager.killSwitchActive) constraints.push("KILL SWITCH active — decision blocked");
     const cur = new Map(this.status().holdings.map((h) => [h.market, h.weightPct]));
     let turnover = 0;
@@ -177,8 +181,12 @@ class ControlPlane extends EventEmitter {
     const decision: Decision = {
       id: `dc_${Date.now().toString(36)}`, ts: new Date().toISOString(), status: "pending", targets, cashPct: +(100 - gross).toFixed(2),
       contributions: contribs.map(({ engine, weight, confidence, proposalId, targets: tg }) => ({ engine, weight: +weight.toFixed(4), confidence, proposalId, targets: tg })),
-      rationale: [...rationale, ...[...who].map(([m, es]) => `${m.replace("KRW-", "")} ← ${[...new Set(es)].join("+")}`)], constraints, turnoverPct: +turnover.toFixed(2), execution: null, by: null,
+      rationale, constraints, turnoverPct: +turnover.toFixed(2), execution: null, by: null,
+      council: { rounds: council.rounds, tally: council.tally, summary: council.summary, quorumMet: council.quorumMet },
     };
+    // 정족수 미달은 "아무것도 하지 않는다"이지 "다 판다"가 아니다. 현금으로 가는 건 리스크 총괄의 거부권뿐이다
+    const vetoed = council.tally.some((t) => t.vetoed);
+    if (!council.quorumMet && !vetoed) { decision.status = "skipped"; decision.rationale.push(holdings.length ? "council reached no quorum — holding the current book unchanged" : "council reached no quorum and the book is cash — nothing to do"); this.push(decision); return decision; }
     if (riskManager.killSwitchActive) { decision.status = "blocked"; decision.rationale.push("kill switch active"); this.push(decision); logger.warn("[control] blocked by kill switch"); return decision; }
     if (this.st.paused) { decision.status = "blocked"; decision.rationale.push(`paused by ${this.st.pausedBy ?? "operator"} at ${this.st.pausedAt ?? "?"} — resume to execute`); this.push(decision); logger.info("[control] blocked — paused"); return decision; }
     const sinceLast = this.st.lastExecutedAt ? (Date.now() - Date.parse(this.st.lastExecutedAt)) / 60_000 : Infinity;
@@ -209,7 +217,8 @@ class ControlPlane extends EventEmitter {
     const r = cryptoDesk.rotateTo(decision.targets, await this.pricesFor(decision.targets), `control plane ${by} — ${decision.contributions.map((c) => c.engine).join("+")} (${reason})`);
     decision.execution = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped, ...(r.error ? { error: r.error } : {}) };
     decision.status = r.error ? "rejected" : "executed"; decision.by = by;
-    if (!r.error) { this.st.lastExecutedAt = decision.execution.ts; this.st.proposals = []; }
+    // 제안은 집행 뒤에도 남는다 — 매니저의 마지막 입장이 TTL까지 협의회에 계속 앉아 있어야 정족수가 성립한다
+    if (!r.error) this.st.lastExecutedAt = decision.execution.ts;
     // 집행된 결정이 보류 중이던 것을 대체한다 — 같은 id든 재중재로 새로 만든 것이든
     if (this.st.pending && this.st.pending.id !== decision.id && !r.error) { const old = this.st.pending; old.status = "skipped"; old.rationale.push(`superseded by ${decision.id}`); this.push(old); }
     if (!r.error || this.st.pending?.id === decision.id) this.st.pending = null;
