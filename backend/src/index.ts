@@ -3,6 +3,7 @@ import cors from "cors";
 import http from "node:http";
 import { config } from "./config.js";
 import { router } from "./api/routes.js";
+import { authRouter } from "./auth/routes.js";
 import { attachWsRelay } from "./api/wsRelay.js";
 import { state } from "./api/state.js";
 import { riskManager } from "./risk/riskManager.js";
@@ -35,6 +36,7 @@ app.use((req, res, next) => {
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.post("/mcp", (req, res) => void handleMcpRequest(req, res));
+app.use("/api", authRouter);
 app.use("/api", router);
 
 const server = http.createServer(app);

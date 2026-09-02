@@ -12,6 +12,11 @@ const Env = z.object({
     .default("true")
     .transform((v) => v === "true"),
   API_AUTH_TOKEN: z.string().default("dev-token"),
+  // ===== 계정·금고 (docs/accounts.md) =====
+  // 자격증명 금고(AES-256-GCM) 마스터 키 — 64자리 hex 권장 (openssl rand -hex 32). 없으면 금고 잠김.
+  CREDENTIALS_MASTER_KEY: z.string().default(""),
+  // "first"(기본) = 첫 사용자만 가입 가능(그가 owner), "true" = 누구나 가입
+  SIGNUP_OPEN: z.string().default("first"),
   // 합성 뉴스 헤드라인 — 명시적 opt-in. 기본은 Google News RSS 실데이터 (키 불필요)
   NEWS_MOCK: z
     .string()

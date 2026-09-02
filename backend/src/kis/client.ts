@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from "axios";
 import { config } from "../config.js";
+import { kisKeys } from "../auth/credentials.js";
 import { KIS, EXCH_CODE } from "./endpoints.js";
 import { tokenManager } from "./auth.js";
 import { RateLimiter } from "../core/rateLimiter.js";
@@ -25,8 +26,8 @@ class KisClient {
     return {
       "content-type": "application/json; charset=utf-8",
       authorization: `Bearer ${token}`,
-      appkey: config.KIS_APP_KEY,
-      appsecret: config.KIS_APP_SECRET,
+      appkey: (kisKeys()?.appKey ?? ""),
+      appsecret: (kisKeys()?.appSecret ?? ""),
       tr_id: trId,
       custtype: "P", // 개인
     };

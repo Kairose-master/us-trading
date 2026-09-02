@@ -277,3 +277,59 @@ export async function getOfficeRuns(): Promise<OfficeRun[]> {
 export async function getOfficeRun(id: string): Promise<{ run: OfficeRun; conversation: string | null }> {
   return req(`office/runs/${encodeURIComponent(id)}`)
 }
+
+// ===== 계정·금고 (세션은 httpOnly 쿠키 — 프록시가 X-Session으로 옮긴다) =====
+
+export interface AuthUser {
+  id: string
+  email: string
+  role: "owner" | "member"
+  createdAt: string
+}
+export interface CredentialSources {
+  vaultUnlocked: boolean
+  owner: string | null
+  upbit: "env" | "vault" | null
+  kis: "env" | "vault" | null
+}
+export interface MaskedKeys {
+  upbit: { updatedAt: string; last4: Record<string, string> } | null
+  kis: { updatedAt: string; last4: Record<string, string> } | null
+}
+
+async function write<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {
+  const res = await fetch(`/api/backend/${path}`, { method, headers: body !== undefined ? { "content-type": "application/json" } : undefined, body: body !== undefined ? JSON.stringify(body) : undefined })
+  const text = await res.text()
+  let json: unknown = null
+  try { json = text ? JSON.parse(text) : null } catch { json = null }
+  if (!res.ok) {
+    const j = (json ?? {}) as { error?: string; code?: string }
+    throw new ApiError(res.status, j.error ?? `HTTP ${res.status}`, j.code)
+  }
+  return json as T
+}
+
+export async function getAuthConfig(): Promise<{ users: number; signupOpen: boolean; vaultUnlocked: boolean }> {
+  return req("auth/config")
+}
+export async function authMe(): Promise<{ user: AuthUser; credentials: CredentialSources }> {
+  return req("auth/me")
+}
+export async function login(email: string, password: string): Promise<{ user: AuthUser }> {
+  return write("auth/login", "POST", { email, password })
+}
+export async function register(email: string, password: string): Promise<{ user: AuthUser }> {
+  return write("auth/register", "POST", { email, password })
+}
+export async function logout(): Promise<{ ok: true }> {
+  return write("auth/logout", "POST", {})
+}
+export async function getKeys(): Promise<{ vaultUnlocked: boolean; keys: MaskedKeys; sources: CredentialSources }> {
+  return req("keys")
+}
+export async function putKeys(provider: "upbit" | "kis", keys: Record<string, string>): Promise<{ ok: true; keys: MaskedKeys }> {
+  return write(`keys/${provider}`, "PUT", keys)
+}
+export async function deleteKeys(provider: "upbit" | "kis"): Promise<{ ok: true; keys: MaskedKeys }> {
+  return write(`keys/${provider}`, "DELETE")
+}

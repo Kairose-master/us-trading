@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Bitcoin, Briefcase, Building2, ClipboardList, Cpu, LayoutDashboard, MessageSquareText, Network, Radar, ShieldAlert, Sigma, TrendingUp } from "lucide-react"
+import { Bitcoin, Briefcase, Building2, ClipboardList, Cpu, LayoutDashboard, MessageSquareText, Network, Radar, Settings, ShieldAlert, Sigma, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useSettings } from "@/components/settings-provider"
 
@@ -18,6 +18,7 @@ const NAV = [
   { href: "/lab", label: "모델 랩", icon: Cpu },
   { href: "/quant", label: "퀀트 코어", icon: Sigma },
   { href: "/risk", label: "리스크", icon: ShieldAlert },
+  { href: "/settings", label: "설정 · 키", icon: Settings },
 ]
 
 function ColorConventionToggle() {

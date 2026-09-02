@@ -1,5 +1,6 @@
 import axios from "axios";
 import { config } from "../config.js";
+import { kisKeys } from "../auth/credentials.js";
 import { KIS } from "./endpoints.js";
 import { logger } from "../core/logger.js";
 
@@ -29,8 +30,8 @@ class TokenManager {
   private async issue(): Promise<string> {
     const res = await axios.post(`${config.kisBaseUrl}${KIS.token.path}`, {
       grant_type: "client_credentials",
-      appkey: config.KIS_APP_KEY,
-      appsecret: config.KIS_APP_SECRET,
+      appkey: (kisKeys()?.appKey ?? ""),
+      appsecret: (kisKeys()?.appSecret ?? ""),
     });
     this.token = res.data.access_token as string;
     // expires_in은 초 단위
@@ -43,8 +44,8 @@ class TokenManager {
   async getWsApprovalKey(): Promise<string> {
     const res = await axios.post(`${config.kisBaseUrl}${KIS.wsApprovalKey.path}`, {
       grant_type: "client_credentials",
-      appkey: config.KIS_APP_KEY,
-      secretkey: config.KIS_APP_SECRET, // 주의: 이 엔드포인트만 'secretkey' 키를 씀
+      appkey: (kisKeys()?.appKey ?? ""),
+      secretkey: (kisKeys()?.appSecret ?? ""), // 주의: 이 엔드포인트만 'secretkey' 키를 씀
     });
     return res.data.approval_key as string;
   }

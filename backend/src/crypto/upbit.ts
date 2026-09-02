@@ -1,5 +1,6 @@
 import { createHmac, createHash, randomUUID } from "node:crypto";
 import { config } from "../config.js";
+import { upbitKeys } from "../auth/credentials.js";
 
 /**
  * Upbit REST 클라이언트 — 의존성 zero.
@@ -74,7 +75,7 @@ async function getJson<T>(path: string): Promise<T> {
 
 export const upbit = {
   hasKeys(): boolean {
-    return Boolean(config.UPBIT_ACCESS_KEY && config.UPBIT_SECRET_KEY);
+    return upbitKeys() !== null;
   },
 
   // ===== 공개 =====
@@ -113,9 +114,10 @@ export const upbit = {
 
   /** Upbit 인증 JWT — HS256, 쿼리 파라미터는 SHA512 query_hash로 서명 */
   authToken(query?: string): string {
-    if (!this.hasKeys()) throw new Error("UPBIT_ACCESS_KEY/SECRET_KEY 미설정");
+    const keys = upbitKeys();
+    if (!keys) throw new Error("Upbit 키 미설정 — 환경변수 또는 설정 페이지 금고");
     const payload: Record<string, string> = {
-      access_key: config.UPBIT_ACCESS_KEY,
+      access_key: keys.accessKey,
       nonce: randomUUID(),
     };
     if (query) {
@@ -125,7 +127,7 @@ export const upbit = {
     const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
     const head = b64({ alg: "HS256", typ: "JWT" });
     const body = b64(payload);
-    const sig = createHmac("sha256", config.UPBIT_SECRET_KEY).update(`${head}.${body}`).digest("base64url");
+    const sig = createHmac("sha256", keys.secretKey).update(`${head}.${body}`).digest("base64url");
     return `${head}.${body}.${sig}`;
   },
 
