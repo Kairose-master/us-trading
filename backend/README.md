@@ -47,6 +47,13 @@ src/
     features.ts       # 캔들 → 피처 8종 + 라벨 (룩어헤드 없음, 순수)
     train.ts          # 로지스틱 회귀 미니배치 SGD — loss/스텝 전부 실측, 시드 고정
     validate.ts       # walk-forward 검증 — 신뢰할 숫자는 out-of-sample뿐
+  quant/
+    regime.ts         # 가우시안 HMM 레짐 필터 — Baum-Welch EM + 포워드 필터 π_t=P(Z_t|Y_1:t)
+    garch.ts          # GARCH(1,1) MLE — 조건부 σ_t + 익일 예측
+    allocator.ts      # 지수 가중 온라인 배분 w ∝ w·e^ηr — "누굴 믿을지"를 학습
+    risk.ts           # VaR/ES/드로다운/하방편차 + 분수 Kelly
+    stats.ts          # Sharpe SE + 블록 부트스트랩 p + Bonferroni 다중검정
+    report.ts         # 위 전부의 closed-loop 통합 리포트
   crypto/
     upbit.ts          # Upbit 클라이언트 — 공개(키 불필요, 항상 실데이터) + JWT 개인(주문은 이중 스위치)
     desk.ts           # 크립토 데스크 — 두 번째 파이프라인 인스턴스, 페이퍼/실주문 3단 가드

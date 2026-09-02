@@ -11,6 +11,7 @@ import { walkForwardValidate } from "../ml/validate.js";
 import { DEFAULT_PARAMS } from "../ml/train.js";
 import { FEATURE_NAMES } from "../ml/features.js";
 import { tuneHyperparams } from "../ml/tune.js";
+import { buildQuantReport } from "../quant/report.js";
 
 /**
  * MCP 워커 툴 — Handsel office가 이 백엔드를 워커로 탈부착하는 표면.
@@ -385,6 +386,40 @@ const mlTuneReport: McpToolDef = {
   },
 };
 
+const quantCoreReport: McpToolDef = {
+  name: "quant_core_report",
+  description:
+    "Full quant-core report on live Upbit candles: 3-state Gaussian HMM regime filter (EM-fitted, filtered P(Z_t|Y_1:t)), GARCH(1,1) conditional volatility with next-day forecast, exponential-weights online allocator over 5 experts, VaR/ES/drawdown, fractional Kelly sizing, and moving-block bootstrap significance with Bonferroni multiple-testing correction. Every number computed from real data at call time.",
+  inputSchema: QUERY_SCHEMA("Coin, e.g. 'BTC'"),
+  handler: async (query) => {
+    const coin = (query.toUpperCase().match(/\b(BTC|ETH|XRP|SOL|DOGE)\b/) ?? ["BTC"])[0];
+    const market = `KRW-${coin}`;
+    const candles = (await upbit.dayCandles(market, 500)).map((c) => ({
+      t: c.candle_date_time_utc.slice(0, 10),
+      o: c.opening_price,
+      h: c.high_price,
+      l: c.low_price,
+      c: c.trade_price,
+      v: c.candle_acc_trade_volume,
+    }));
+    const r = buildQuantReport(candles, market);
+    const regimeLine = r.regime.states
+      .map((s, i) => `${s.label}(μ=${(s.mu * 100).toFixed(2)}%/d σ=${(s.sigma * 100).toFixed(2)}%/d): P=${r.regime.current[i]}`)
+      .join(" · ");
+    const weights = r.allocator.experts.map((e) => `${e.id}=${e.finalWeight}`).join(" ");
+    return [
+      `# Quant core — ${market} (${r.days} candles)`,
+      `REGIME (HMM K=3, EM ${r.regime.emIters}회, filtered belief): ${regimeLine}`,
+      `VOL (GARCH 1,1): σ_next=${(r.garch.forecastSigma * 100).toFixed(2)}%/d (연 ${(r.garch.forecastSigma * Math.sqrt(365) * 100).toFixed(1)}%) · persistence α+β=${r.garch.persistence}`,
+      `ALLOCATOR (exp-weights η=${r.allocator.eta}): ${weights} → blended annual ${r.allocator.blendedAnnualPct}% sharpe ${r.allocator.blendedSharpe}`,
+      `RISK (blended): VaR95=${r.risk.var95Pct}%/d ES95=${r.risk.es95Pct}%/d MDD=${r.risk.maxDrawdownPct}% annVol=${r.risk.annVolPct}% (B&H MDD ${r.benchmarkRisk.maxDrawdownPct}%)`,
+      `SIZING: full Kelly ${r.kelly.fullKelly} → half Kelly ${r.kelly.halfKelly} 권장`,
+      `STATS: Sharpe ${r.stats.sharpeAnnual} ± ${r.stats.sharpeSe} (95% CI ${r.stats.sharpeCi95[0]}~${r.stats.sharpeCi95[1]}) · block-bootstrap p=${r.stats.bootstrapP} · Bonferroni α=${r.stats.bonferroniAlpha} (${r.stats.strategiesTested}개 테스트) → ${r.stats.survivesMultipleTesting ? "다중검정 통과" : "다중검정 통과 못 함 — 우연일 수 있음"}`,
+      envLine(),
+    ].join("\n");
+  },
+};
+
 export function mcpTools(): McpToolDef[] {
   const readOnly = [
     priceLookup,
@@ -396,6 +431,7 @@ export function mcpTools(): McpToolDef[] {
     upbitBacktestReport,
     mlAlphaReport,
     mlTuneReport,
+    quantCoreReport,
   ];
   return config.MCP_TRADING ? [...readOnly, placeOrder, autoTradeTool] : readOnly;
 }
