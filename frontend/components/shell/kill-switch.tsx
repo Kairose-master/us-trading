@@ -25,10 +25,9 @@ export function KillSwitchButton({ compact = false }: { compact?: boolean }) {
     if (confirmText !== "정지") return
     setSubmitting(true)
     try {
-      const res = await activateKillSwitch()
-      toast.success(`전체 자동매매 정지됨 — 중지된 전략 ${res.stoppedStrategies.length}개`)
+      await activateKillSwitch()
+      toast.success("전체 자동매매 정지됨")
       mutate("system-status")
-      mutate("strategies")
       setOpen(false)
       setConfirmText("")
     } catch (e) {

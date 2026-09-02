@@ -13,9 +13,6 @@ import type {
   RiskLimits,
   ScoredNews,
   SentimentOverview,
-  Strategy,
-  StrategyConfig,
-  StrategyLog,
   SymbolInfo,
   SystemStatus,
 } from "@/lib/types"
@@ -95,26 +92,6 @@ export async function cancelOrder(_orderId: string): Promise<{ ok: true }> {
 
 // ===== 전략 =====
 
-export async function getStrategies(): Promise<Strategy[]> {
-  return req("strategies")
-}
-
-export async function startStrategy(_id: string): Promise<{ ok: true }> {
-  return readOnly()
-}
-
-export async function stopStrategy(_id: string): Promise<{ ok: true }> {
-  return readOnly()
-}
-
-export async function patchStrategyConfig(_id: string, _config: Partial<StrategyConfig>): Promise<{ ok: true }> {
-  return readOnly()
-}
-
-export async function getStrategyLogs(id: string, limit = 100): Promise<StrategyLog[]> {
-  return req(`strategies/${encodeURIComponent(id)}/logs?limit=${limit}`)
-}
-
 // ===== 리스크 =====
 
 export async function getRiskLimits(): Promise<RiskLimits> {
@@ -127,7 +104,7 @@ export async function patchRiskLimits(
   return readOnly()
 }
 
-export async function activateKillSwitch(): Promise<{ ok: true; stoppedStrategies: string[] }> {
+export async function activateKillSwitch(): Promise<{ ok: true }> {
   return readOnly()
 }
 

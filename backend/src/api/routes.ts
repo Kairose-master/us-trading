@@ -2,7 +2,6 @@ import { Router } from "express";
 import { z } from "zod";
 import { state } from "./state.js";
 import { riskManager } from "../risk/riskManager.js";
-import { engine } from "../strategy/engine.js";
 import { kisClient } from "../kis/client.js";
 import { kisWs } from "../kis/ws.js";
 import { tokenManager } from "../kis/auth.js";
@@ -152,53 +151,6 @@ router.delete("/orders/:orderId", async (req, res) => {
   }
 });
 
-// ===== 전략 =====
-
-router.get("/strategies", (_req, res) => {
-  res.json(
-    [...engine.strategies.values()].map((s) => ({
-      id: s.id,
-      name: s.name,
-      status: s.status,
-      todayPnlUsd: s.todayPnlUsd,
-      positionCount: s.positionCount,
-      config: s.config,
-    }))
-  );
-});
-
-router.post("/strategies/:id/start", (req, res) => {
-  try {
-    engine.start(req.params.id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
-  }
-});
-
-router.post("/strategies/:id/stop", (req, res) => {
-  try {
-    engine.stop(req.params.id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
-  }
-});
-
-router.patch("/strategies/:id/config", (req, res) => {
-  const s = engine.strategies.get(req.params.id);
-  if (!s) return res.status(404).json({ error: "전략 없음" });
-  s.config = { ...s.config, ...req.body };
-  res.json({ ok: true });
-});
-
-router.get("/strategies/:id/logs", (req, res) => {
-  const s = engine.strategies.get(req.params.id);
-  if (!s) return res.status(404).json({ error: "전략 없음" });
-  const limit = Number(req.query.limit ?? 100);
-  res.json(s.logs.slice(-limit).reverse());
-});
-
 // ===== 리스크 =====
 
 router.get("/risk/limits", (_req, res) => {
@@ -213,8 +165,7 @@ router.patch("/risk/limits", (req, res) => {
 
 router.post("/risk/killswitch", (_req, res) => {
   riskManager.activateKillSwitch();
-  const stoppedStrategies = engine.stopAll();
-  res.json({ ok: true, stoppedStrategies });
+  res.json({ ok: true });
 });
 
 // ===== 파이프라인 =====

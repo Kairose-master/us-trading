@@ -5,7 +5,6 @@ export type OrderType = "limit" | "market"
 export type OrderSession = "regular" | "extended"
 export type OrderStatus = "open" | "partial" | "filled" | "cancelled" | "rejected"
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
-export type StrategyStatus = "running" | "stopped" | "error"
 export type LogLevel = "INFO" | "WARN" | "ERROR"
 
 export interface Balance {
@@ -84,31 +83,6 @@ export interface Order {
   avgFillPrice: number
   status: OrderStatus
   createdAt: string
-}
-
-export interface StrategyConfig {
-  entryRule: string
-  stopLossPct: number
-  takeProfitPct: number
-  maxPositions: number
-  maxAmountPerSymbolUsd: number
-  allowedSession: OrderSession
-}
-
-export interface Strategy {
-  id: string
-  name: string
-  status: StrategyStatus
-  todayPnlUsd: number
-  positionCount: number
-  config: StrategyConfig
-}
-
-export interface StrategyLog {
-  ts: string
-  level: LogLevel
-  message: string
-  context?: Record<string, unknown>
 }
 
 export interface RiskLimits {

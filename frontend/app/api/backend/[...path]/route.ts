@@ -22,7 +22,6 @@ const ALLOW_GET: RegExp[] = [
   /^account\/(balance|positions)$/,
   /^orders$/,
   /^quotes\/[^/]+(\/chart)?$/,
-  /^strategies(\/[^/]+\/logs)?$/,
   /^risk\/limits$/,
   /^crypto\/(status|quotes|signals|paper\/equity|scanner(\/backtest)?|pipeline(\/nodes\/[^/]+|\/logs)?|sentiment(\/feed)?)$/,
   /^office\/(status|runs(\/[^/]+)?)$/,
