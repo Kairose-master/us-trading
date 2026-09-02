@@ -17,6 +17,7 @@ import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
 import { DEFAULT_PARAMS } from "../ml/train.js";
+import { tuneHyperparams } from "../ml/tune.js";
 import type { Exchange, Order } from "../kis/types.js";
 
 export const router = Router();
@@ -365,6 +366,29 @@ router.get("/ml/train", async (req, res) => {
     }));
     const report = walkForwardValidate(candles, market, params, quantile);
     res.json(report);
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
+});
+
+router.get("/ml/tune", async (req, res) => {
+  const market = String(req.query.market ?? "KRW-BTC");
+  const days = Math.min(1000, Math.max(300, Number(req.query.days ?? 500)));
+  const opts = {
+    randomTrials: Math.min(40, Math.max(5, Math.round(Number(req.query.trials ?? 20)))),
+    refineSteps: Math.min(20, Math.max(0, Math.round(Number(req.query.refine ?? 10)))),
+    seed: Math.round(Number(req.query.seed ?? 7)),
+  };
+  try {
+    const candles = (await upbit.dayCandles(market, days)).map((c) => ({
+      t: c.candle_date_time_utc.slice(0, 10),
+      o: c.opening_price,
+      h: c.high_price,
+      l: c.low_price,
+      c: c.trade_price,
+      v: c.candle_acc_trade_volume,
+    }));
+    res.json(tuneHyperparams(candles, market, opts));
   } catch (e) {
     res.status(502).json({ error: (e as Error).message });
   }

@@ -10,6 +10,7 @@ import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
 import { DEFAULT_PARAMS } from "../ml/train.js";
 import { FEATURE_NAMES } from "../ml/features.js";
+import { tuneHyperparams } from "../ml/tune.js";
 
 /**
  * MCP 워커 툴 — Handsel office가 이 백엔드를 워커로 탈부착하는 표면.
@@ -353,6 +354,37 @@ const mlAlphaReport: McpToolDef = {
   },
 };
 
+const mlTuneReport: McpToolDef = {
+  name: "ml_tune_report",
+  description:
+    "Auto-search training hyperparameters (random search + coordinate-descent refinement, ~100 real trials) on live Upbit candles with a 3-way split: 60% train / 20% validation (the tuner's objective) / 20% UNTOUCHED holdout. Reports best params, validation objective, and holdout metrics — only the holdout number is trustworthy, and validation-vs-holdout gap exposes tuner overfitting honestly.",
+  inputSchema: QUERY_SCHEMA("Coin, e.g. 'BTC' or 'ETH'"),
+  handler: async (query) => {
+    const coin = (query.toUpperCase().match(/\b(BTC|ETH|XRP|SOL|DOGE)\b/) ?? ["BTC"])[0];
+    const market = `KRW-${coin}`;
+    const candles = (await upbit.dayCandles(market, 500)).map((c) => ({
+      t: c.candle_date_time_utc.slice(0, 10),
+      o: c.opening_price,
+      h: c.high_price,
+      l: c.low_price,
+      c: c.trade_price,
+      v: c.candle_acc_trade_volume,
+    }));
+    const r = tuneHyperparams(candles, market);
+    const b = r.best;
+    const h = r.holdout;
+    return [
+      `# Hyperparameter tune report — ${market} (${r.trials.length} real trials)`,
+      `splits: train~${r.splits.trainEnd} / val~${r.splits.valEnd} (tuner objective) / holdout~${r.splits.holdoutEnd} (untouched)`,
+      `best: lr=${b.learningRate.toFixed(4)} epochs=${b.epochs} l2=${b.l2.toExponential(2)} batch=${b.batchSize} quantile=${b.quantile.toFixed(3)} → threshold ${r.finalThreshold}`,
+      `validation objective (Sharpe): ${r.bestObjective} — 튜너가 본 숫자, 과적합 포함`,
+      `HOLDOUT: annual=${h.annualReturnPct}% (B&H ${h.benchmarkReturnPct}%) sharpe=${h.sharpe} MDD=${h.maxDrawdownPct}% winRate=${h.winRatePct}% trades=${h.trades} exposure=${h.exposurePct}%`,
+      `val ${r.bestObjective} vs holdout ${h.sharpe}의 간극이 곧 튜너 과적합의 크기다. 신뢰할 숫자는 HOLDOUT뿐.`,
+      envLine(),
+    ].join("\n");
+  },
+};
+
 export function mcpTools(): McpToolDef[] {
   const readOnly = [
     priceLookup,
@@ -363,6 +395,7 @@ export function mcpTools(): McpToolDef[] {
     upbitPipelineReport,
     upbitBacktestReport,
     mlAlphaReport,
+    mlTuneReport,
   ];
   return config.MCP_TRADING ? [...readOnly, placeOrder, autoTradeTool] : readOnly;
 }

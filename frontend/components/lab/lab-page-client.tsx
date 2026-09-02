@@ -3,13 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import useSWR from "swr"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Cpu, Play, Radio } from "lucide-react"
+import { Cpu, Play, Radio, Wand2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
 import { CRYPTO_MARKETS, fetchDayCandles } from "@/lib/crypto/upbit"
 import { FEATURE_NAMES } from "@/lib/ml/features"
 import { DEFAULT_PARAMS, type EpochLog } from "@/lib/ml/train"
 import { walkForwardValidate, type ValidationReport } from "@/lib/ml/validate"
+import { tuneHyperparams, type TuneResult } from "@/lib/ml/tune"
 
 /**
  * 모델 랩 — 브라우저에서 진짜 로지스틱 회귀를 학습한다 (릴3 "Day 11").
@@ -31,6 +32,8 @@ export function LabPageClient() {
   const [report, setReport] = useState<ValidationReport | null>(null)
   const [consoleLogs, setConsoleLogs] = useState<string[]>([])
   const [training, setTraining] = useState(false)
+  const [tune, setTune] = useState<TuneResult | null>(null)
+  const [tuning, setTuning] = useState(false)
   const runSeq = useRef(0)
 
   const { data: candles, error: candleError } = useSWR(["lab-candles", market], () => fetchDayCandles(market, DAYS), {
@@ -93,6 +96,41 @@ export function LabPageClient() {
     run()
   }, [run])
 
+  // 자동 튜닝 — 파생 없는 최적화 (랜덤 탐색 + 좌표 하강). 3분할: 튜너는
+  // 검증창만 보고, 홀드아웃은 아무도 못 본 최종 성적표다.
+  const runTune = () => {
+    if (!candles || candles.length < 300 || tuning) return
+    const seq = ++runSeq.current
+    setTuning(true)
+    setConsoleLogs((prev) => [...prev, `[TUNE] ${market} — 랜덤 20 + 정련 탐색 시작 (train/val/holdout 3분할)`])
+    setTimeout(() => {
+      if (seq !== runSeq.current) return
+      try {
+        const lines: string[] = []
+        const r = tuneHyperparams(candles, market, undefined, (t) => {
+          if (t.id % 10 === 0 || t.objective > 1) {
+            lines.push(`[TRIAL ${String(t.id).padStart(3, " ")}] ${t.kind} lr=${t.params.learningRate.toFixed(3)} ep=${t.params.epochs} q=${t.params.quantile.toFixed(2)} → val Sharpe ${t.objective}`)
+          }
+        })
+        setConsoleLogs((prev) => [
+          ...prev,
+          ...lines,
+          `[TUNE DONE] ${r.trials.length}회 실측 — best: lr=${r.best.learningRate.toFixed(3)} epochs=${r.best.epochs} q=${r.best.quantile.toFixed(2)} (val Sharpe ${r.bestObjective})`,
+          `[HOLDOUT] 미접촉 구간: annual ${pct(r.holdout.annualReturnPct)} vs B&H ${pct(r.holdout.benchmarkReturnPct)} · Sharpe ${r.holdout.sharpe} — 신뢰할 숫자는 이것뿐`,
+        ])
+        setTune(r)
+        // 찾은 파라미터를 슬라이더에 반영 → 위쪽 학습/검증 뷰도 그 조합으로 재계산된다
+        setLr(+r.best.learningRate.toFixed(3))
+        setEpochs(r.best.epochs)
+        setQuantile(+r.best.quantile.toFixed(2))
+      } catch (e) {
+        setConsoleLogs((prev) => [...prev, `[ERROR] 튜닝 실패: ${String(e)}`])
+      } finally {
+        setTuning(false)
+      }
+    }, 30)
+  }
+
   const m = report?.model
   const oos = report?.outOfSample
   const maxAbsW = m ? Math.max(...m.weights.map((w) => Math.abs(w)), 1e-9) : 1
@@ -147,8 +185,18 @@ export function LabPageClient() {
             >
               <Play className="size-3.5" aria-hidden="true" /> {training ? "학습 중…" : "재학습"}
             </button>
+            <button
+              type="button"
+              onClick={runTune}
+              disabled={!candles || tuning}
+              className="inline-flex items-center justify-center gap-1.5 rounded-md border border-chart-2/50 bg-chart-2/10 px-3 py-2 text-xs font-semibold text-chart-2 transition-opacity disabled:opacity-50"
+            >
+              <Wand2 className="size-3.5" aria-hidden="true" /> {tuning ? "탐색 중…" : "자동 튜닝 (파라미터 탐색)"}
+            </button>
             <p className="text-[10px] leading-relaxed text-muted-foreground/70">
-              70% 구간에서만 학습하고 나머지 30%(out-of-sample)에서 검증합니다. 신뢰할 수 있는 숫자는 OOS 쪽뿐입니다.
+              70% 구간에서만 학습하고 나머지 30%(out-of-sample)에서 검증합니다. 자동 튜닝은 랜덤 탐색 + 좌표 하강으로
+              ~100회 실학습을 돌려 파라미터를 스스로 찾고, 찾은 값을 위 슬라이더에 반영합니다. 튜너는 검증창(20%)만 보고
+              홀드아웃(마지막 20%)은 못 봅니다 — 신뢰할 숫자는 홀드아웃뿐.
             </p>
           </div>
         </Card>
@@ -201,6 +249,54 @@ export function LabPageClient() {
               </div>
             )}
           </Card>
+
+          {tune && (
+            <Card>
+              <div className="flex items-baseline justify-between border-b border-border px-4 py-2.5">
+                <h2 className="text-sm font-semibold">자동 튜닝 결과 — {tune.trials.length}회 실측 탐색</h2>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  best: lr={tune.best.learningRate.toFixed(3)} · epochs={tune.best.epochs} · q{tune.best.quantile.toFixed(2)}
+                </span>
+              </div>
+              <div className="grid gap-4 p-4 lg:grid-cols-[1fr_260px]">
+                <div className="h-40 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={tune.trials.map((t) => ({ id: t.id, objective: t.objective > -10 ? t.objective : null }))} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+                      <CartesianGrid stroke="var(--color-border)" vertical={false} />
+                      <XAxis dataKey="id" tick={{ fontSize: 10, fill: "var(--color-muted-foreground)" }} tickLine={false} axisLine={false} minTickGap={30} label={undefined} />
+                      <YAxis tick={{ fontSize: 10, fill: "var(--color-muted-foreground)" }} tickLine={false} axisLine={false} width={36} domain={["auto", "auto"]} />
+                      <Tooltip
+                        contentStyle={{ background: "var(--color-popover)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12 }}
+                        labelStyle={{ color: "var(--color-muted-foreground)" }}
+                        formatter={(v) => [Number(v).toFixed(2), "val Sharpe"]}
+                      />
+                      <Line type="monotone" dataKey="objective" stroke="var(--color-chart-3)" strokeWidth={1.2} dot={{ r: 1.5 }} connectNulls />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p className="pt-1 text-center text-[10px] text-muted-foreground/60">트라이얼별 목적함수(검증 Sharpe) — 실학습 {tune.trials.length}회</p>
+                </div>
+                <dl className="grid h-fit grid-cols-2 gap-x-3 gap-y-1.5 font-mono text-[11px]">
+                  <dt className="text-muted-foreground">검증 Sharpe (튜너가 봄)</dt>
+                  <dd className="text-chart-2">{tune.bestObjective}</dd>
+                  <dt className="font-semibold text-foreground">홀드아웃 Sharpe (미접촉)</dt>
+                  <dd className="font-semibold">{tune.holdout.sharpe}</dd>
+                  <dt className="text-muted-foreground">홀드아웃 연환산</dt>
+                  <dd className={tune.holdout.annualReturnPct >= 0 ? "text-chart-1" : "text-destructive"}>{pct(tune.holdout.annualReturnPct)}</dd>
+                  <dt className="text-muted-foreground">단순보유 (동일 구간)</dt>
+                  <dd>{pct(tune.holdout.benchmarkReturnPct)}</dd>
+                  <dt className="text-muted-foreground">홀드아웃 MDD / 거래</dt>
+                  <dd>
+                    {tune.holdout.maxDrawdownPct}% · {tune.holdout.trades}회
+                  </dd>
+                  <dt className="text-muted-foreground">구간</dt>
+                  <dd className="text-muted-foreground">~{tune.splits.valEnd} / ~{tune.splits.holdoutEnd}</dd>
+                </dl>
+              </div>
+              <p className="border-t border-border px-4 py-2 text-[10px] leading-relaxed text-muted-foreground/70">
+                검증 Sharpe와 홀드아웃 Sharpe의 간극이 곧 튜너 과적합의 크기입니다 — 이 간극을 숨기지 않고 보여주는 것이 이 카드의 목적입니다.
+              </p>
+            </Card>
+          )}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>

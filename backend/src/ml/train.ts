@@ -43,8 +43,8 @@ export function predictProb(weights: number[], x: FeatureVector): number {
   return sigmoid(z);
 }
 
-/** mulberry32 — 시드 고정 PRNG (재현 가능한 셔플) */
-function rng(seed: number): () => number {
+/** mulberry32 — 시드 고정 PRNG (재현 가능한 셔플·탐색) */
+export function rng(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
     a |= 0;
