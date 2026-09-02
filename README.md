@@ -2,6 +2,14 @@
 
 KIS 기반 미국주식 + Upbit 크립토 자동매매 워크스페이스 (backend Express + frontend Next.js + mcp-worker Vercel 서버리스).
 
+## 실데이터 원칙
+
+화면의 모든 숫자는 실측이다. KIS 키가 없으면 미국주식 계좌/포지션/주문만
+모의(백엔드 응답에 `mock: true`)이고, 시세(Yahoo Finance 지연)·뉴스(Google
+News RSS)·크립토(Upbit)·파이프라인 지표는 전부 실데이터다. 배포된 대시보드는
+`/api/backend/*` 읽기 전용 프록시로 Railway 백엔드를 부르며, 토큰이 없으면
+"백엔드 미연결"을 그대로 보여준다 — 목 엔진으로 대체하지 않는다.
+
 ## 백테스트 비용 모델
 
 모든 백테스트 경로(backend `/api/crypto/backtest`, `/api/ml/*`, `/api/quant/report`,

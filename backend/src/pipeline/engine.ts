@@ -35,7 +35,7 @@ export const NODE_DEFS: PipelineNodeDef[] = [
     id: "tick-data",
     stage: "ingestion",
     name: "시세 틱",
-    description: "정형 소스 — KIS 실시간 체결/호가 틱. MOCK 모드에서는 랜덤워크 시뮬레이터가 같은 형태로 공급한다.",
+    description: "정형 소스 — KIS 실시간 체결/호가 틱. KIS 키가 없으면 Yahoo Finance 지연 실시세(호가 없음)가 같은 형태로 공급한다.",
     codeHint: `state.on("tick", (q) => pipeline.onTick(q))`,
   },
   {

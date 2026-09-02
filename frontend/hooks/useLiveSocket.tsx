@@ -2,17 +2,15 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import type { WsMessage, WsStatus } from "@/lib/types"
-import { getEngine } from "@/lib/mock/engine"
 
 /**
- * WS /ws/live relay client.
- *
- * MOCK MODE: instead of opening a real WebSocket, this connects to the
- * in-memory mock engine which pushes quote/execution/position/session
- * messages every 1–2s. To go live, replace the `connect` implementation with
- * `new WebSocket(WS_URL)` + `{ subscribe: [...] }` handshake and keep the
- * same reconnect/backoff logic — the rest of the app is unchanged.
+ * WS /ws/live 릴레이 클라이언트 — 백엔드의 실제 WebSocket에 붙는다.
+ * 브로드캐스트 전용 채널이라 토큰이 없다 (백엔드 wsRelay 참고).
+ * 연결이 없으면 status="disconnected"로 두고 아무것도 흘리지 않는다 —
+ * 가짜 틱으로 대체하지 않는다. 페이지들은 SWR 폴링으로도 동작한다.
  */
+
+const WS_URL = process.env.NEXT_PUBLIC_BACKEND_WS_URL ?? "wss://us-trading-production.up.railway.app/ws/live"
 
 type Handler = (msg: WsMessage) => void
 
@@ -26,61 +24,85 @@ const LiveContext = createContext<LiveContextValue | null>(null)
 export function LiveSocketProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<WsStatus>("disconnected")
   const handlersRef = useRef(new Set<{ channels: string[]; handler: Handler }>())
+  const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttempt = useRef(0)
 
+  // 현재 구독 채널 합집합을 서버에 알린다
+  const syncSubscriptions = useCallback(() => {
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) return
+    const chs = new Set<string>()
+    for (const e of handlersRef.current) for (const c of e.channels) chs.add(c)
+    if (chs.size) ws.send(JSON.stringify({ subscribe: [...chs] }))
+  }, [])
+
   useEffect(() => {
-    let unsubEngine: (() => void) | null = null
     let cancelled = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
     const connect = () => {
       if (cancelled) return
       setStatus("reconnecting")
-      // simulate connection handshake latency
-      const handshake = setTimeout(() => {
-        if (cancelled) return
-        const engine = getEngine()
-        engine.wsStatus = "connected"
-        engine.startTicking()
-        unsubEngine = engine.subscribe((msg) => {
-          for (const entry of handlersRef.current) {
-            if (entry.channels.some((c) => c === msg.ch || (c.endsWith("*") && msg.ch.startsWith(c.slice(0, -1))))) {
-              entry.handler(msg)
-            }
-          }
-        })
+      let ws: WebSocket
+      try {
+        ws = new WebSocket(WS_URL)
+      } catch {
+        scheduleReconnect()
+        return
+      }
+      wsRef.current = ws
+      ws.onopen = () => {
         reconnectAttempt.current = 0
         setStatus("connected")
-      }, 700)
-      return () => clearTimeout(handshake)
+        syncSubscriptions()
+      }
+      ws.onmessage = (ev) => {
+        let msg: WsMessage
+        try {
+          msg = JSON.parse(String(ev.data)) as WsMessage
+        } catch {
+          return
+        }
+        for (const entry of handlersRef.current) {
+          if (entry.channels.some((c) => c === msg.ch || (c.endsWith("*") && msg.ch.startsWith(c.slice(0, -1))))) entry.handler(msg)
+        }
+      }
+      ws.onclose = () => {
+        wsRef.current = null
+        if (cancelled) return
+        setStatus("disconnected")
+        scheduleReconnect()
+      }
+      ws.onerror = () => ws.close()
     }
 
-    // exponential backoff reconnect (max 30s) — used when the socket drops
     const scheduleReconnect = () => {
       const backoff = Math.min(30000, 1000 * 2 ** reconnectAttempt.current)
       reconnectAttempt.current += 1
       reconnectTimer = setTimeout(connect, backoff)
     }
-    void scheduleReconnect // kept for real-WS swap; mock never drops
 
     connect()
-
     return () => {
       cancelled = true
       if (reconnectTimer) clearTimeout(reconnectTimer)
-      unsubEngine?.()
-      getEngine().wsStatus = "disconnected"
+      wsRef.current?.close()
+      wsRef.current = null
       setStatus("disconnected")
     }
-  }, [])
+  }, [syncSubscriptions])
 
-  const subscribe = useCallback((channels: string[], handler: Handler) => {
-    const entry = { channels, handler }
-    handlersRef.current.add(entry)
-    return () => {
-      handlersRef.current.delete(entry)
-    }
-  }, [])
+  const subscribe = useCallback(
+    (channels: string[], handler: Handler) => {
+      const entry = { channels, handler }
+      handlersRef.current.add(entry)
+      syncSubscriptions()
+      return () => {
+        handlersRef.current.delete(entry)
+      }
+    },
+    [syncSubscriptions],
+  )
 
   return <LiveContext.Provider value={{ status, subscribe }}>{children}</LiveContext.Provider>
 }

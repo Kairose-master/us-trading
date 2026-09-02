@@ -4,8 +4,9 @@ import { logger } from "../core/logger.js";
 
 /**
  * 비정형 데이터 수집기 — 종목별 뉴스 헤드라인.
- * 실모드: Google News RSS (키 불필요). MOCK_DATA 또는 fetch 실패: 합성 헤드라인 폴백.
- * 어느 쪽이든 아이템에 source가 남아 실데이터/목데이터가 구분된다.
+ * 기본: Google News RSS (키 불필요 — MOCK_DATA와 무관하게 항상 실데이터).
+ * 합성 헤드라인은 NEWS_MOCK=true 로 명시했을 때만 (source="Mock*"로 구분).
+ * fetch 실패 시 폴백은 없다 — 그 주기엔 아무것도 내지 않고 다음 주기에 재시도.
  */
 
 export interface NewsItem {
@@ -73,7 +74,7 @@ function decodeEntities(s: string): string {
 export interface NewsIngestorOpts {
   /** 심볼 → 검색 쿼리 (기본 "{sym} stock"; 크립토 데스크는 "{sym} crypto") */
   queryFor?: (symbol: string) => string;
-  /** true면 합성 헤드라인 모드 (기본: config.MOCK_DATA) */
+  /** true면 합성 헤드라인 모드 (기본: config.NEWS_MOCK — 명시적 opt-in) */
   mockMode?: boolean;
 }
 
@@ -90,7 +91,7 @@ export class NewsIngestor extends EventEmitter {
   constructor(opts: NewsIngestorOpts = {}) {
     super();
     this.queryFor = opts.queryFor ?? ((s) => `${s} stock`);
-    this.mockMode = opts.mockMode ?? config.MOCK_DATA;
+    this.mockMode = opts.mockMode ?? config.NEWS_MOCK;
   }
 
   setSymbols(symbols: string[]) {

@@ -5,7 +5,7 @@ import useSWR from "swr"
 import { MessageSquareText, Newspaper, TrendingDown, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getSentiment, getSentimentFeed } from "@/lib/api"
+import { ApiError, getSentiment, getSentimentFeed, isBackendNotConfigured, type Market } from "@/lib/api"
 import { useLiveChannel } from "@/hooks/useLiveSocket"
 import type { ScoredNews, SentimentLabel } from "@/lib/types"
 
@@ -26,16 +26,21 @@ function fmtScore(score: number): string {
 }
 
 export function SentimentPageClient() {
+  const [market, setMarket] = useState<Market>("crypto")
   const [liveFeed, setLiveFeed] = useState<ScoredNews[]>([])
 
-  const { data: overview, isLoading, mutate } = useSWR("sentiment", getSentiment, { refreshInterval: 5000 })
-  const { data: fetchedFeed } = useSWR("sentiment-feed", () => getSentimentFeed(60), { refreshInterval: 5000 })
+  const { data: overview, isLoading, mutate, error } = useSWR(["sentiment", market], () => getSentiment(market), { refreshInterval: 5000 })
+  const { data: fetchedFeed } = useSWR(["sentiment-feed", market], () => getSentimentFeed(60, market), { refreshInterval: 5000 })
 
-  useLiveChannel(["sentiment"], (msg) => {
-    if (msg.ch !== "sentiment") return
+  const ch = market === "crypto" ? "crypto:sentiment" : "sentiment"
+  useLiveChannel([ch], (raw) => {
+    const msg = raw as unknown as { ch: string; data: { scored: ScoredNews[] } }
+    if (msg.ch !== ch) return
     setLiveFeed((prev) => [...msg.data.scored, ...prev].slice(0, 60))
     void mutate()
   })
+  const notConfigured = isBackendNotConfigured(error)
+  const errorMsg = error instanceof ApiError ? error.message : null
 
   const feed = dedupe([...liveFeed, ...(fetchedFeed ?? [])]).slice(0, 60)
   const scoredSymbols = (overview?.symbols ?? []).filter((s) => s.mentions > 0)
@@ -43,11 +48,41 @@ export function SentimentPageClient() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold">마켓 센티먼트</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold">마켓 센티먼트</h1>
+          <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-0.5" role="radiogroup" aria-label="시장 선택">
+            {(["crypto", "us"] as Market[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={market === m}
+                onClick={() => {
+                  setMarket(m)
+                  setLiveFeed([])
+                }}
+                className={cn(
+                  "rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                  market === m ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {m === "crypto" ? "크립토" : "미국주식"}
+              </button>
+            ))}
+          </div>
+        </div>
         <p className="text-[11px] text-muted-foreground/70">
-          비정형 소스(뉴스 헤드라인) → 렉시콘 채점 → 심볼별 EMA — 근거 단어가 함께 남습니다
+          비정형 소스(Google News 실헤드라인) → 렉시콘 채점 → 심볼별 EMA — 근거 단어가 함께 남습니다
         </p>
       </div>
+      {notConfigured && (
+        <Card className="p-4">
+          <EmptyState title="백엔드 미연결" hint="이 배포에 BACKEND_TOKEN이 설정되지 않았습니다 — 목데이터로 대체하지 않습니다. Vercel 환경변수에 백엔드 토큰을 넣으면 실데이터가 흐릅니다." />
+        </Card>
+      )}
+      {!notConfigured && errorMsg && (
+        <Card className="p-4 text-xs text-destructive">불러오기 실패: {errorMsg}</Card>
+      )}
 
       {/* 상단 지표 */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

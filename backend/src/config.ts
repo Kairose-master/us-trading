@@ -12,6 +12,11 @@ const Env = z.object({
     .default("true")
     .transform((v) => v === "true"),
   API_AUTH_TOKEN: z.string().default("dev-token"),
+  // 합성 뉴스 헤드라인 — 명시적 opt-in. 기본은 Google News RSS 실데이터 (키 불필요)
+  NEWS_MOCK: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   // 허용 CORS 오리진 (콤마 구분). 배포 시 대시보드 도메인을 추가할 것.
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   // ===== 자동매매 (전부 기본 OFF) =====

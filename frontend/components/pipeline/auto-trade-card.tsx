@@ -37,7 +37,7 @@ export function AutoTradeCard() {
       await mutate(next, { revalidate: false })
       toast.success(next.enabled ? "자동매매를 켰습니다 — 모든 주문은 리스크 관문을 지납니다" : "자동매매를 껐습니다")
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "자동매매 상태를 변경하지 못했습니다")
+      toast.error(e instanceof ApiError ? e.message : "자동매매 상태를 변경하지 못했습니다 (공개 대시보드는 읽기 전용)")
     } finally {
       setBusy(false)
     }

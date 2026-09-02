@@ -4,7 +4,7 @@ import useSWR from "swr"
 import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getPipelineNode } from "@/lib/api"
+import { getPipelineNode, type Market } from "@/lib/api"
 import type { PipelineNodeStatus } from "@/lib/types"
 
 const STATUS_LABEL: Record<PipelineNodeStatus, string> = {
@@ -19,8 +19,8 @@ const STATUS_CLASS: Record<PipelineNodeStatus, string> = {
   error: "bg-destructive/15 text-destructive",
 }
 
-export function NodeInspector({ nodeId, onClose }: { nodeId: string; onClose: () => void }) {
-  const { data: node, isLoading } = useSWR(["pipeline-node", nodeId], () => getPipelineNode(nodeId), {
+export function NodeInspector({ nodeId, market = "us", onClose }: { nodeId: string; market?: Market; onClose: () => void }) {
+  const { data: node, isLoading } = useSWR(["pipeline-node", market, nodeId], () => getPipelineNode(nodeId, market), {
     refreshInterval: 2000,
   })
 

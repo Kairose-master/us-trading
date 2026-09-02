@@ -48,11 +48,18 @@
 
 - **비용**: Railway는 무료 크레딧 소진 후 유료(Hobby $5/월 안팎). 이
   백엔드는 메모리 ~150MB급이라 최저 사양이면 충분.
-- **대시보드 연동**: 현재 Vercel 대시보드의 홈/주문/포지션 화면은
-  의도적으로 목 엔진이다 (`frontend/lib/api.ts`). Railway 백엔드가 떠도
-  그 화면들이 자동으로 실데이터가 되진 않는다 — 실연동 배선은 별도
-  작업. 크립토/스캐너/퀀트/랩 페이지는 브라우저가 업비트를 직접 불러서
-  백엔드와 무관하게 이미 실데이터.
+- **대시보드 연동 (Vercel)**: 대시보드는 `/api/backend/*` 읽기 전용
+  프록시(Next 라우트 핸들러)로 이 백엔드를 부른다. 토큰은 서버 env에만.
+  Vercel 프로젝트 → Settings → Environment Variables에
+  **`BACKEND_TOKEN`** = Railway의 `API_AUTH_TOKEN` 값 하나만 넣고
+  Redeploy. (`BACKEND_URL`은 Railway 주소가 기본값이라 생략 가능.)
+  토큰이 없으면 화면은 "백엔드 미연결"을 그대로 보여준다 — 목데이터로
+  대체하지 않는다. 쓰기(주문·자동매매 토글·킬스위치)는 공개 대시보드에서
+  막혀 있고 백엔드 API에 직접 토큰으로만 가능하다.
+- **KIS 키 없이도 미국주식 파이프라인은 실데이터**: `MOCK_DATA=true`는
+  이제 "계좌/포지션/주문만 모의"라는 뜻이고, 시세는 Yahoo Finance(지연,
+  호가 없음), 뉴스는 Google News RSS 실데이터다. 랜덤워크 틱·합성
+  헤드라인은 `NEWS_MOCK=true`로 명시하지 않는 한 나오지 않는다.
 - **페이퍼 실적 확인**은 당분간 API로:
   `GET /api/crypto/status` (현재 장부) ·
   `GET /api/crypto/paper/equity` (시간당 에쿼티 커브) ·

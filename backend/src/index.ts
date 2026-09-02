@@ -17,6 +17,7 @@ import { handleMcpRequest } from "./mcp/server.js";
 import { autoTrader } from "./trade/auto-trader.js";
 import { cryptoDesk } from "./crypto/desk.js";
 import { scannerServer } from "./crypto/scanner-server.js";
+import { startYahooTicks } from "./data/yahoo.js";
 
 const app = express();
 app.use(cors({ origin: config.corsOrigins, credentials: false }));
@@ -104,11 +105,6 @@ state.on("tick", (q) => pipeline.onTick(q));
 newsIngestor.setSymbols(trackedSymbols);
 newsIngestor.on("news", (items) => pipeline.onNews(items));
 newsIngestor.start();
-// 파이프라인이 추적하는 비보유 심볼도 시세가 흐르도록 시드 (MOCK 모드)
-if (config.MOCK_DATA) {
-  const seeds: Record<string, number> = { NVDA: 172.6, TSLA: 312.5, AAPL: 228.4, MSFT: 462.1, GOOGL: 189.3 };
-  for (const [sym, px] of Object.entries(seeds)) state.ensureQuote(sym, sym, "NAS", px);
-}
 
 // 자동매매 실행기 — 파이프라인 신호에 배선 (기본 OFF, env/REST/MCP로 토글)
 autoTrader.attach();
@@ -119,8 +115,11 @@ scannerServer.startAutoLoop();
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {
-  state.startMockTicks();
-  logger.info("MOCK_DATA 모드 — KIS 연결 없이 목데이터로 동작");
+  // KIS 키 없음 → 시세는 Yahoo Finance 실데이터(지연)로. 랜덤워크 가짜 틱은
+  // 쓰지 않는다 — 파이프라인이 먹는 가격은 항상 실제 가격이어야 한다.
+  // 계좌/포지션/주문만 모의 상태로 남는다 (실계좌 아님, 화면에 mock 표기).
+  startYahooTicks(trackedSymbols);
+  logger.info("MOCK_DATA 모드 — KIS 계좌는 모의, 시세는 Yahoo Finance 실데이터");
 } else {
   kisWs.connect().catch((e) => logger.error("KIS WS 초기 연결 실패", { error: e.message }));
 }

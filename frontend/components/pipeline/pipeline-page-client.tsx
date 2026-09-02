@@ -5,7 +5,7 @@ import useSWR from "swr"
 import { Activity, Gauge, Network, Radio } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getPipeline, getPipelineLogs } from "@/lib/api"
+import { ApiError, getPipeline, getPipelineLogs, isBackendNotConfigured, type Market } from "@/lib/api"
 import { useLiveChannel } from "@/hooks/useLiveSocket"
 import type { PipelineLogLine, PipelineSnapshot } from "@/lib/types"
 import { PipelineDag } from "./pipeline-dag"
@@ -13,26 +13,58 @@ import { NodeInspector } from "./node-inspector"
 import { AutoTradeCard } from "./auto-trade-card"
 
 export function PipelinePageClient() {
+  const [market, setMarket] = useState<Market>("crypto")
   const [selected, setSelected] = useState<string | null>(null)
   const [live, setLive] = useState<PipelineSnapshot | null>(null)
   const [liveLogs, setLiveLogs] = useState<PipelineLogLine[]>([])
 
-  const { data: fetched, isLoading } = useSWR("pipeline", getPipeline, { refreshInterval: 5000 })
-  const { data: fetchedLogs } = useSWR("pipeline-logs", () => getPipelineLogs(80), { refreshInterval: 5000 })
+  const { data: fetched, isLoading, error } = useSWR(["pipeline", market], () => getPipeline(market), { refreshInterval: 5000 })
+  const { data: fetchedLogs } = useSWR(["pipeline-logs", market], () => getPipelineLogs(80, market), { refreshInterval: 5000 })
 
-  useLiveChannel(["pipeline", "pipeline:log"], (msg) => {
-    if (msg.ch === "pipeline") setLive(msg.data)
-    if (msg.ch === "pipeline:log") setLiveLogs((prev) => [msg.data, ...prev].slice(0, 80))
+  const chSnap = market === "crypto" ? "crypto:pipeline" : "pipeline"
+  const chLog = market === "crypto" ? "crypto:pipeline:log" : "pipeline:log"
+  useLiveChannel([chSnap, chLog], (raw) => {
+    const msg = raw as unknown as { ch: string; data: unknown }
+    if (msg.ch === chSnap) setLive(msg.data as PipelineSnapshot)
+    if (msg.ch === chLog) setLiveLogs((prev) => [msg.data as PipelineLogLine, ...prev].slice(0, 80))
   })
 
+  const switchMarket = (m: Market) => {
+    setMarket(m)
+    setLive(null)
+    setLiveLogs([])
+    setSelected(null)
+  }
+
   const snapshot = live ?? fetched
+  const notConfigured = isBackendNotConfigured(error)
+  const errorMsg = error instanceof ApiError ? error.message : error ? String(error) : null
   // 라이브 로그 + 초기 로드 병합 (ts+message 기준 중복 제거)
   const logs = dedupeLogs([...liveLogs, ...(fetchedLogs ?? [])]).slice(0, 80)
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold">데이터 파이프라인</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-bold">데이터 파이프라인</h1>
+          <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-0.5" role="radiogroup" aria-label="시장 선택">
+            {(["crypto", "us"] as Market[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                role="radio"
+                aria-checked={market === m}
+                onClick={() => switchMarket(m)}
+                className={cn(
+                  "rounded px-2 py-1 text-[11px] font-medium transition-colors",
+                  market === m ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {m === "crypto" ? "크립토 (Upbit 24/7)" : "미국주식 (Yahoo 지연)"}
+              </button>
+            ))}
+          </div>
+        </div>
         {snapshot && (
           <span
             className={cn(
@@ -74,14 +106,21 @@ export function PipelinePageClient() {
         />
       </div>
 
-      <AutoTradeCard />
+      {market === "us" && <AutoTradeCard />}
 
       <div className={cn("grid gap-4", selected ? "xl:grid-cols-[1fr_360px]" : "")}>
         <Card className="p-3">
           {isLoading && !snapshot ? (
             <Skeleton className="h-[420px] w-full" />
           ) : !snapshot ? (
-            <EmptyState title="파이프라인 상태를 불러올 수 없습니다" />
+            <EmptyState
+              title={notConfigured ? "백엔드 미연결" : "파이프라인 상태를 불러올 수 없습니다"}
+              hint={
+                notConfigured
+                  ? "이 배포에 BACKEND_TOKEN이 설정되지 않았습니다 — 목데이터로 대체하지 않습니다. Vercel 환경변수에 백엔드 토큰을 넣으면 실데이터가 흐릅니다."
+                  : errorMsg ?? undefined
+              }
+            />
           ) : (
             <PipelineDag snapshot={snapshot} selected={selected} onSelect={(id) => setSelected((cur) => (cur === id ? null : id))} />
           )}
@@ -89,7 +128,7 @@ export function PipelinePageClient() {
         </Card>
         {selected && (
           <div className="min-h-[420px]">
-            <NodeInspector nodeId={selected} onClose={() => setSelected(null)} />
+            <NodeInspector nodeId={selected} market={market} onClose={() => setSelected(null)} />
           </div>
         )}
       </div>

@@ -19,209 +19,206 @@ import type {
   SymbolInfo,
   SystemStatus,
 } from "@/lib/types"
-import { getEngine } from "@/lib/mock/engine"
 
 /**
- * API client for the self-hosted KIS backend.
+ * 백엔드 API 클라이언트 — 실제 fetch. 브라우저 → /api/backend/* (Next 라우트
+ * 핸들러) → 백엔드. 토큰은 서버 env(BACKEND_TOKEN)에만 있다.
  *
- * MOCK MODE: every function below simulates the real REST endpoint with the
- * exact response shape. To connect the real backend, replace the bodies with
- * `fetch(`${BASE_URL}${path}`)` calls — nothing else in the app needs to change.
+ * 목데이터 폴백은 없다. 백엔드가 연결되지 않았으면 ApiError(503,
+ * BACKEND_NOT_CONFIGURED)를 던지고 화면은 "미연결"을 그대로 보여준다.
+ * 공개 대시보드라 프록시는 읽기 전용 — 쓰기 계열은 ApiError(405)가 난다.
  */
+
+export type Market = "us" | "crypto"
 
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
-function delay(ms = 300 + Math.random() * 300) {
-  return new Promise((r) => setTimeout(r, ms))
+export function isBackendNotConfigured(e: unknown): boolean {
+  return e instanceof ApiError && e.code === "BACKEND_NOT_CONFIGURED"
 }
 
-// GET /api/account/balance
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`/api/backend/${path}`, { ...init, cache: "no-store" })
+  if (!res.ok) {
+    let body: { error?: string; code?: string } = {}
+    try {
+      body = (await res.json()) as { error?: string; code?: string }
+    } catch {
+      /* 본문 없음 */
+    }
+    throw new ApiError(res.status, body.error ?? `HTTP ${res.status}`, body.code)
+  }
+  return (await res.json()) as T
+}
+
+const readOnly = (): never => {
+  throw new ApiError(405, "공개 대시보드는 읽기 전용 — 이 동작은 백엔드 API에 직접 토큰으로 호출하세요", "READ_ONLY")
+}
+
+// ===== 계좌 (KIS 키 없으면 백엔드의 모의 계좌 — 응답의 mock 표기를 믿을 것) =====
+
 export async function getBalance(): Promise<Balance> {
-  await delay()
-  return getEngine().getBalance()
+  return req("account/balance")
 }
 
-// GET /api/account/positions
 export async function getPositions(): Promise<Position[]> {
-  await delay()
-  return getEngine().getPositions()
+  return req("account/positions")
 }
 
-// GET /api/quotes/:symbol
 export async function getQuote(symbol: string): Promise<Quote> {
-  await delay(150 + Math.random() * 150)
-  const q = getEngine().getQuote(symbol)
-  if (!q) throw new ApiError(404, `종목을 찾을 수 없습니다: ${symbol}`)
-  return q
+  return req(`quotes/${encodeURIComponent(symbol)}`)
 }
 
-// GET /api/quotes/:symbol/chart?interval=1m|5m|1d&count=120
 export async function getChart(symbol: string, interval: "1m" | "5m" | "1d" = "5m", count = 120): Promise<Candle[]> {
-  await delay()
-  return getEngine().getChart(symbol, interval, count)
+  return req(`quotes/${encodeURIComponent(symbol)}/chart?interval=${interval}&count=${count}`)
 }
 
-// POST /api/orders — 409 {error} if a risk limit blocks it
-export async function placeOrder(req: OrderRequest): Promise<{ orderId: string; status: "accepted" }> {
-  await delay()
-  const res = getEngine().placeOrder(req)
-  if (!res.ok) throw new ApiError(409, res.error)
-  return { orderId: res.orderId, status: "accepted" }
+export async function placeOrder(_req: OrderRequest): Promise<{ orderId: string; status: "accepted" }> {
+  return readOnly()
 }
 
-// GET /api/orders?status=open|filled|all
 export async function getOrders(status: "open" | "filled" | "all" = "all"): Promise<Order[]> {
-  await delay()
-  return getEngine().getOrders(status)
+  return req(`orders?status=${status}`)
 }
 
-// DELETE /api/orders/:orderId
-export async function cancelOrder(orderId: string): Promise<{ ok: true }> {
-  await delay()
-  const ok = getEngine().cancelOrder(orderId)
-  if (!ok) throw new ApiError(409, "취소할 수 없는 주문입니다 (이미 체결/취소됨).")
-  return { ok: true }
+export async function cancelOrder(_orderId: string): Promise<{ ok: true }> {
+  return readOnly()
 }
 
-// GET /api/strategies
+// ===== 전략 =====
+
 export async function getStrategies(): Promise<Strategy[]> {
-  await delay()
-  return getEngine().getStrategies()
+  return req("strategies")
 }
 
-// POST /api/strategies/:id/start
-export async function startStrategy(id: string): Promise<{ ok: true }> {
-  await delay()
-  const ok = getEngine().setStrategyStatus(id, "running")
-  if (!ok) throw new ApiError(409, "전략을 시작할 수 없습니다 (킬 스위치 활성화 상태).")
-  return { ok: true }
+export async function startStrategy(_id: string): Promise<{ ok: true }> {
+  return readOnly()
 }
 
-// POST /api/strategies/:id/stop
-export async function stopStrategy(id: string): Promise<{ ok: true }> {
-  await delay()
-  getEngine().setStrategyStatus(id, "stopped")
-  return { ok: true }
+export async function stopStrategy(_id: string): Promise<{ ok: true }> {
+  return readOnly()
 }
 
-// PATCH /api/strategies/:id/config
-export async function patchStrategyConfig(id: string, config: Partial<StrategyConfig>): Promise<{ ok: true }> {
-  await delay()
-  const ok = getEngine().patchStrategyConfig(id, config)
-  if (!ok) throw new ApiError(404, "전략을 찾을 수 없습니다.")
-  return { ok: true }
+export async function patchStrategyConfig(_id: string, _config: Partial<StrategyConfig>): Promise<{ ok: true }> {
+  return readOnly()
 }
 
-// GET /api/strategies/:id/logs?limit=100
 export async function getStrategyLogs(id: string, limit = 100): Promise<StrategyLog[]> {
-  await delay()
-  return getEngine().getLogs(id, limit)
+  return req(`strategies/${encodeURIComponent(id)}/logs?limit=${limit}`)
 }
 
-// GET /api/risk/limits
+// ===== 리스크 =====
+
 export async function getRiskLimits(): Promise<RiskLimits> {
-  await delay()
-  return getEngine().getRiskLimits()
+  return req("risk/limits")
 }
 
-// PATCH /api/risk/limits
 export async function patchRiskLimits(
-  patch: Partial<Pick<RiskLimits, "maxOrderAmountUsd" | "maxDailyLossUsd" | "maxSymbolWeightPct" | "maxOpenPositions">>,
+  _patch: Partial<Pick<RiskLimits, "maxOrderAmountUsd" | "maxDailyLossUsd" | "maxSymbolWeightPct" | "maxOpenPositions">>,
 ): Promise<{ ok: true }> {
-  await delay()
-  getEngine().patchRiskLimits(patch)
-  return { ok: true }
+  return readOnly()
 }
 
-// POST /api/risk/killswitch
 export async function activateKillSwitch(): Promise<{ ok: true; stoppedStrategies: string[] }> {
-  await delay()
-  const stoppedStrategies = getEngine().activateKillSwitch()
-  return { ok: true, stoppedStrategies }
+  return readOnly()
 }
 
-// (convenience, mirrors backend endpoint for manual resume)
 export async function deactivateKillSwitch(): Promise<{ ok: true }> {
-  await delay()
-  getEngine().deactivateKillSwitch()
-  return { ok: true }
+  return readOnly()
 }
 
-// GET /api/system/status
+// ===== 시스템 =====
+
 export async function getSystemStatus(): Promise<SystemStatus> {
-  await delay(120)
-  return getEngine().getSystemStatus()
+  return req("system/status")
 }
 
-// GET /api/symbols?q= (autocomplete source)
+/** 백엔드에 심볼 검색 API가 없다 — 파이프라인이 추적하는 심볼 목록을 그대로 쓴다 (실제 티커) */
 export async function searchSymbols(q: string): Promise<SymbolInfo[]> {
-  await delay(120)
+  const snap = await getPipeline("us")
+  const symbols = new Set<string>()
+  for (const n of snap.nodes) {
+    const m = /\[(.+?)\]/.exec(n.description)
+    if (m) for (const s of m[1].split(",")) symbols.add(s.trim())
+  }
+  const positions = await getPositions().catch(() => [] as Position[])
+  const all: SymbolInfo[] = [
+    ...positions.map((p) => ({ symbol: p.symbol, name: p.name, exch: p.exch })),
+    ...["NVDA", "TSLA", "AAPL", "MSFT", "GOOGL"].map((s) => ({ symbol: s, name: s, exch: "NAS" as const })),
+  ].filter((v, i, arr) => arr.findIndex((x) => x.symbol === v.symbol) === i)
   const query = q.trim().toLowerCase()
-  const all = getEngine().getSymbols()
   if (!query) return all
   return all.filter((s) => s.symbol.toLowerCase().includes(query) || s.name.toLowerCase().includes(query))
 }
 
-// GET /api/account/equity-curve?days=30
-export async function getEquityCurve(days = 30): Promise<EquityPoint[]> {
-  await delay()
-  return getEngine().getEquityCurve(days)
+/** 백엔드에 계좌 에쿼티 커브 API가 없다 — 빈 배열 (지어내지 않는다). 크립토 페이퍼 커브는 getPaperEquity */
+export async function getEquityCurve(_days = 30): Promise<EquityPoint[]> {
+  return []
 }
 
-// ===== 데이터/ML 파이프라인 =====
+// ===== 데이터/ML 파이프라인 (us = Yahoo 실시세 + Google News, crypto = Upbit + Google News) =====
 
-// GET /api/pipeline
-export async function getPipeline(): Promise<PipelineSnapshot> {
-  await delay(120)
-  return getEngine().pipeline.snapshot()
+const prefix = (market: Market) => (market === "crypto" ? "crypto/" : "")
+
+export async function getPipeline(market: Market = "us"): Promise<PipelineSnapshot> {
+  return req(`${prefix(market)}pipeline`)
 }
 
-// GET /api/pipeline/nodes/:id
-export async function getPipelineNode(id: string): Promise<PipelineNodeDetail> {
-  await delay(100)
-  const detail = getEngine().pipeline.nodeDetail(id)
-  if (!detail) throw new ApiError(404, `노드를 찾을 수 없습니다: ${id}`)
-  return detail
+export async function getPipelineNode(id: string, market: Market = "us"): Promise<PipelineNodeDetail> {
+  return req(`${prefix(market)}pipeline/nodes/${encodeURIComponent(id)}`)
 }
 
-// GET /api/pipeline/logs?limit=100
-export async function getPipelineLogs(limit = 100): Promise<PipelineLogLine[]> {
-  await delay(100)
-  return getEngine().pipeline.logs.slice(0, limit)
+export async function getPipelineLogs(limit = 100, market: Market = "us"): Promise<PipelineLogLine[]> {
+  return req(`${prefix(market)}pipeline/logs?limit=${limit}`)
 }
 
 // ===== 감성 =====
 
-// GET /api/sentiment
-export async function getSentiment(): Promise<SentimentOverview> {
-  await delay(120)
-  return getEngine().pipeline.sentimentOverview()
+export async function getSentiment(market: Market = "us"): Promise<SentimentOverview> {
+  return req(`${prefix(market)}sentiment`)
 }
 
-// GET /api/sentiment/feed?limit=50
-export async function getSentimentFeed(limit = 50): Promise<ScoredNews[]> {
-  await delay(100)
-  return getEngine().pipeline.feed.slice(0, limit)
+export async function getSentimentFeed(limit = 50, market: Market = "us"): Promise<ScoredNews[]> {
+  return req(`${prefix(market)}sentiment/feed?limit=${limit}`)
 }
 
 // ===== 자동매매 =====
 
-// GET /api/autotrade
 export async function getAutoTrade(): Promise<AutoTradeStatus> {
-  await delay(100)
-  return getEngine().getAutoTradeStatus()
+  return req("autotrade")
 }
 
-// POST /api/autotrade {enabled} — 409 {error} if it cannot be enabled
-export async function setAutoTrade(enabled: boolean): Promise<AutoTradeStatus> {
-  await delay(150)
-  const res = getEngine().setAutoTrade(enabled)
-  if (!res.ok) throw new ApiError(409, res.error)
-  return getEngine().getAutoTradeStatus()
+export async function setAutoTrade(_enabled: boolean): Promise<AutoTradeStatus> {
+  return readOnly()
+}
+
+// ===== 크립토 페이퍼 장부 (Railway 볼륨에 영속) =====
+
+export interface CryptoPaperStatus {
+  tradeEnabled: boolean
+  mode: "paper" | "real"
+  paperSince: string | null
+  paperStartKrw: number
+  costs: { feePct: number; slipPct: number }
+  equityKrw: number
+  cashKrw: number
+  positions: Array<{ symbol: string; qty: number; avgKrw: number; curKrw: number }>
+  orders: Array<{ id: string; market: string; side: "buy" | "sell"; volume: number; priceKrw: number; amountKrw: number; costKrw: number; mode: string; reason: string; ts: string }>
+  lastError: string | null
+}
+
+export async function getCryptoStatus(): Promise<CryptoPaperStatus> {
+  return req("crypto/status")
+}
+
+export async function getPaperEquity(limit = 2000): Promise<Array<{ ts: string; equityKrw: number; cashKrw: number; positions: number }>> {
+  return req(`crypto/paper/equity?limit=${limit}`)
 }
