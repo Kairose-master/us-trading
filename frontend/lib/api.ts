@@ -242,8 +242,10 @@ export interface OfficeRun {
   id: string
   startedAt: string
   finishedAt: string | null
-  phase: "hiring" | "escrowed" | "working" | "deciding" | "executed" | "rejected" | "failed"
+  phase: "hiring" | "escrowed" | "escrow-pending" | "working" | "deciding" | "executed" | "rejected" | "failed"
   scope: string
+  markets?: string[]
+  retries?: number
   budgetUsd: number
   headline: string | null
   decision: OfficeDecision | null

@@ -26,13 +26,23 @@ import { buildDecision, delegationHeadline, renderConversation, DEFAULT_GATE, ty
 const ROOT = join(process.cwd(), "data", "office");
 const POLL_MS = 60_000;
 const MAX_WAIT_MS = 6 * 60 * 60_000; // 오피스가 6시간 안에 못 끝내면 이번 사이클 포기
+// escrow(confirm_delegation)가 번들러 타임아웃으로 실패하면 — 2026-09-02 Base Sepolia에서
+// 하루 종일 그랬다 — 새 오피스를 또 고용하지 말고 같은 딜리게이션을 30분마다 다시 민다.
+// Handsel은 중복 게시를 막으므로 재시도는 안전하고, planned 딜리게이션은 돈이 안 묶인다.
+const ESCROW_RETRY_MS = 30 * 60_000;
+const ESCROW_RETRY_MAX = 8; // 4시간까지
+const RESUME_WINDOW_MS = 24 * 60 * 60_000; // 재기동 시 이 안의 미완 run만 이어받는다
 
 export interface OfficeRun {
   id: string; // delegation id
   startedAt: string;
   finishedAt: string | null;
-  phase: "hiring" | "escrowed" | "working" | "deciding" | "executed" | "rejected" | "failed";
+  phase: "hiring" | "escrowed" | "escrow-pending" | "working" | "deciding" | "executed" | "rejected" | "failed";
   scope: string;
+  /** 바스켓 마켓 — 결정 관문의 allowedMarkets. 구 run.json에는 없어 scope에서 복원한다 */
+  markets?: string[];
+  /** escrow 재시도 횟수 (escrow-pending에서만 의미) */
+  retries?: number;
   budgetUsd: number;
   headline: string | null;
   decision: DecisionRecord | null;
@@ -128,10 +138,27 @@ class OfficeLoop {
     return { scope, markets: pool };
   }
 
-  /** 한 사이클: 고용 → escrow → 대기 → 결정 → 관문 → (페이퍼) 실행 */
-  async runOnce(opts: { budgetUsd?: number } = {}): Promise<OfficeRun> {
+  /** 이어받을 수 있는 run — escrow 대기 중이거나 재기동으로 끊긴 것 (24h 이내) */
+  resumable(): OfficeRun | null {
+    const now = Date.now();
+    for (const r of this.list()) {
+      if (now - Date.parse(r.startedAt) > RESUME_WINDOW_MS) continue;
+      if (r.phase === "escrow-pending" || r.phase === "escrowed" || r.phase === "working" || r.phase === "deciding") return r;
+      // 이 코드가 들어가기 전 빌드가 남긴 형태: confirm 실패를 곧바로 failed로 적었다
+      if (r.phase === "failed" && /confirm_delegation/.test(r.error ?? "")) return r;
+    }
+    return null;
+  }
+
+  /** 한 사이클: (이어받을 run이 있으면 그것부터) 고용 → escrow → 대기 → 결정 → 관문 → (페이퍼) 실행 */
+  async runOnce(opts: { budgetUsd?: number; resume?: boolean } = {}): Promise<OfficeRun> {
     if (this.running) throw new Error("오피스 사이클이 이미 진행 중");
     if (!handsel.configured()) throw new Error("HANDSEL_MCP_TOKEN 미설정");
+    const pending = opts.resume === false ? null : this.resumable();
+    if (pending) {
+      logger.info("미완 오피스 run 이어받음", { id: pending.id, phase: pending.phase, retries: pending.retries ?? 0 });
+      return this.continueRun(pending);
+    }
     this.running = true;
     const budgetUsd = opts.budgetUsd ?? config.OFFICE_BUDGET_USD;
     const run: OfficeRun = {
@@ -140,6 +167,8 @@ class OfficeLoop {
       finishedAt: null,
       phase: "hiring",
       scope: "",
+      markets: [],
+      retries: 0,
       budgetUsd,
       headline: null,
       decision: null,
@@ -150,6 +179,7 @@ class OfficeLoop {
       const built = await this.buildScope();
       if (!built) throw new Error("스캐너 후보가 2개 미만 — 오피스를 부르지 않음 (현금 유지)");
       run.scope = built.scope;
+      run.markets = built.markets;
 
       // 1) 고용 (드래프트만 — 돈 안 움직임)
       const hired = await handsel.hireOffice({
@@ -165,22 +195,52 @@ class OfficeLoop {
       run.id = idm[1];
       this.current = run;
       save(run);
+    } catch (e) {
+      run.error = (e as Error).message;
+      run.phase = "failed";
+      run.finishedAt = new Date().toISOString();
+      logger.warn("오피스 고용 실패", { error: run.error });
+      if (run.id) save(run);
+      this.current = run;
+      this.running = false;
+      return run;
+    }
+    this.running = false;
+    return this.continueRun(run);
+  }
 
+  /** 고용된 run을 끝까지: escrow → 대기 → 결정 → 관문 → 실행. escrow가 안 되면 escrow-pending으로 두고 재시도를 건다 */
+  private async continueRun(run: OfficeRun): Promise<OfficeRun> {
+    if (this.running) throw new Error("오피스 사이클이 이미 진행 중");
+    this.running = true;
+    this.current = run;
+    run.finishedAt = null;
+    const markets = run.markets?.length ? run.markets : (run.scope.match(/KRW-[A-Z0-9]+/g) ?? []);
+    try {
       // 2) escrow (여기서 Handsel USDC가 묶인다 — 테스트넷 기본)
-      run.phase = "escrowed";
-      try {
-        await handsel.confirmDelegation(run.id);
-      } catch (e) {
-        // 타임아웃이어도 온체인은 갔을 수 있다 — 상태로 재확인 (이중 게시 없음: Handsel 보장)
-        logger.warn("confirm_delegation 오류 — 상태로 재확인", { error: (e as Error).message });
-        const st = await handsel.delegationStatus();
-        const head = delegationHeadline(st, run.id) ?? "";
-        if (!/\[posted\]|\[completed\]/.test(head)) await handsel.confirmDelegation(run.id);
+      if (run.phase === "hiring" || run.phase === "escrowed" || run.phase === "escrow-pending" || run.phase === "failed") {
+        run.phase = "escrowed";
+        run.error = null;
+        save(run);
+        const posted = await this.escrow(run);
+        if (!posted) {
+          run.retries = (run.retries ?? 0) + 1;
+          if (run.retries > ESCROW_RETRY_MAX) {
+            throw new Error(`escrow ${ESCROW_RETRY_MAX}회 재시도 실패 — 포기: ${run.error}`);
+          }
+          run.phase = "escrow-pending";
+          save(run);
+          logger.warn("escrow 실패 — 재시도 예약", { id: run.id, retries: run.retries, inMin: ESCROW_RETRY_MS / 60_000, error: run.error });
+          setTimeout(() => void this.runOnce().catch(() => undefined), ESCROW_RETRY_MS).unref();
+          this.running = false;
+          return run;
+        }
       }
-      save(run);
 
       // 3) 오피스가 일하는 동안 대기 (delegation_status 폴링이 정산도 밀어준다)
       run.phase = "working";
+      run.error = null;
+      save(run);
       const t0 = Date.now();
       let statusText = "";
       let headline: string | null = null;
@@ -199,7 +259,7 @@ class OfficeLoop {
       // 4) 결정
       run.phase = "deciding";
       const output = await handsel.getDelegationOutput(run.id);
-      const decision = buildDecision({ delegationId: run.id, output, statusText, gate: { ...DEFAULT_GATE, allowedMarkets: new Set(built.markets) } });
+      const decision = buildDecision({ delegationId: run.id, output, statusText, gate: { ...DEFAULT_GATE, allowedMarkets: new Set(markets) } });
       run.decision = decision;
       const conversation = renderConversation({ delegationId: run.id, headline, decision, output });
       save(run, { conversation });
@@ -215,17 +275,42 @@ class OfficeLoop {
         run.execution = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped, ...(r.error ? { error: r.error } : {}) };
         run.phase = r.error ? "rejected" : "executed";
       }
+      run.finishedAt = new Date().toISOString();
     } catch (e) {
       run.error = (e as Error).message;
       run.phase = "failed";
-      logger.warn("오피스 사이클 실패", { id: run.id || null, error: run.error });
-    } finally {
       run.finishedAt = new Date().toISOString();
-      if (run.id) save(run);
+      logger.warn("오피스 사이클 실패", { id: run.id, error: run.error });
+    } finally {
+      save(run);
       this.current = run;
       this.running = false;
     }
     return run;
+  }
+
+  /** confirm_delegation → 실제로 [posted]/[completed]가 됐는지로 판정. 오류 문자열은 run.error에 남긴다 */
+  private async escrow(run: OfficeRun): Promise<boolean> {
+    const isPosted = async () => {
+      const head = delegationHeadline(await handsel.delegationStatus(), run.id) ?? "";
+      return /\[posted\]|\[completed\]/.test(head);
+    };
+    // 지난 시도의 트랜잭션이 늦게 올라왔을 수 있다 — 먼저 상태부터
+    if (await isPosted()) return true;
+    try {
+      await handsel.confirmDelegation(run.id);
+    } catch (e) {
+      // 타임아웃이어도 온체인은 갔을 수 있다 — 상태로 재확인 (이중 게시 없음: Handsel 보장)
+      run.error = (e as Error).message;
+      logger.warn("confirm_delegation 오류 — 상태로 재확인", { id: run.id, error: run.error });
+    }
+    if (await isPosted()) return true;
+    if (!run.error) {
+      // 예외 없이 끝났는데 posted가 아니면 Handsel이 딜리게이션에 남긴 오류를 가져온다
+      const head = delegationHeadline(await handsel.delegationStatus(), run.id) ?? "";
+      run.error = `confirm_delegation 후에도 planned: ${head.slice(0, 300)}`;
+    }
+    return false;
   }
 
   startAutoLoop() {
@@ -236,10 +321,12 @@ class OfficeLoop {
     }
     const period = config.OFFICE_INTERVAL_H * 60 * 60_000;
     const run = () => void this.runOnce().catch(() => undefined);
-    setTimeout(run, 10 * 60_000).unref(); // 기동 10분 후 첫 사이클 (스캐너 캐시가 채워진 뒤)
+    // 재기동으로 끊긴 run(escrow 대기·작업 중)은 곧바로 이어받고, 새 사이클은 10분 뒤(스캐너 캐시 이후)
+    const firstDelay = this.resumable() ? 30_000 : 10 * 60_000;
+    setTimeout(run, firstDelay).unref();
     this.timer = setInterval(run, period);
     this.timer.unref();
-    logger.info("오피스 결정 루프 예약", { everyHours: config.OFFICE_INTERVAL_H, handsel: handsel.url, budgetUsd: config.OFFICE_BUDGET_USD });
+    logger.info("오피스 결정 루프 예약", { everyHours: config.OFFICE_INTERVAL_H, handsel: handsel.url, budgetUsd: config.OFFICE_BUDGET_USD, resume: this.resumable()?.id ?? null });
   }
 }
 

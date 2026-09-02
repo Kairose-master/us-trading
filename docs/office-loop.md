@@ -33,6 +33,7 @@ XRP를 끼워 넣은 것을 퀀트가 제외), 리밸런스는 퀀트의 범위 
 | `handsel-client.ts` | Handsel MCP(무상태 JSON-RPC) 클라이언트. 개인 토큰 `lmk_…`. 메인넷 URL이면 `OFFICE_ALLOW_REAL_MONEY=true` 없이는 escrow 거부 |
 | `decision.ts` (순수) | 산출물 → `DecisionRecord`. JSON 블록 > 주문표 > 문장 순으로 타깃 추출, 단계 판정, 관문. 파싱 실패는 "결정 없음"이지 "현금 100%"가 아니다 |
 | `loop.ts` | 오케스트레이터. 사이클 1회 = 고용→escrow→대기(최대 6h)→결정→관문→페이퍼 회전. `data/office/<dlg-id>/{run,decision,execution}.json + conversation.md` 볼륨 영속 |
+| (escrow 재시도) | `confirm_delegation`이 번들러 타임아웃으로 실패하면 run은 `escrow-pending`으로 남고 30분마다 같은 딜리게이션을 다시 민다(최대 8회). 새 오피스를 또 고용하지 않는다 — planned 딜리게이션은 돈이 안 묶이고 Handsel이 중복 게시를 막는다. 재기동(재배포) 직후에는 24h 이내 미완 run(`escrow-pending`/`working`)을 30초 뒤 이어받는다. 2026-09-02 Base Sepolia 번들러가 하루 종일 "Timed out while waiting for transaction"을 내서 넣은 경로 |
 
 라우트: `GET /api/office/status`, `GET /api/office/runs`,
 `GET /api/office/runs/:id`(대화 원문 포함), `POST /api/office/run`(수동 1회).

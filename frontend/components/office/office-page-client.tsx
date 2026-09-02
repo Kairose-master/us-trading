@@ -15,7 +15,8 @@ import { ApiError, getOfficeRun, getOfficeRuns, getOfficeStatus, isBackendNotCon
 
 const PHASE_KO: Record<OfficeRun["phase"], string> = {
   hiring: "고용 중",
-  escrowed: "escrow 완료",
+  escrowed: "escrow 중",
+  "escrow-pending": "escrow 재시도 대기",
   working: "오피스 작업 중",
   deciding: "결정 파싱 중",
   executed: "페이퍼 실행됨",
