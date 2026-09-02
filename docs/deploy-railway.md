@@ -67,3 +67,14 @@
 - **MCP 워커로도 쓸 수 있다**: `POST https://<도메인>/mcp` — Vercel
   서버리스 워커와 달리 이쪽은 상시 파이프라인 상태를 담은 툴까지 서빙.
   Handsel에 붙일 땐 `MCP_AUTH_TOKEN`을 별도로 설정할 것.
+
+## 새 커밋이 배포되지 않을 때 (구 빌드가 계속 살아 있음)
+
+Railway는 빌드가 실패하면 마지막 성공 배포를 그대로 둔다. `/health`는 200인데
+새 라우트가 404면 이 경우다. Deployments 탭에서 최신 커밋이 **Failed**인지 확인.
+
+- 2026-09-02: 루트 `.dockerignore`의 `**/data`가 소스 `backend/src/data/`까지
+  빌드 컨텍스트에서 제외해 `tsc`가 실패 → 007bb17 이후 네 커밋이 전부 미배포.
+  런타임 폴더만 제외하도록 `data`, `backend/data`로 좁혀 해결.
+- 로컬 재현: `docker build .` (컨텍스트 필터까지 재현됨). `npm run build`만으로는
+  `.dockerignore` 문제를 잡지 못한다.

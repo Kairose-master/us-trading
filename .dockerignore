@@ -3,6 +3,9 @@ mcp-worker
 docs
 **/node_modules
 **/dist
-**/data
 **/.env
 **/.next
+# 런타임 장부(볼륨) 폴더만 제외 — `**/data`로 쓰면 소스 backend/src/data/ 까지
+# 잘려 나가 Railway 빌드가 tsc에서 죽고 구 배포가 계속 살아남는다.
+data
+backend/data
