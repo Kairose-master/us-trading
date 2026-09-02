@@ -13,8 +13,13 @@
    `Kairose-master/us-trading` 선택 (처음이면 GitHub 앱 설치 승인).
 2. 생성된 서비스 → **Settings → Source → Root Directory**를 `backend`로.
    Dockerfile을 자동 감지해서 빌드한다.
-3. **Settings → Volumes → Add Volume** → Mount path **`/app/data`**.
-   ⚠️ 이거 없으면 재배포/재시작마다 페이퍼 장부가 초기화된다.
+3. **볼륨** — 서비스 설정에 "Volumes" 탭은 없다. 프로젝트 캔버스(서비스
+   박스들이 보이는 화면) 우상단 **`+ Create`(또는 `+ New`) → Volume** →
+   붙일 서비스로 `us-trading` 선택 → Mount path **`/app/data`**.
+   (데스크톱은 캔버스 빈 곳 우클릭 → Volume, 또는 Cmd/Ctrl+K → "Volume".)
+   붙으면 캔버스에 서비스 옆에 원통 아이콘이 생긴다.
+   ⚠️ 이거 없으면 재배포/재시작마다 페이퍼 장부가 초기화된다 — 변수 저장
+   때마다 재시작되므로 볼륨 없이는 `paperSince`가 계속 리셋된다.
 4. **Variables** 탭에 아래 입력:
 
    | 변수 | 값 | 왜 |
