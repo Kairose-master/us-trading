@@ -19,7 +19,7 @@ const ALLOW_GET: RegExp[] = [
   /^sentiment(\/feed)?$/,
   /^autotrade$/,
   /^system\/status$/,
-  /^account\/(balance|positions)$/,
+  /^account\/(balance|positions|holdings)$/,
   /^orders$/,
   /^quotes\/[^/]+(\/chart)?$/,
   /^risk\/limits$/,

@@ -7,6 +7,45 @@ export type OrderStatus = "open" | "partial" | "filled" | "cancelled" | "rejecte
 export type WsStatus = "connected" | "reconnecting" | "disconnected"
 export type LogLevel = "INFO" | "WARN" | "ERROR"
 
+export interface CryptoHolding {
+  symbol: string
+  qty: number
+  avgKrw: number
+  curKrw: number
+  valueKrw: number
+  pnlKrw: number
+  pnlPct: number
+  weightPct: number
+}
+
+/** /account/holdings — 크립토 페이퍼 장부 + 미국 장부(KIS 실계좌 또는 페이퍼) + 실환율. 전부 실기록 */
+export interface Holdings {
+  ts: string
+  fx: { rate: number; ts: string; source: string }
+  crypto: {
+    mode: "paper" | "real"
+    hasKeys: boolean
+    since: string | null
+    startKrw: number
+    cashKrw: number
+    equityKrw: number
+    pnlKrw: number
+    pnlPct: number
+    positions: CryptoHolding[]
+  }
+  us: {
+    connected: boolean
+    mode: "paper" | "mock" | "real"
+    startUsd: number
+    cashUsd: number
+    equityUsd: number
+    pnlUsd: number
+    pnlPct: number
+    positions: Position[]
+  }
+  totalKrw: number | null
+}
+
 export interface Balance {
   cashUsd: number
   totalEquityUsd: number

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import { state } from "./state.js";
+import { state, US_PAPER_START_USD } from "./state.js";
+import { usdKrw } from "../data/fx.js";
 import { riskManager } from "../risk/riskManager.js";
 import { kisClient } from "../kis/client.js";
 import { kisWs } from "../kis/ws.js";
@@ -26,12 +27,56 @@ export const router = Router();
 
 // ===== 계좌 =====
 
-router.get("/account/balance", (_req, res) => {
-  res.json(state.balance);
+router.get("/account/balance", async (_req, res) => {
+  const fx = await usdKrw();
+  state.balance.fxRate = fx.rate;
+  res.json({ ...state.balance, connected: !config.MOCK_DATA, mode: config.MOCK_DATA ? "paper" : config.KIS_MODE, paperStartUsd: US_PAPER_START_USD });
 });
 
 router.get("/account/positions", (_req, res) => {
   res.json(state.positions);
+});
+
+/**
+ * 통합 보유 — 크립토 페이퍼 장부(Upbit 실시세) + 미국 장부(KIS 실계좌 또는 페이퍼).
+ * 화면의 모든 숫자는 여기서 온 실기록이다. 미국 쪽은 KIS 키가 없으면 connected=false,
+ * 보유는 비어 있고 페이퍼 현금만 있다. 환율은 Yahoo KRW=X (0이면 미수신).
+ */
+router.get("/account/holdings", async (_req, res) => {
+  const fx = await usdKrw();
+  const c = cryptoDesk.status();
+  const cryptoPositions = c.positions.map((p) => {
+    const value = p.qty * p.curKrw;
+    const cost = p.qty * p.avgKrw;
+    return { ...p, valueKrw: Math.round(value), pnlKrw: Math.round(value - cost), pnlPct: cost > 0 ? +(((value - cost) / cost) * 100).toFixed(2) : 0, weightPct: c.equityKrw > 0 ? +((value / c.equityKrw) * 100).toFixed(1) : 0 };
+  });
+  const usEquityUsd = state.balance.totalEquityUsd;
+  res.json({
+    ts: new Date().toISOString(),
+    fx,
+    crypto: {
+      mode: c.mode,
+      hasKeys: c.hasKeys,
+      since: c.paperSince,
+      startKrw: c.paperStartKrw,
+      cashKrw: c.cashKrw,
+      equityKrw: c.equityKrw,
+      pnlKrw: c.equityKrw - c.paperStartKrw,
+      pnlPct: +(((c.equityKrw - c.paperStartKrw) / c.paperStartKrw) * 100).toFixed(2),
+      positions: cryptoPositions,
+    },
+    us: {
+      connected: !config.MOCK_DATA,
+      mode: config.MOCK_DATA ? "paper" : config.KIS_MODE,
+      startUsd: US_PAPER_START_USD,
+      cashUsd: state.balance.cashUsd,
+      equityUsd: usEquityUsd,
+      pnlUsd: state.balance.totalPnlUsd,
+      pnlPct: state.balance.totalPnlPct,
+      positions: state.positions,
+    },
+    totalKrw: fx.rate > 0 ? Math.round(c.equityKrw + usEquityUsd * fx.rate) : null,
+  });
 });
 
 // ===== 시세 =====

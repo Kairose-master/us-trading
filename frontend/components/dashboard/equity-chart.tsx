@@ -2,18 +2,18 @@
 
 import useSWR from "swr"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { getEquityCurve } from "@/lib/api"
-import { fmtUsd } from "@/lib/format"
+import { getPaperEquity } from "@/lib/api"
 import { Card, Skeleton } from "@/components/primitives"
 
 export function EquityChart() {
-  const { data, isLoading } = useSWR("equity-curve", () => getEquityCurve(30))
+  const { data: raw, isLoading } = useSWR("paper-equity", () => getPaperEquity(2000), { refreshInterval: 60_000 })
+  const data = raw?.map((p) => ({ date: p.ts.slice(0, 16).replace("T", " "), equityKrw: p.equityKrw }))
 
   return (
     <Card className="flex flex-col gap-3 p-4">
       <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold">일별 총자산 (USD)</h2>
-        <span className="text-xs text-muted-foreground">최근 30일</span>
+        <h2 className="text-sm font-semibold">크립토 페이퍼 자산 (₩) — 시간별 실기록</h2>
+        <span className="text-xs text-muted-foreground">crypto-paper-equity.jsonl</span>
       </div>
       {isLoading || !data ? (
         <Skeleton className="h-56 w-full" />
@@ -31,17 +31,17 @@ export function EquityChart() {
               <XAxis
                 dataKey="date"
                 tick={{ fontSize: 10, fill: "var(--color-muted-foreground)" }}
-                tickFormatter={(d: string) => d.slice(5)}
+                tickFormatter={(d: string) => d.slice(5, 10)}
                 tickLine={false}
                 axisLine={false}
                 minTickGap={32}
               />
               <YAxis
                 tick={{ fontSize: 10, fill: "var(--color-muted-foreground)" }}
-                tickFormatter={(v: number) => `$${Math.round(v).toLocaleString()}`}
+                tickFormatter={(v: number) => `₩${(v / 1e6).toFixed(2)}M`}
                 tickLine={false}
                 axisLine={false}
-                width={56}
+                width={64}
                 domain={["auto", "auto"]}
               />
               <Tooltip
@@ -52,11 +52,11 @@ export function EquityChart() {
                   fontSize: 12,
                 }}
                 labelStyle={{ color: "var(--color-muted-foreground)" }}
-                formatter={(v) => [fmtUsd(Number(v)), "총자산"]}
+                formatter={(v) => [`₩${Math.round(Number(v)).toLocaleString("ko-KR")}`, "페이퍼 자산"]}
               />
               <Area
                 type="monotone"
-                dataKey="equityUsd"
+                dataKey="equityKrw"
                 stroke="var(--color-chart-1)"
                 strokeWidth={1.5}
                 fill="url(#equityFill)"

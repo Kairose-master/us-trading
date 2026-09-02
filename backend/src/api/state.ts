@@ -7,40 +7,24 @@ import { currentMarketSession } from "../core/marketSession.js";
  * MOCK_DATA=true면 KIS 없이 랜덤워크 틱을 생성해 프론트를 먼저 붙일 수 있다.
  * 실모드에서는 KIS 응답이 이 상태를 갱신한다.
  */
+/** 미국 페이퍼 장부 시드 — 크립토 페이퍼(₩1천만)와 같은 성격의 가상 현금.
+ *  보유종목·주문은 비어 있는 채로 시작한다: 심어 놓은 가짜 포지션은 없다. */
+export const US_PAPER_START_USD = 10_000;
+
 class AppState extends EventEmitter {
   balance: Balance = {
-    cashUsd: 5000,
-    totalEquityUsd: 7523.4,
-    todayPnlUsd: 42.15,
-    todayPnlPct: 0.56,
-    totalPnlUsd: 223.4,
-    totalPnlPct: 3.06,
-    fxRate: 1380,
+    cashUsd: US_PAPER_START_USD,
+    totalEquityUsd: US_PAPER_START_USD,
+    todayPnlUsd: 0,
+    todayPnlPct: 0,
+    totalPnlUsd: 0,
+    totalPnlPct: 0,
+    fxRate: 0, // 실환율은 data/fx.ts(Yahoo KRW=X)가 채운다 — 0이면 "환율 미수신"
   };
 
-  positions: Position[] = [
-    mkPos("GME", "GameStop Corp.", "NYS", 40, 23.1, 22.07),
-    mkPos("MARA", "MARA Holdings", "NAS", 25, 18.45, 19.2),
-    mkPos("COIN", "Coinbase Global", "NAS", 3, 195.0, 201.5),
-  ];
+  positions: Position[] = [];
 
-  orders: Order[] = [
-    {
-      orderId: "MOCK-0001",
-      symbol: "GME",
-      name: "GameStop Corp.",
-      exch: "NYS",
-      side: "buy",
-      orderType: "limit",
-      session: "regular",
-      qty: 10,
-      filledQty: 0,
-      price: 21.5,
-      avgFillPrice: 0,
-      status: "open",
-      createdAt: new Date().toISOString(),
-    },
-  ];
+  orders: Order[] = [];
 
   quotes = new Map<string, Quote>();
 
@@ -146,6 +130,8 @@ class AppState extends EventEmitter {
       p.weightPct = total > 0 ? +(((p.curPrice * p.qty) / total) * 100).toFixed(1) : 0;
     }
     this.balance.totalEquityUsd = +equity.toFixed(2);
+    this.balance.totalPnlUsd = +(equity - US_PAPER_START_USD).toFixed(2);
+    this.balance.totalPnlPct = +(((equity - US_PAPER_START_USD) / US_PAPER_START_USD) * 100).toFixed(2);
     this.emit("position", this.positions);
   }
 }

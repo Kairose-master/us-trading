@@ -2,7 +2,7 @@ import type {
   AutoTradeStatus,
   Balance,
   Candle,
-  EquityPoint,
+  Holdings,
   Order,
   OrderRequest,
   PipelineLogLine,
@@ -136,9 +136,8 @@ export async function searchSymbols(q: string): Promise<SymbolInfo[]> {
   return all.filter((s) => s.symbol.toLowerCase().includes(query) || s.name.toLowerCase().includes(query))
 }
 
-/** 백엔드에 계좌 에쿼티 커브 API가 없다 — 빈 배열 (지어내지 않는다). 크립토 페이퍼 커브는 getPaperEquity */
-export async function getEquityCurve(_days = 30): Promise<EquityPoint[]> {
-  return []
+export async function getHoldings(): Promise<Holdings> {
+  return req("account/holdings")
 }
 
 // ===== 데이터/ML 파이프라인 (us = Yahoo 실시세 + Google News, crypto = Upbit + Google News) =====
