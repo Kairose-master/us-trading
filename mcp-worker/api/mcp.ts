@@ -15,6 +15,9 @@
  * 의존성 zero — Vercel 기본 Node 런타임으로 그대로 뜬다.
  */
 
+// Vercel Node 런타임 전역 — @types/node 없이 빌드하므로 최소 선언
+declare const process: { env: Record<string, string | undefined> };
+
 const PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_SYMBOLS = ["NVDA", "AAPL", "TSLA", "MSFT"];
 const MAX_SYMBOLS = 4;
