@@ -41,6 +41,7 @@ const ALLOW_WRITE: Array<{ method: string; re: RegExp }> = [
   { method: "POST", re: /^ops\/supervisor\/(pause|resume|heal|auto-recovery|[A-Za-z0-9_-]+\/break)$/ },
   { method: "POST", re: /^evolution\/(step|deploy)$/ },
   { method: "POST", re: /^office\/run$/ },
+  { method: "POST", re: /^crypto\/scanner\/rotate$/ },
   { method: "POST", re: /^control\/(autopilot|approve|reject|arbitrate|policy|engines\/(scanner|office|evolution|signals))$/ },
 ]
 

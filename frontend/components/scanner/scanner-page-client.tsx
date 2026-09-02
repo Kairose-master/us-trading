@@ -1,95 +1,89 @@
 "use client"
 
-import { useMemo } from "react"
+import { useState } from "react"
 import useSWR from "swr"
+import { toast } from "sonner"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Radar, Radio } from "lucide-react"
+import { Radar, Radio, RefreshCw, Send } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { Card, Skeleton } from "@/components/primitives"
-import { fetchDayCandles, fetchTopKrwMarkets, type CryptoCandle } from "@/lib/crypto/upbit"
-import { buildTargets, rotationBacktest, scoreCoin, type CoinScore } from "@/lib/crypto/scanner"
+import { Card, EmptyState, Skeleton } from "@/components/primitives"
+import { ApiError, getScanner, getScannerBacktest, isBackendNotConfigured, rotateScanner } from "@/lib/api"
 
 /**
- * 알트코인 스캐너 — 업비트 KRW 전 마켓 중 거래대금 상위 유니버스를 브라우저에서
- * 직접 스캔한다 (실데이터, 키 불필요). 위험조정 모멘텀 랭킹 → 상위 K 로테이션
- * 타깃 → 그 규칙의 비용 반영 백테스트 + 다중검정 보정까지 한 화면에.
+ * 알트코인 스캐너 — 백엔드 스캔(/api/crypto/scanner)을 보여준다. 업비트 KRW 거래대금
+ * 상위 유니버스의 위험조정 모멘텀 랭킹 → 상위 K 로테이션 타깃 → 비용 반영 백테스트와
+ * 다중검정 보정. 브라우저는 Upbit를 직접 부르지 않는다 — 캔들은 백엔드 공유 저장소
+ * (초당 8회 토큰 버킷) 하나에서 나오고, 스캔 결과는 백엔드가 캐시한다.
  *
  * 정직성: 이 화면이 극대화하는 것은 "비용 차감 후 위험조정 기대수익"이라는
  * 시도이지 수익 자체가 아니다. 백테스트는 인샘플 상한선이고, 유니버스 크기만큼
  * 암묵적 다중검정이 있어 Bonferroni 보정 통과 여부를 함께 보여준다.
  */
 
-const UNIVERSE = 20 // 브라우저 호출 수 제한 — 백엔드 스캐너(/api/crypto/scanner)는 30
-const CANDLE_DAYS = 200
-
-async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length)
-  let i = 0
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (i < items.length) {
-        const idx = i++
-        out[idx] = await fn(items[idx])
-      }
-    }),
-  )
-  return out
-}
-
-interface ScanData {
-  names: Map<string, string>
-  scores: CoinScore[]
-  series: Map<string, CryptoCandle[]>
-}
-
-async function runScan(): Promise<ScanData> {
-  const top = await fetchTopKrwMarkets(UNIVERSE)
-  const names = new Map(top.map((t) => [t.market, t.koreanName]))
-  const series = new Map<string, CryptoCandle[]>()
-  await mapLimit(top, 4, async (t) => {
-    try {
-      const cs = await fetchDayCandles(t.market, CANDLE_DAYS)
-      if (cs.length >= 61) series.set(t.market, cs)
-    } catch {
-      /* 실패 코인은 제외 — 지어내지 않는다 */
-    }
-  })
-  const scores: CoinScore[] = []
-  for (const t of top) {
-    const cs = series.get(t.market)
-    if (!cs) continue
-    const sc = scoreCoin(t.market, cs, t.valueKrw24h)
-    if (sc) scores.push(sc)
-  }
-  scores.sort((a, b) => b.score - a.score)
-  return { names, scores, series }
-}
-
 function pct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n}%`
 }
+const ago = (s: string) => {
+  const m = Math.max(0, Math.round((Date.now() - Date.parse(s)) / 60_000))
+  return m < 60 ? `${m}분 전` : m < 1440 ? `${Math.floor(m / 60)}시간 전` : `${Math.floor(m / 1440)}일 전`
+}
 
 export function ScannerPageClient() {
-  const { data, error } = useSWR("altcoin-scan", runScan, { revalidateOnFocus: false, refreshInterval: 10 * 60_000 })
+  const { data, error, isLoading, mutate } = useSWR("altcoin-scan", () => getScanner(), { revalidateOnFocus: false, refreshInterval: 10 * 60_000 })
+  const { data: bt, error: btError } = useSWR("altcoin-scan-bt", getScannerBacktest, { revalidateOnFocus: false, refreshInterval: 60 * 60_000 })
+  const [busy, setBusy] = useState(false)
+  const portfolio = data?.portfolio ?? null
 
-  const portfolio = useMemo(() => (data ? buildTargets(data.scores) : null), [data])
-  const bt = useMemo(() => (data ? rotationBacktest(data.series) : null), [data])
+  const onRotate = async () => {
+    setBusy(true)
+    try {
+      const r = await rotateScanner()
+      toast.success(`로테이션 제안 → 제어 평면 · ${r.orders}건 집행${r.skipped.length ? ` · 건너뜀 ${r.skipped.length}` : ""}`)
+      await mutate()
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) toast(`제어 평면이 결정을 보류함 — ${e.message}`)
+      else toast.error(e instanceof ApiError && e.status === 401 ? "로그인이 필요합니다 (설정 · 키 → 로그인)" : e instanceof Error ? e.message : "실패")
+    } finally {
+      setBusy(false)
+    }
+  }
+  const onRescan = async () => {
+    setBusy(true)
+    try {
+      await mutate(() => getScanner(true), { revalidate: false })
+      toast.success("유니버스 재스캔 완료")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "재스캔 실패")
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (error && isBackendNotConfigured(error)) return <EmptyState title="백엔드 미연결" hint="BACKEND_URL / BACKEND_TOKEN 이 설정되면 스캔 결과가 보인다." />
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-bold">알트코인 스캐너</h1>
-        <span className="inline-flex items-center gap-1.5 rounded-md bg-chart-1/15 px-2 py-1 font-mono text-[11px] font-semibold text-chart-1">
-          <Radio className="size-3" aria-hidden="true" /> UPBIT LIVE — KRW 거래대금 상위 {UNIVERSE}개 실스캔
-        </span>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1.5 rounded-md bg-chart-1/15 px-2 py-1 font-mono text-[11px] font-semibold text-chart-1">
+            <Radio className="size-3" aria-hidden="true" /> UPBIT LIVE — KRW {data ? `${data.krwMarkets}개 중 거래대금 상위 ${data.universe}개` : "스캔 중"}{data ? ` · ${ago(data.ts)}` : ""}
+          </span>
+          {data && (
+            <span className="rounded-md border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground">
+              {data.autoRotate ? "자동 로테이션 24h" : "자동 로테이션 OFF"}{data.lastRotation ? ` · 마지막 집행 ${ago(data.lastRotation.ts)} (${data.lastRotation.orders}건)` : " · 집행 기록 없음"}
+            </span>
+          )}
+          <button type="button" disabled={busy || isLoading} onClick={() => void onRescan()} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50"><RefreshCw className="size-3" aria-hidden="true" /> 재스캔</button>
+          <button type="button" disabled={busy || !portfolio} onClick={() => void onRotate()} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground disabled:opacity-50" title="타깃을 제어 평면에 제안한다 — 오토파일럿이면 페이퍼 집행, 아니면 승인 대기"><Send className="size-3" aria-hidden="true" /> 지금 로테이션</button>
+        </div>
       </div>
 
-      {error && (
-        <Card className="p-4 text-xs text-destructive">스캔 실패: {String((error as Error).message)} — 새로고침으로 재시도</Card>
+      {error && !isBackendNotConfigured(error) && (
+        <Card className="p-4 text-xs text-destructive">스캔 실패: {error instanceof Error ? error.message : String(error)} — 재스캔으로 재시도</Card>
       )}
 
       <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
-        {/* 랭킹 테이블 */}
         <Card>
           <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5">
             <Radar className="size-3.5 text-muted-foreground" aria-hidden="true" />
@@ -97,9 +91,7 @@ export function ScannerPageClient() {
             <span className="ml-auto font-mono text-[10px] text-muted-foreground">score = mom20 / vol20 · 자격 = HMM P(강세) ≥ 0.5 · 가중 = 1/GARCH σ</span>
           </div>
           {!data ? (
-            <div className="p-4">
-              <Skeleton className="h-64 w-full" />
-            </div>
+            <div className="p-4"><Skeleton className="h-64 w-full" /></div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full font-mono text-[11px]">
@@ -115,16 +107,14 @@ export function ScannerPageClient() {
                     <th className="px-3 py-1.5 font-medium">P(강세)</th>
                     <th className="px-3 py-1.5 font-medium">GARCH σ</th>
                     <th className="px-3 py-1.5 font-medium">24h 대금</th>
+                    <th className="px-3 py-1.5 font-medium">일봉</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50">
                   {data.scores.map((s, i) => (
                     <tr key={s.market} className={cn(portfolio?.targets.some((t) => t.market === s.market) && "bg-chart-1/5")}>
                       <td className="px-3 py-1 text-muted-foreground">{i + 1}</td>
-                      <td className="px-3 py-1 font-bold">
-                        {s.market.replace("KRW-", "")}
-                        <span className="ml-1 font-sans text-[10px] font-normal text-muted-foreground">{data.names.get(s.market)}</span>
-                      </td>
+                      <td className="px-3 py-1 font-bold">{s.market.replace("KRW-", "")}</td>
                       <td className="px-3 py-1">₩{s.priceKrw.toLocaleString()}</td>
                       <td className={cn("px-3 py-1 font-bold", s.score >= 0 ? "text-chart-1" : "text-destructive")}>{s.score}</td>
                       <td className={cn("px-3 py-1", s.mom20Pct >= 0 ? "text-chart-1" : "text-destructive")}>{pct(s.mom20Pct)}</td>
@@ -133,15 +123,19 @@ export function ScannerPageClient() {
                       <td className={cn("px-3 py-1", s.pBull >= 0.5 ? "text-chart-1" : "text-muted-foreground")}>{s.pBull} <span className="text-[10px] text-muted-foreground">{s.regime}</span></td>
                       <td className="px-3 py-1">{s.garchSigmaPct}%</td>
                       <td className="px-3 py-1 text-muted-foreground">₩{(s.valueKrw24h / 1e8).toFixed(0)}억</td>
+                      <td className="px-3 py-1 text-muted-foreground">{s.days}</td>
                     </tr>
                   ))}
+                  {data.scores.length === 0 && (
+                    <tr><td colSpan={11} className="px-3 py-6 text-center text-muted-foreground">점수를 낼 수 있는 코인이 없음 — 캔들 저장소가 비었거나 Upbit 응답 실패. 재스캔.</td></tr>
+                  )}
                 </tbody>
               </table>
+              <p className="px-4 py-2 text-[10px] text-muted-foreground">{data.note}</p>
             </div>
           )}
         </Card>
 
-        {/* 로테이션 타깃 */}
         <Card className="h-fit">
           <div className="border-b border-border px-4 py-2.5">
             <h2 className="text-sm font-semibold">상위 K 로테이션 타깃</h2>
@@ -174,27 +168,28 @@ export function ScannerPageClient() {
               <p className="font-medium text-foreground/80">방법 · 적용</p>
               <p>{portfolio?.method ?? "…"}</p>
               <p className="mt-1">
-                페이퍼 장부 적용은 백엔드 <code className="text-chart-2">POST /api/crypto/scanner/rotate</code> — <b>페이퍼 전용</b>이며 실주문 모드에서는 거부된다. <code className="text-chart-2">CRYPTO_SCANNER=true</code>면 24h마다 자동 로테이션.
+                "지금 로테이션"은 이 타깃을 <b>제어 평면에 제안</b>한다 — 스캐너 엔진 가중 × 확신도(강세 종목 비율)로 다른 엔진과 섞인 뒤 오토파일럿이면 페이퍼 집행, 아니면 홈에서 승인. 실주문 모드에서는 거부된다.
               </p>
             </div>
           </div>
         </Card>
       </div>
 
-      {/* 로테이션 백테스트 */}
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <h2 className="text-sm font-semibold">로테이션 규칙 백테스트 — 이 랭킹이 과거에 통했는가</h2>
           {bt && (
             <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-              {bt.daysUsed}일 · 주 1회 리밸런스 · 수수료 0.05%+슬리피지 0.05%/편도 · 유니버스 {bt.universe}
+              {bt.daysUsed}일 · {bt.rebalanceDays}일마다 리밸런스 · top {bt.topK} · cap {bt.capPct}% · 유니버스 {bt.universe}
             </span>
           )}
         </div>
-        {!bt ? (
-          <div className="p-4">
-            <Skeleton className="h-48 w-full" />
-          </div>
+        {btError ? (
+          <div className="p-4 text-xs text-destructive">백테스트 실패: {btError instanceof Error ? btError.message : String(btError)}</div>
+        ) : bt === null ? (
+          <div className="p-4 text-xs text-muted-foreground">백테스트할 만큼의 일봉이 아직 없다 (캔들 저장소 채워지는 중).</div>
+        ) : !bt ? (
+          <div className="p-4"><Skeleton className="h-48 w-full" /></div>
         ) : (
           <div className="grid gap-4 p-4 lg:grid-cols-[1fr_300px]">
             <div className="h-56 min-w-0">
@@ -228,9 +223,7 @@ export function ScannerPageClient() {
                 <dt className="text-muted-foreground">리밸런스</dt>
                 <dd>{bt.metrics.rebalances}회</dd>
                 <dt className="text-muted-foreground">Sharpe</dt>
-                <dd>
-                  {bt.stats.sharpeAnnual} ± {bt.stats.sharpeSe}
-                </dd>
+                <dd>{bt.stats.sharpeAnnual} ± {bt.stats.sharpeSe}</dd>
                 <dt className="text-muted-foreground">부트스트랩 p</dt>
                 <dd>{bt.stats.bootstrapP}</dd>
                 <dt className="text-muted-foreground">다중검정</dt>

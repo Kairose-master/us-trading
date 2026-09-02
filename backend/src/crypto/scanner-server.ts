@@ -69,7 +69,7 @@ function toBt(cs: Awaited<ReturnType<typeof upbit.dayCandles>>): BtCandle[] {
 class ScannerServer {
   private scanCache: { at: number; data: ScanResult } | null = null;
   private btCache: { at: number; data: RotationBacktestResult } | null = null;
-  private seriesCache: { at: number; data: Map<string, BtCandle[]>; valueOf: Map<string, number> } | null = null;
+  private seriesCache: { at: number; data: Map<string, BtCandle[]>; valueOf: Map<string, number>; krwMarkets: number } | null = null;
   private autoTimer: NodeJS.Timeout | null = null;
   private running: Promise<ScanResult> | null = null;
   lastRotation: { ts: string; orders: number; skipped: string[] } | null = null;
@@ -82,7 +82,7 @@ class ScannerServer {
   /** 유동성 상위 유니버스의 캔들 시리즈 (스캔·백테스트 공용, 캐시) */
   private async loadSeries(): Promise<{ series: Map<string, BtCandle[]>; valueOf: Map<string, number>; krwMarkets: number }> {
     if (this.seriesCache && Date.now() - this.seriesCache.at < SCAN_TTL_MS) {
-      return { series: this.seriesCache.data, valueOf: this.seriesCache.valueOf, krwMarkets: this.seriesCache.data.size };
+      return { series: this.seriesCache.data, valueOf: this.seriesCache.valueOf, krwMarkets: this.seriesCache.krwMarkets };
     }
     const all = await upbit.markets();
     const krw = all.filter((m) => m.market.startsWith("KRW-")).map((m) => m.market);
@@ -105,7 +105,7 @@ class ScannerServer {
         logger.warn("스캐너 캔들 수집 실패 — 해당 코인 제외", { market: t.market, error: (e as Error).message });
       }
     });
-    this.seriesCache = { at: Date.now(), data: series, valueOf };
+    this.seriesCache = { at: Date.now(), data: series, valueOf, krwMarkets: krw.length };
     return { series, valueOf, krwMarkets: krw.length };
   }
 

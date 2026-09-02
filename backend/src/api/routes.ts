@@ -447,7 +447,7 @@ router.get("/crypto/scanner/backtest", async (req, res) => {
   }
 });
 
-router.post("/crypto/scanner/rotate", async (_req, res) => {
+router.post("/crypto/scanner/rotate", requireSession, async (_req, res) => {
   try {
     const r = await scannerServer.rotate();
     if (r.error) return res.status(409).json(r);

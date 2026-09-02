@@ -612,3 +612,48 @@ export async function setControlPolicy(patch: Partial<ControlPolicy>): Promise<{
 export async function arbitrateNow(): Promise<ControlDecision | null> {
   return write("control/arbitrate", "POST", {})
 }
+
+// ── 알트코인 스캐너 (백엔드 스캔 — 브라우저는 Upbit를 직접 부르지 않는다) ───────
+export interface ScannerScore {
+  market: string
+  priceKrw: number
+  valueKrw24h: number
+  mom20Pct: number
+  mom60Pct: number
+  vol20Pct: number
+  pBull: number
+  regime: string
+  garchSigmaPct: number
+  score: number
+  days: number
+}
+export interface ScannerResult {
+  ts: string
+  krwMarkets: number
+  universe: number
+  scores: ScannerScore[]
+  portfolio: { targets: Array<{ market: string; weightPct: number; why: string }>; cashPct: number; method: string }
+  note: string
+  lastRotation: { ts: string; orders: number; skipped: string[] } | null
+  autoRotate: boolean
+}
+export interface ScannerBacktest {
+  universe: number
+  daysUsed: number
+  rebalanceDays: number
+  topK: number
+  capPct: number
+  equity: Array<{ t: string; strategy: number; benchmarkBtc: number; benchmarkEqual: number }>
+  metrics: { totalReturnPct: number; annualReturnPct: number; btcReturnPct: number; equalWeightReturnPct: number; maxDrawdownPct: number; costDragPct: number; avgPositions: number; rebalances: number }
+  stats: { sharpeAnnual: number; sharpeSe: number; bootstrapP: number; survivesMultipleTesting: boolean; bonferroniAlpha: number }
+  caveat: string
+}
+export async function getScanner(force = false): Promise<ScannerResult> {
+  return req(`crypto/scanner${force ? "?force=true" : ""}`)
+}
+export async function getScannerBacktest(): Promise<ScannerBacktest | null> {
+  return req("crypto/scanner/backtest")
+}
+export async function rotateScanner(): Promise<{ ts: string; orders: number; skipped: string[]; error?: string }> {
+  return write("crypto/scanner/rotate", "POST", {})
+}
