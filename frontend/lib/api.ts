@@ -234,6 +234,7 @@ export interface OfficeRoster {
 
 export interface OfficeRun {
   id: string
+  mode?: "handsel" | "local"
   startedAt: string
   finishedAt: string | null
   phase: "hiring" | "escrowed" | "escrow-pending" | "working" | "deciding" | "executed" | "rejected" | "failed"
@@ -251,6 +252,7 @@ export interface OfficeRun {
 
 export interface OfficeStatus {
   enabled: boolean
+  mode: "handsel" | "local"
   configured: boolean
   handselUrl: string
   realMoneyHandsel: boolean
@@ -274,6 +276,9 @@ export async function getOfficeRuns(): Promise<OfficeRun[]> {
   return req("office/runs")
 }
 
+export async function runOffice(mode: "local" | "handsel"): Promise<OfficeRun> {
+  return write("office/run", "POST", { mode })
+}
 export async function getOfficeRun(id: string): Promise<{ run: OfficeRun; conversation: string | null }> {
   return req(`office/runs/${encodeURIComponent(id)}`)
 }

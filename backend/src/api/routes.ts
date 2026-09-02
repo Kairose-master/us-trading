@@ -486,10 +486,11 @@ router.get("/office/runs/:id", (req, res) => {
 });
 
 // 수동 1회 실행 — Handsel escrow(테스트넷 기본)와 페이퍼 회전이 실제로 일어난다
-router.post("/office/run", async (req, res) => {
+router.post("/office/run", requireSession, async (req, res) => {
   try {
     const budget = req.body?.budgetUsd !== undefined ? Number(req.body.budgetUsd) : undefined;
-    res.json(await officeLoop.runOnce({ budgetUsd: budget }));
+    const mode = req.body?.mode === "handsel" || req.body?.mode === "local" ? (req.body.mode as "handsel" | "local") : undefined;
+    res.json(await officeLoop.runOnce({ budgetUsd: budget, mode }));
   } catch (e) {
     res.status(409).json({ error: (e as Error).message });
   }

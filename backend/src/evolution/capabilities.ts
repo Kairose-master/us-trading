@@ -53,7 +53,7 @@ export interface DeskReading {
 }
 
 // ── MCP 호출 (Streamable HTTP JSON-RPC, 무상태) ───────────────────────────────
-async function mcpCall(server: string, tool: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<string> {
+export async function mcpCall(server: string, tool: string, args: Record<string, unknown>, timeoutMs = 60_000): Promise<string> {
   const url = server === "worker" ? config.OFFICE_WORKER_URL : server;
   // 워커는 공개 읽기 전용(Handsel 오피스도 토큰 없이 부른다); Exa도 공개 엔드포인트
   const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json, text/event-stream" };

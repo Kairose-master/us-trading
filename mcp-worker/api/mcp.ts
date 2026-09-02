@@ -478,7 +478,8 @@ async function upbitKrwUniverse(): Promise<Set<string>> {
 function extractCoins(query: string): string[] {
   const up = query.toUpperCase();
   const universe = krwUniverse?.coins ?? new Set(COINS);
-  const tokens = [...new Set(up.match(/\b[A-Z0-9]{2,10}\b/g) ?? [])];
+  // 한 글자 코드(KRW-T 등)도 실마켓이면 잡는다 — 유니버스 집합으로 걸러지므로 "A", "I" 같은 단어는 안 잡힌다
+  const tokens = [...new Set(up.match(/\b[A-Z0-9]{1,10}\b/g) ?? [])];
   const found = tokens.filter((t) => universe.has(t));
   return found.length > 0 ? found : ["BTC", "ETH"];
 }
@@ -637,7 +638,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
       "Crypto analyst report for the coins in the query (default BTC/ETH): live Upbit price, trend read vs MA20, 30-day support/resistance levels with the exact price AND date they printed, momentum call, HMM regime belief (P(bull)/P(bear)) and GARCH next-day volatility — all from real daily candles, no RSI-style indicators — plus lexicon-scored crypto news headlines each cited with date and source. Nothing invented.",
     inputSchema: QUERY_SCHEMA("Free text naming coins, e.g. 'BTC SOL outlook'"),
     handler: async (query) => {
-      const coins = extractCoins(query).slice(0, 3);
+      const coins = extractCoins(query).slice(0, 5);
       const sections = await Promise.all(
         coins.map(async (coin) => {
           const market = `KRW-${coin}`;

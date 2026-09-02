@@ -7,6 +7,7 @@ import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel, type HandselConnector } from "./handsel-client.js";
 import { buildDecision, delegationHeadline, renderConversation, DEFAULT_GATE, type DecisionRecord } from "./decision.js";
 import { OFFICE_ROSTER, OFFICE_STEP_COUNT, OFFICE_TEMPLATE_ID, roleForStep } from "./roster.js";
+import { deliberateLocally } from "./local-office.js";
 
 /**
  * 오피스 결정 루프 — "모델들이 대화하고, 자율 결정하고, 그 결정이 매매가 된다."
@@ -35,7 +36,9 @@ const ESCROW_RETRY_MAX = 8; // 4시간까지
 const RESUME_WINDOW_MS = 24 * 60 * 60_000; // 재기동 시 이 안의 미완 run만 이어받는다
 
 export interface OfficeRun {
-  id: string; // delegation id
+  id: string; // delegation id (handsel) 또는 loc-… (local)
+  /** 협의가 어디서 돌았나 — 구 run.json에는 없다 → handsel */
+  mode?: "handsel" | "local";
   startedAt: string;
   finishedAt: string | null;
   phase: "hiring" | "escrowed" | "escrow-pending" | "working" | "deciding" | "executed" | "rejected" | "failed";
@@ -99,6 +102,7 @@ class OfficeLoop {
   status() {
     return {
       enabled: config.OFFICE_LOOP,
+      mode: config.OFFICE_MODE,
       configured: handsel.configured(),
       handselUrl: handsel.url,
       realMoneyHandsel: handsel.isRealMoney(),
@@ -152,6 +156,7 @@ class OfficeLoop {
   resumable(): OfficeRun | null {
     const now = Date.now();
     for (const r of this.list()) {
+      if (r.mode === "local") continue; // 로컬 협의는 에스크로가 없어 이어받을 것도 없다
       if (now - Date.parse(r.startedAt) > RESUME_WINDOW_MS) continue;
       if (r.phase === "escrow-pending" || r.phase === "escrowed" || r.phase === "working" || r.phase === "deciding") return r;
       // 이 코드가 들어가기 전 빌드가 남긴 형태: confirm 실패를 곧바로 failed로 적었다
@@ -161,9 +166,11 @@ class OfficeLoop {
   }
 
   /** 한 사이클: (이어받을 run이 있으면 그것부터) 고용 → escrow → 대기 → 결정 → 관문 → (페이퍼) 실행 */
-  async runOnce(opts: { budgetUsd?: number; resume?: boolean } = {}): Promise<OfficeRun> {
+  async runOnce(opts: { budgetUsd?: number; resume?: boolean; mode?: "handsel" | "local" } = {}): Promise<OfficeRun> {
     if (this.running) throw new Error("오피스 사이클이 이미 진행 중");
-    if (!handsel.configured()) throw new Error("HANDSEL_MCP_TOKEN 미설정");
+    const mode = opts.mode ?? config.OFFICE_MODE;
+    if (mode === "local") return this.runLocal();
+    if (!handsel.configured()) throw new Error("HANDSEL_MCP_TOKEN 미설정 — OFFICE_MODE=local 이면 에스크로 없이 돈다");
     const pending = opts.resume === false ? null : this.resumable();
     if (pending) {
       logger.info("미완 오피스 run 이어받음", { id: pending.id, phase: pending.phase, retries: pending.retries ?? 0 });
@@ -173,6 +180,7 @@ class OfficeLoop {
     const budgetUsd = opts.budgetUsd ?? config.OFFICE_BUDGET_USD;
     const run: OfficeRun = {
       id: "",
+      mode: "handsel",
       startedAt: new Date().toISOString(),
       finishedAt: null,
       phase: "hiring",
@@ -271,6 +279,70 @@ class OfficeLoop {
       // 4) 결정
       run.phase = "deciding";
       const output = await handsel.getDelegationOutput(run.id);
+      await this.finish(run, { output, statusText, headline, markets });
+    } catch (e) {
+      run.error = (e as Error).message;
+      run.phase = "failed";
+      run.finishedAt = new Date().toISOString();
+      logger.warn("오피스 사이클 실패", { id: run.id, error: run.error });
+    } finally {
+      save(run);
+      this.current = run;
+      this.running = false;
+    }
+    return run;
+  }
+
+  /** 로컬 협의 — 같은 로스터, 에스크로 없음. 각 역할이 실도구를 직접 부르고 검토·수정 라운드를 여기서 돈다 */
+  private async runLocal(): Promise<OfficeRun> {
+    this.running = true;
+    const run: OfficeRun = {
+      id: `loc-${Date.now().toString(36)}`,
+      mode: "local",
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      phase: "working",
+      scope: "",
+      markets: [],
+      retries: 0,
+      steps: OFFICE_STEP_COUNT,
+      stepStatuses: {},
+      budgetUsd: 0,
+      headline: null,
+      decision: null,
+      execution: null,
+      error: null,
+    };
+    this.current = run;
+    try {
+      const built = await this.buildScope();
+      if (!built) throw new Error("스캐너 후보가 2개 미만 — 오피스를 부르지 않음 (현금 유지)");
+      run.scope = built.scope;
+      run.markets = built.markets;
+      save(run);
+      const d = await deliberateLocally(built.markets, (roleId, status) => { run.stepStatuses = { ...(run.stepStatuses ?? {}), [roleId]: status }; save(run); });
+      // 로컬 채점 결과를 delegation_status 형식으로 — buildDecision/parseSteps가 그대로 읽는다
+      const statusText = [`${run.id} [completed] ${d.headline}`, ...d.steps.map((s) => `  - ${s.status} ${s.name} — ${s.note}`)].join("\n");
+      run.phase = "deciding";
+      await this.finish(run, { output: d.output, statusText, headline: `${run.id} [completed] ${d.headline}`, markets: built.markets });
+    } catch (e) {
+      run.error = (e as Error).message;
+      run.phase = "failed";
+      run.finishedAt = new Date().toISOString();
+      logger.warn("로컬 오피스 협의 실패", { id: run.id, error: run.error });
+    } finally {
+      save(run);
+      this.current = run;
+      this.running = false;
+    }
+    return run;
+  }
+
+  /** 결정 파싱 → 관문 → 제어 평면 제안 (handsel·local 공통 꼬리) */
+  private async finish(run: OfficeRun, p: { output: string; statusText: string; headline: string | null; markets: string[] }) {
+    const { output, statusText, headline, markets } = p;
+    run.headline = headline;
+    {
       const decision = buildDecision({ delegationId: run.id, output, statusText, expectedSteps: run.steps ?? 4, gate: { ...DEFAULT_GATE, allowedMarkets: new Set(markets) } });
       run.decision = decision;
       const conversation = renderConversation({ delegationId: run.id, headline, decision, output });
@@ -287,7 +359,7 @@ class OfficeLoop {
           engine: "office",
           targets: decision.targets,
           confidence: decision.steps.length ? passed / decision.steps.length : 0,
-          evidence: `${run.id} · ${passed}/${decision.steps.length} graded steps passed · source ${decision.source}`,
+          evidence: `${run.id} (${run.mode ?? "handsel"}) · ${passed}/${decision.steps.length} ${run.mode === "local" ? "locally accepted" : "graded"} steps passed · source ${decision.source}`,
           ref: run.id,
         });
         const ex = dc?.execution;
@@ -295,17 +367,7 @@ class OfficeLoop {
         run.phase = dc?.status === "executed" ? "executed" : dc?.status === "pending" ? "executed" : "rejected";
       }
       run.finishedAt = new Date().toISOString();
-    } catch (e) {
-      run.error = (e as Error).message;
-      run.phase = "failed";
-      run.finishedAt = new Date().toISOString();
-      logger.warn("오피스 사이클 실패", { id: run.id, error: run.error });
-    } finally {
-      save(run);
-      this.current = run;
-      this.running = false;
     }
-    return run;
   }
 
   /** confirm_delegation → 실제로 [posted]/[completed]가 됐는지로 판정. 오류 문자열은 run.error에 남긴다 */
@@ -334,18 +396,18 @@ class OfficeLoop {
 
   startAutoLoop() {
     if (!config.OFFICE_LOOP || this.timer) return;
-    if (!handsel.configured()) {
+    if (config.OFFICE_MODE === "handsel" && !handsel.configured()) {
       logger.warn("OFFICE_LOOP=true 이지만 HANDSEL_MCP_TOKEN 이 없어 오피스 루프를 시작하지 않음");
       return;
     }
     const period = config.OFFICE_INTERVAL_H * 60 * 60_000;
     const run = () => void this.runOnce().catch(() => undefined);
     // 재기동으로 끊긴 run(escrow 대기·작업 중)은 곧바로 이어받고, 새 사이클은 10분 뒤(스캐너 캐시 이후)
-    const firstDelay = this.resumable() ? 30_000 : 10 * 60_000;
+    const firstDelay = config.OFFICE_MODE === "handsel" && this.resumable() ? 30_000 : 10 * 60_000;
     setTimeout(run, firstDelay).unref();
     this.timer = setInterval(run, period);
     this.timer.unref();
-    logger.info("오피스 결정 루프 예약", { everyHours: config.OFFICE_INTERVAL_H, handsel: handsel.url, budgetUsd: config.OFFICE_BUDGET_USD, resume: this.resumable()?.id ?? null });
+    logger.info("오피스 결정 루프 예약", { mode: config.OFFICE_MODE, everyHours: config.OFFICE_INTERVAL_H, handsel: handsel.url, budgetUsd: config.OFFICE_BUDGET_USD, resume: this.resumable()?.id ?? null });
   }
 }
 

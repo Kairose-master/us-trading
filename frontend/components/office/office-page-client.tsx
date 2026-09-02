@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
 import { Building2, CheckCircle2, CircleDashed, XCircle } from "lucide-react"
-import { ApiError, getOfficeRoster, getOfficeRun, getOfficeRuns, getOfficeStatus, isBackendNotConfigured, type OfficeRun } from "@/lib/api"
+import { toast } from "sonner"
+import { ApiError, getOfficeRoster, getOfficeRun, getOfficeRuns, getOfficeStatus, isBackendNotConfigured, runOffice, type OfficeRun } from "@/lib/api"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
 import { OfficeGraph } from "@/components/office/office-graph"
 import { cn } from "@/lib/utils"
@@ -43,6 +44,22 @@ export function OfficePageClient() {
   const { data: roster } = useSWR("office-roster", getOfficeRoster)
   const { data: runs } = useSWR("office-runs", getOfficeRuns, { refreshInterval: 10_000 })
   const { data: detail } = useSWR(selected ? ["office-run", selected] : null, () => getOfficeRun(selected!), { refreshInterval: 15_000 })
+  const { mutate: refreshRuns } = useSWR("office-runs", getOfficeRuns)
+  const [starting, setStarting] = useState(false)
+  const startRun = async (mode: "local" | "handsel") => {
+    setStarting(true)
+    try {
+      toast(mode === "local" ? "로컬 협의 시작 — 9역할이 실도구를 부르는 중 (약 1분)" : "Handsel 오피스 고용 — 에스크로·채점까지 수 시간")
+      const r = await runOffice(mode)
+      await refreshRuns()
+      setSelected(r.id)
+      toast[r.phase === "failed" ? "error" : "success"](`${r.id} · ${PHASE_KO[r.phase]}${r.error ? ` — ${r.error}` : ""}`)
+    } catch (e) {
+      toast.error(e instanceof ApiError && e.status === 401 ? "로그인이 필요합니다 (설정 · 키 → 로그인)" : e instanceof Error ? e.message : "실행 실패")
+    } finally {
+      setStarting(false)
+    }
+  }
 
   // 기본 선택 = 최신 run
   useEffect(() => {
@@ -65,12 +82,22 @@ export function OfficePageClient() {
           <h1 className="text-lg font-bold">증권 오피스 — {roster ? `${roster.roles.length}개 노드가 협의하고 합의한다` : "대화 → 결정 → 매매"}</h1>
         </div>
         {status && (
-          <span className={cn("rounded-md px-2 py-1 font-mono text-[11px] font-semibold", status.enabled && status.configured ? "bg-chart-1/15 text-chart-1" : "bg-muted text-muted-foreground")}>
-            {status.configured ? (status.enabled ? `LOOP ON · ${status.intervalHours}h · $${status.budgetUsd}` : "LOOP OFF (수동만)") : "HANDSEL 토큰 미설정"}
-            {" · "}
-            {status.realMoneyHandsel ? "MAINNET" : "TESTNET"}
-            {run ? ` · ${run.id} ${PHASE_KO[run.phase]}${total ? ` · ${passed ?? 0}/${total} 통과` : ""}` : ""}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={cn("rounded-md px-2 py-1 font-mono text-[11px] font-semibold", status.enabled && (status.mode === "local" || status.configured) ? "bg-chart-1/15 text-chart-1" : "bg-muted text-muted-foreground")}>
+              {status.mode === "local" ? "LOCAL · 에스크로 없음" : status.configured ? `HANDSEL · ${status.realMoneyHandsel ? "MAINNET" : "TESTNET"} · $${status.budgetUsd}` : "HANDSEL 토큰 미설정"}
+              {" · "}
+              {status.enabled ? `LOOP ${status.intervalHours}h` : "LOOP OFF"}
+              {run ? ` · ${run.id} ${PHASE_KO[run.phase]}${total ? ` · ${passed ?? 0}/${total} 통과` : ""}` : ""}
+            </span>
+            <button type="button" disabled={starting || status.running} onClick={() => void startRun("local")} className="rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground disabled:opacity-50">
+              {status.running || starting ? "협의 중…" : "지금 협의 (로컬)"}
+            </button>
+            {status.configured && (
+              <button type="button" disabled={starting || status.running} onClick={() => void startRun("handsel")} className="rounded-md border border-border px-2.5 py-1 text-[11px] disabled:opacity-50" title="Handsel 오피스를 고용해 에스크로·독립 채점을 거친다">
+                Handsel로 협의
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -109,7 +136,7 @@ export function OfficePageClient() {
                     <div className="flex items-center gap-2">
                       <PhaseIcon phase={r.phase} />
                       <span className="font-mono text-xs font-bold">{r.id}</span>
-                      <span className="ml-auto text-[10px] text-muted-foreground">{PHASE_KO[r.phase]}</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">{r.mode === "local" ? "로컬 · " : ""}{PHASE_KO[r.phase]}</span>
                     </div>
                     <p className="text-[10px] text-muted-foreground">
                       {new Date(r.startedAt).toLocaleString("ko-KR", { hour12: false })} · ${r.budgetUsd} · {r.steps ?? 4}노드

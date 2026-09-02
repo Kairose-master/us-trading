@@ -16,6 +16,35 @@
   → cryptoDesk.rotateTo(페이퍼 장부 회전, 비용 반영) → execution.json
 ```
 
+## 로컬 협의 (OFFICE_MODE=local, 기본)
+
+같은 9역할 로스터(`roster.ts` 단일 정의)를 Handsel 에스크로 없이 백엔드 안에서
+돌린다 — `backend/src/office/local-office.ts`. 구조는 그대로다:
+
+- **핸드오프**(`dependsOn`): 차트·뉴스·수급·매크로 4명이 병렬로 실도구를 부르고,
+  퀀트 모델러는 그 네 보고서를 읽어 종목 점수(MA20 위/아래, 국면 라벨, 뉴스 감성,
+  호가 불균형·테이커 매수)를 매기고, 자기 도구의 GARCH σ로 역변동성 비중,
+  Kelly½를 노출 상한, 매크로 read로 노출 예산을 정한다 → Draft v1.
+- **동료 검토**(`reviewOf`): 리스크 오피서가 `basket_risk_report`로 평균 쌍상관·VaR를
+  읽어 APPROVE 또는 REVISE(총노출 50%/60%로 축소)를 내고, REVISE면 퀀트가 수정본
+  v2를 낸다(최대 2라운드). 레드팀은 플래너 상위 3종목을 `upbit_backtest_report`로
+  반박 — 추세 신호의 sharpe<0이고 B&H보다 10%p 이상 뒤지면 그 비중을 반으로.
+- **합의**(chair): 위원장이 전부 읽고 Handsel 때와 같은 JSON 블록을 낸다. 결정
+  파서·관문·제어 평면 제안은 `loop.ts`의 같은 꼬리(`finish`)를 탄다.
+
+Handsel 모드와 다른 점 세 가지: 돈이 안 묶인다; "채점"이 독립 채점자가 아니라
+기계적 수락 조건이다(실데이터 섹션이 있는가, 검토가 결론을 냈는가); 산문을 쓰는
+LLM이 없다 — 산출물은 실도구 보고서 + 그것을 읽는 결정적 규칙이라 덜 유창하고
+더 정직하다. run 기록(`data/office/loc-…`)은 Handsel run과 같은 형태라 `/office`
+그래프·run 목록·대화 뷰가 그대로 읽는다. `/office`의 "지금 협의 (로컬)" 버튼
+(로그인 세션)이나 `POST /api/office/run {"mode":"local"}`로 수동 실행, 루프는
+`OFFICE_LOOP=true`면 `OFFICE_INTERVAL_H`마다. Handsel 모드는 `OFFICE_MODE=handsel`
+또는 run마다 `mode:"handsel"`.
+
+검증(2026-09-02 로컬): ONG·SOPH·T·BONK·SC 바스켓, 9 도구 호출, 9/9 수락, 리스크·
+레드팀 APPROVE, 결정 ONG 23 / BONK 20 / SOPH 12.9, 현금 44.1 → 제어 평면 제안
+(승인 대기). 약 1분.
+
 ## 왜 Handsel이 중간에 있나
 
 오피스 안의 "대화"는 delegation 파이프라인 그 자체다 — 퀀트 역할은 차트·뉴스

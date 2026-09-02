@@ -64,6 +64,9 @@ const Env = z.object({
   HANDSEL_PRIME_AGENT_ID: z.string().default(""),
   // 오피스 역할들이 부를 우리 MCP 워커 (공개 HTTPS)
   OFFICE_WORKER_URL: z.string().default("https://us-trading-mcp-worker.vercel.app/api/mcp"),
+  // 오피스 협의 모드 — local: 백엔드 안에서 9역할을 실도구로 직접 돌린다(에스크로 없음, 기본).
+  // handsel: Handsel 오피스를 고용해 에스크로·독립 채점을 거친다 (HANDSEL_MCP_TOKEN 필요)
+  OFFICE_MODE: z.enum(["local", "handsel"]).default("local"),
   OFFICE_SLOT: z.coerce.number().default(1),
   OFFICE_LOOP: z
     .string()
