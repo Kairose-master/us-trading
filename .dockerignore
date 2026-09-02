@@ -1,0 +1,8 @@
+frontend
+mcp-worker
+docs
+**/node_modules
+**/dist
+**/data
+**/.env
+**/.next
