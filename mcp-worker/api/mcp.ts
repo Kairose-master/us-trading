@@ -753,6 +753,92 @@ const CRYPTO_TOOLS: ToolDef[] = [
     },
   },
   {
+    name: "upbit_news_report",
+    description:
+      "News desk for the coins in the query (default BTC/ETH): Google News RSS headlines per coin, each cited with source and publish date, lexicon-scored with the evidence words, plus a per-coin aggregate. States 'nothing material found' explicitly when a genuine search returns nothing. No price analysis here — that is the chart desk.",
+    inputSchema: QUERY_SCHEMA("Coins, e.g. 'BTC ETH SOL news'"),
+    handler: async (query) => {
+      const coins = extractCoins(query).slice(0, 5);
+      const sections = await Promise.all(
+        coins.map(async (coin) => {
+          const market = `KRW-${coin}`;
+          const xml = await fetch(
+            `https://news.google.com/rss/search?q=${encodeURIComponent(`${coin} crypto`)}&hl=en-US&gl=US&ceid=US:en`,
+            { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+          ).then((r) => (r.ok ? r.text() : "")).catch(() => "");
+          const lines: string[] = [];
+          let sSum = 0;
+          let sDen = 0;
+          const itemRe = /<item>([\s\S]*?)<\/item>/g;
+          let m: RegExpExecArray | null;
+          while ((m = itemRe.exec(xml)) !== null && lines.length < 8) {
+            const t = (/<title[^>]*>([\s\S]*?)<\/title>/.exec(m[1])?.[1] ?? "")
+              .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1")
+              .replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+              .replace(/ - [^-]+$/, "")
+              .trim();
+            if (!t) continue;
+            const src = (/<source[^>]*>([\s\S]*?)<\/source>/.exec(m[1])?.[1] ?? "GoogleNews").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim();
+            const pub = /<pubDate>([\s\S]*?)<\/pubDate>/.exec(m[1])?.[1]?.trim() ?? "";
+            const pubDate = pub ? new Date(pub).toISOString().slice(0, 10) : "date n/a";
+            const link = (/<link>([\s\S]*?)<\/link>/.exec(m[1])?.[1] ?? "").trim();
+            const sc = scoreHeadline(t);
+            sSum += sc.score * sc.confidence;
+            sDen += sc.confidence;
+            lines.push(`  · [${labelOf(sc.score)} ${signed(sc.score)} conf ${sc.confidence}] "${t.slice(0, 110)}" — ${src}, ${pubDate}${sc.hits.length ? ` · evidence: ${sc.hits.join(",")}` : ""}${link ? ` · ${link.slice(0, 80)}` : ""}`);
+          }
+          const agg = sDen > 0 ? +(sSum / sDen).toFixed(3) : 0;
+          return [
+            `## ${market} — ${lines.length ? `${lines.length} headlines, aggregate ${labelOf(agg)} ${signed(agg)}` : "nothing material found in a genuine Google News search (not invented)"}`,
+            ...lines,
+          ].join("\n");
+        }),
+      );
+      return [`# Crypto news desk`, ...sections, `[data] Google News RSS · deterministic lexicon (no LLM) · ts=${new Date().toISOString()}`].join("\n\n");
+    },
+  },
+  {
+    name: "upbit_quant_report",
+    description:
+      "Quant desk for the coins in the query (default BTC/ETH): per coin, a 3-state Gaussian HMM fitted by EM on up to 200 daily log returns with the filtered belief P(regime | returns so far) and transition matrix, GARCH(1,1) next-day volatility with persistence, historical VaR/ES/max drawdown, and fractional Kelly sizing (μ/σ²). Every number is fitted at call time from real Upbit candles — no RSI-style indicators. Sizing is a cap, not a recommendation.",
+    inputSchema: QUERY_SCHEMA("Coins, e.g. 'BTC ETH SOL'"),
+    handler: async (query) => {
+      const coins = extractCoins(query).slice(0, 5);
+      const sections = await Promise.all(
+        coins.map(async (coin) => {
+          const market = `KRW-${coin}`;
+          const candles = await upbitDayCandles(market, 200).catch(() => [] as UpbitCandle[]);
+          if (candles.length < 61) return `## ${market} — insufficient history (${candles.length} candles) — skipped, not invented`;
+          const closes = candles.map((c) => c.c);
+          const rets: number[] = [];
+          for (let i = 1; i < closes.length; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+          const hmm = hmmFit(rets, 3);
+          const g = garchForecastSigma(rets);
+          // 리스크 (역사적) + Kelly
+          const sorted = [...rets].sort((a, b) => a - b);
+          const n = rets.length;
+          const q = (p: number) => sorted[Math.max(0, Math.min(n - 1, Math.floor(n * p)))];
+          const tail = sorted.slice(0, Math.max(1, Math.floor(n * 0.05)));
+          const es95 = -tail.reduce((a, b) => a + b, 0) / tail.length;
+          let eq = 1, peak = 1, mdd = 0;
+          for (const r of rets) { eq *= 1 + r; peak = Math.max(peak, eq); mdd = Math.max(mdd, (peak - eq) / peak); }
+          const mu = rets.reduce((a, b) => a + b, 0) / n;
+          const varr = rets.reduce((a, r) => a + (r - mu) ** 2, 0) / n;
+          const kelly = varr > 0 ? Math.min(1, Math.max(0, mu / varr)) : 0;
+          const states = hmm.states.map((st, i) => `${st.label}(μ=${(st.mu * 100).toFixed(2)}%/d σ=${(st.sigma * 100).toFixed(2)}%) P=${hmm.current[i]}`).join(" · ");
+          return [
+            `## ${market} — ${candles[0].t} ~ ${candles[candles.length - 1].t} (${n} returns)`,
+            `  HMM regime belief (filtered): ${states}`,
+            `  GARCH(1,1): σ_next=${(g.forecastSigma * 100).toFixed(3)}%/d (annualized ${(g.forecastSigma * Math.sqrt(365) * 100).toFixed(1)}%) · persistence α+β=${g.persistence}`,
+            `  risk (historical, daily): VaR95=${(-q(0.05) * 100).toFixed(2)}% VaR99=${(-q(0.01) * 100).toFixed(2)}% ES95=${(es95 * 100).toFixed(2)}% · maxDD=${(-mdd * 100).toFixed(1)}%`,
+            `  Kelly (μ/σ², log-utility approx): full=${kelly.toFixed(3)} half=${(kelly / 2).toFixed(3)} — μ̂=${(mu * 100).toFixed(3)}%/d σ̂=${(Math.sqrt(varr) * 100).toFixed(2)}%/d · treat as an upper bound on exposure, not a signal`,
+          ].join("\n");
+        }),
+      );
+      return [`# Crypto quant desk`, ...sections, `[data] Upbit public API · HMM(EM)+GARCH(MLE)+historical risk fitted at call time · ts=${new Date().toISOString()}`].join("\n\n");
+    },
+  },
+  {
     name: "upbit_backtest_report",
     description:
       "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: momentum-20, vol-regime (regime/HMM signal lives in the backend backtest). No RSI-style indicators. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead; fee 0.05% + slippage 0.05% per side included.",
@@ -823,7 +909,7 @@ export default async function handler(req: any, res: any) {
         rpcResult(msg.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "us-trading-mcp-worker", version: "1.4.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
+          serverInfo: { name: "us-trading-mcp-worker", version: "1.5.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
         }),
       );
     case "notifications/initialized":

@@ -114,6 +114,21 @@ Quant 재제출(assisted)도 같은 이유 부류로 FAILED — 백테스트 리
 툴 출력이 기준의 각 항목을 실데이터로 채우는지 먼저 대조할 것 — 없는
 항목은 assisted 에이전트가 지어내지 않고(정직), 그대로 FAILED가 된다.
 
+### 역할(노드)별 전용 실도구 배선 (워커 v1.5.0)
+
+네 역할이 같은 툴을 나눠 쓰지 않는다 — 각 노드가 서로 다른 실제 데이터원에
+붙어 있고, 다음 노드는 앞 노드의 산출물을 브리프로 받아 대화한다.
+
+| 역할(노드) | 툴 | 실데이터원 | 내는 것 |
+|---|---|---|---|
+| Chart Analyst | `upbit_market_report` | Upbit 일봉 | 추세, 30일 지지/저항(가격+날짜), 모멘텀, HMM/GARCH 한 줄 |
+| News Analyst | `upbit_news_report` | Google News RSS | 헤드라인마다 출처·발행일·근거어, 없으면 "없음" 명시 |
+| Quant Modeler | `upbit_quant_report` | Upbit 일봉 → HMM(EM)·GARCH(MLE) | 레짐 belief·전이행렬, σ_next, VaR/ES/MDD, Kelly 상한 |
+| Rebalance Planner | `upbit_rebalance_draft` | 위 셋 + Upbit/뉴스 | 비중 초안 + 결정 JSON 블록 |
+
+`backend/src/office/loop.ts`의 `connectors()`와 테스트넷 오피스 1의 실배선이
+같은 표를 가리킨다. RSI 계열 지표는 어느 툴에도 없다.
+
 메인넷(https://handsel-main.vercel.app)은 **실제 USDC**가 움직인다.
 테스트넷에서 채점 통과가 안정적으로 확인되기 전에는 메인넷에 붙이지 말 것.
 

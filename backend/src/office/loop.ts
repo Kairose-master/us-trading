@@ -54,14 +54,20 @@ function save(run: OfficeRun, extra?: { conversation?: string }) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** 오피스 역할 → 우리 MCP 워커 배선 (v1.3: 지지/저항·날짜 인용, 비중 근거 명시) */
+/**
+ * 오피스 역할(노드) → 각자 전용 실도구. 네 역할이 같은 툴을 나눠 쓰지 않는다:
+ *  chart  → upbit_market_report  (실캔들: 추세·지지/저항·모멘텀, HMM/GARCH 한 줄)
+ *  news   → upbit_news_report    (Google News RSS: 출처·날짜·근거어, 없으면 "없음")
+ *  quant  → upbit_quant_report   (HMM belief·전이행렬, GARCH, VaR/ES/MDD, Kelly 상한)
+ *  rebal  → upbit_rebalance_draft(비중 초안 — 위 셋의 산출물을 브리프로 받아 결정 JSON)
+ */
 function connectors(): HandselConnector[] {
   const server_url = config.OFFICE_WORKER_URL;
   return [
-    { role_id: "chart-analyst", server_url, tool_name: "upbit_market_report", mode: "assisted", label: "us-trading worker — chart" },
-    { role_id: "news-analyst", server_url, tool_name: "upbit_market_report", mode: "assisted", label: "us-trading worker — dated headlines" },
-    { role_id: "quant-modeler", server_url, tool_name: "upbit_rebalance_draft", mode: "assisted", label: "us-trading worker — weights w/ bases" },
-    { role_id: "rebalance-planner", server_url, tool_name: "upbit_rebalance_draft", mode: "assisted", label: "us-trading worker — draft" },
+    { role_id: "chart-analyst", server_url, tool_name: "upbit_market_report", mode: "assisted", label: "us-trading worker — chart desk" },
+    { role_id: "news-analyst", server_url, tool_name: "upbit_news_report", mode: "assisted", label: "us-trading worker — news desk" },
+    { role_id: "quant-modeler", server_url, tool_name: "upbit_quant_report", mode: "assisted", label: "us-trading worker — quant desk (HMM/GARCH/Kelly)" },
+    { role_id: "rebalance-planner", server_url, tool_name: "upbit_rebalance_draft", mode: "assisted", label: "us-trading worker — rebalance desk" },
   ];
 }
 
