@@ -33,11 +33,55 @@ src/
   strategy/
     engine.ts         # 전략 등록/시작/정지/틱 디스패치
     strategies/rsiReversal.ts  # 예시 전략 (배선 확인용)
+  pipeline/
+    engine.ts         # 실시간 데이터/ML 파이프라인 DAG (아래 섹션 참고)
+    types.ts
+  sentiment/
+    news.ts           # 비정형 수집기 — Google News RSS (키 불필요) + MOCK 폴백
+    scorer.ts         # 렉시콘 기반 헤드라인 채점 (결정적, LLM 불필요)
+    tracker.ts        # 심볼별 신뢰도 가중 EMA + 채점 피드
+  trade/
+    execute.ts        # 주문 실행 공용 경로 — 수동/자동/MCP 전부 여기로 (리스크 관문 1회)
+    auto-trader.ts    # 자동매매 실행기 — 파이프라인 신호 → 주문 (기본 OFF, 겹겹의 가드)
+  crypto/
+    upbit.ts          # Upbit 클라이언트 — 공개(키 불필요, 항상 실데이터) + JWT 개인(주문은 이중 스위치)
+    desk.ts           # 크립토 데스크 — 두 번째 파이프라인 인스턴스, 페이퍼/실주문 3단 가드
+    backtest.ts       # 알파 백테스트 엔진(순수) — 시그널 4종, 룩어헤드 없음, 롱/현금만
+  mcp/
+    server.ts         # POST /mcp — Handsel office가 이 백엔드를 워커로 탈부착하는 접점
+    tools.ts          # 단일 string 인자 툴들 (거래 툴은 MCP_TRADING=true에서만)
   api/
     routes.ts         # 프론트 스펙 그대로의 REST
     wsRelay.ts        # /ws/live — 프론트용 릴레이
-    state.ts          # 인메모리 상태 + 목 시뮬레이터
+    state.ts          # 인메모리 상태 + 목 시뮬레이터 (+모의 체결)
 ```
+
+## Handsel office 연동 + 자동매매
+
+`docs/handsel-office.md` 참고 — 등록된 테스트넷 에이전트(US Trading Desk),
+부착/분리 절차, MCP 툴 목록, 자동매매의 6겹 안전층이 거기 있다.
+
+## 데이터/ML 파이프라인 (정형 + 비정형 통합)
+
+정형 소스(시세 틱)와 비정형 소스(뉴스 헤드라인)를 하나의 DAG로 처리한다:
+
+```
+INGESTION            FEATURES            MODELS            STRATEGY        EXECUTION
+시세 틱 ──────┬──▶ 기술적 지표 ─────▶ 기술 알파 ──┐
+              └──▶ 마이크로구조 ──────┘            ├─▶ 알파 앙상블 ─▶ 포트폴리오 구성 ─▶ 실행 라우터
+뉴스 스트림 ─────▶ 감성 점수 ────────▶ 감성 알파 ──┘
+```
+
+- **모든 노드 지표는 실측값** — 레이턴시는 `performance.now()`, 처리량은 최근 10초 창.
+- 실행 라우터는 **신호까지만** 만든다. 신호도 `riskManager.check()`를 통과해야 하며,
+  실제 주문 발행은 기존 주문 경로(kisClient)의 몫.
+- 뉴스는 실모드에서 Google News RSS(키 불필요)를 심볼별로 폴링하고,
+  MOCK_DATA/실패 시 합성 헤드라인으로 폴백한다 (`source` 필드로 구분).
+- 감성 채점은 렉시콘 기반으로 결정적 — 점수에 기여한 단어가 `evidence`로 남아 감사 가능.
+
+REST: `GET /api/pipeline` · `/api/pipeline/nodes/:id` · `/api/pipeline/logs`
+· `/api/pipeline/targets` · `/api/pipeline/signals` · `/api/sentiment` · `/api/sentiment/feed`
+WS 채널: `pipeline`(1초 스냅샷) · `pipeline:log` · `sentiment`
 
 ## 실연결 전 검증 체크리스트 (중요)
 

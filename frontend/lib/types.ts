@@ -143,9 +143,121 @@ export interface EquityPoint {
   equityUsd: number
 }
 
+// ===== 데이터/ML 파이프라인 (백엔드 /api/pipeline* 응답과 동일 형태) =====
+
+export type PipelineStage = "ingestion" | "features" | "models" | "strategy" | "execution"
+export type PipelineNodeStatus = "active" | "idle" | "error"
+
+export interface PipelineNodeMetrics {
+  status: PipelineNodeStatus
+  lastLatencyMs: number
+  avgLatencyMs: number
+  throughputPerSec: number
+  totalMsgs: number
+  lastRunAt: string | null
+  lastError: string | null
+}
+
+export interface PipelineNode {
+  id: string
+  stage: PipelineStage
+  name: string
+  description: string
+  codeHint: string
+  metrics: PipelineNodeMetrics
+}
+
+export interface PipelineNodeDetail extends PipelineNode {
+  sample: { columns: string[]; rows: Array<Array<string | number>> }
+}
+
+export interface PipelineEdge {
+  from: string
+  to: string
+}
+
+export interface PipelineLogLine {
+  ts: string
+  node: string
+  message: string
+}
+
+export interface PipelineSnapshot {
+  status: "active" | "stopped"
+  latencyMs: number
+  nodesActive: number
+  nodesTotal: number
+  alphaStability: number
+  stages: PipelineStage[]
+  nodes: PipelineNode[]
+  edges: PipelineEdge[]
+}
+
+// ===== 감성 (백엔드 /api/sentiment* 응답과 동일 형태) =====
+
+export type SentimentLabel = "BULLISH" | "BEARISH" | "NEUTRAL"
+
+export interface SymbolSentiment {
+  symbol: string
+  score: number
+  label: SentimentLabel
+  mentions: number
+  topDriver: string | null
+  updatedAt: string | null
+}
+
+export interface ScoredNews {
+  id: string
+  symbol: string
+  title: string
+  source: string
+  url: string | null
+  publishedAt: string
+  fetchedAt: string
+  score: number
+  confidence: number
+  label: SentimentLabel
+  evidence: string[]
+  assessment: string
+}
+
+export interface SentimentOverview {
+  index: number
+  label: SentimentLabel
+  totalMentions: number
+  symbols: SymbolSentiment[]
+  sources: Array<{ name: string; count: number }>
+}
+
+// ===== 자동매매 (백엔드 /api/autotrade 응답과 동일 형태) =====
+
+export interface AutoTradeRecord {
+  ts: string
+  symbol: string
+  side: OrderSide
+  qty: number
+  refPrice: number
+  orderId: string | null
+  outcome: "accepted" | "blocked" | "error"
+  detail: string
+}
+
+export interface AutoTradeStatus {
+  enabled: boolean
+  startedAt: string | null
+  killSwitchActive: boolean
+  mock: boolean
+  kisMode: "mock" | "real"
+  executedToday: number
+  recent: AutoTradeRecord[]
+}
+
 // WebSocket relay message shapes (WS /ws/live)
 export type WsMessage =
   | { ch: `quote:${string}`; data: { last: number; change: number; changePct: number; bid: number; ask: number; volume: number; ts: string } }
   | { ch: "execution"; data: { orderId: string; symbol: string; side: OrderSide; qty: number; price: number; ts: string } }
   | { ch: "position"; data: Position[] }
   | { ch: "session"; data: { marketSession: MarketSession } }
+  | { ch: "pipeline"; data: PipelineSnapshot }
+  | { ch: "pipeline:log"; data: PipelineLogLine }
+  | { ch: "sentiment"; data: { scored: ScoredNews[] } }

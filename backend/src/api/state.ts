@@ -91,6 +91,47 @@ class AppState extends EventEmitter {
     return q;
   }
 
+  /**
+   * 모의 체결 — MOCK 모드에서 시장가 주문을 실제로 체결시켜
+   * 포지션/현금이 움직이게 한다 (자동매매 검증의 전제).
+   */
+  fillMockOrder(orderId: string) {
+    const order = this.orders.find((o) => o.orderId === orderId);
+    if (!order || order.status !== "open") return;
+    const q = this.quotes.get(order.symbol);
+    const fillPrice = order.orderType === "market" ? (q?.last ?? order.price) : order.price;
+    order.filledQty = order.qty;
+    order.avgFillPrice = fillPrice;
+    order.status = "filled";
+
+    const pos = this.positions.find((p) => p.symbol === order.symbol);
+    if (order.side === "buy") {
+      this.balance.cashUsd = +(this.balance.cashUsd - fillPrice * order.qty).toFixed(2);
+      if (pos) {
+        pos.avgPrice = +((pos.avgPrice * pos.qty + fillPrice * order.qty) / (pos.qty + order.qty)).toFixed(4);
+        pos.qty += order.qty;
+      } else {
+        this.positions.push(mkPos(order.symbol, order.name, order.exch, order.qty, fillPrice, fillPrice));
+      }
+    } else {
+      const sellQty = order.qty === 0 ? (pos?.qty ?? 0) : order.qty;
+      this.balance.cashUsd = +(this.balance.cashUsd + fillPrice * sellQty).toFixed(2);
+      if (pos) {
+        pos.qty -= sellQty;
+        if (pos.qty <= 0) this.positions = this.positions.filter((p) => p.symbol !== order.symbol);
+      }
+    }
+    this.refreshPositionPrices();
+    this.emit("execution", {
+      orderId,
+      symbol: order.symbol,
+      side: order.side,
+      qty: order.qty,
+      price: fillPrice,
+      ts: new Date().toISOString(),
+    });
+  }
+
   refreshPositionPrices() {
     let equity = this.balance.cashUsd;
     for (const p of this.positions) {

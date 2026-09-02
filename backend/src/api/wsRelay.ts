@@ -4,6 +4,8 @@ import { state } from "./state.js";
 import { kisWs } from "../kis/ws.js";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
+import { pipeline } from "../pipeline/engine.js";
+import { cryptoDesk } from "../crypto/desk.js";
 
 /**
  * 프론트용 WebSocket 릴레이 (/ws/live).
@@ -51,6 +53,17 @@ export function attachWsRelay(server: Server) {
   }));
   state.on("position", (positions) => broadcast("position", positions));
   state.on("execution", (e) => broadcast("execution", e));
+
+  // 파이프라인/감성 이벤트 → 프론트 릴레이
+  pipeline.on("snapshot", (snap) => broadcast("pipeline", snap));
+  pipeline.on("log", (line) => broadcast("pipeline:log", line));
+  pipeline.on("sentiment", (payload) => broadcast("sentiment", payload));
+
+  // 크립토 데스크 (Upbit) — 같은 채널 체계, crypto: 접두
+  cryptoDesk.pipeline.on("snapshot", (snap) => broadcast("crypto:pipeline", snap));
+  cryptoDesk.pipeline.on("log", (line) => broadcast("crypto:pipeline:log", line));
+  cryptoDesk.pipeline.on("sentiment", (payload) => broadcast("crypto:sentiment", payload));
+  cryptoDesk.on("order", (order) => broadcast("crypto:order", order));
 
   kisWs.on("tick", (t) => {
     const q = state.quotes.get(t.symbol);

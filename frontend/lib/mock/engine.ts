@@ -1,4 +1,6 @@
 import type {
+  AutoTradeRecord,
+  AutoTradeStatus,
   Candle,
   Exchange,
   MarketSession,
@@ -15,6 +17,7 @@ import type {
   WsStatus,
 } from "@/lib/types"
 import { getMarketSession } from "@/lib/time"
+import { PipelineSim } from "@/lib/mock/pipeline"
 
 /**
  * In-memory mock of the self-hosted KIS backend.
@@ -110,9 +113,11 @@ class MockEngine {
   apiUsagePct = 35
   private listeners = new Set<Listener>()
   private tickTimer: ReturnType<typeof setTimeout> | null = null
+  private lastPipelineEmit = 0
   private lastSession: MarketSession = getMarketSession()
   private orderSeq = 100
   private logCache = new Map<string, StrategyLog[]>()
+  pipeline: PipelineSim
 
   constructor() {
     for (const s of SYMBOLS) {
@@ -127,6 +132,109 @@ class MockEngine {
     }
     this.startOfDayEquity = this.totalEquityUsd() - 61.4
     this.seedOrders()
+
+    // 데이터/ML 파이프라인 시뮬레이터 — 백엔드 pipeline/engine.ts와 동일 계산
+    this.pipeline = new PipelineSim(
+      SYMBOLS.map((s) => s.symbol),
+      {
+        maxSymbolWeightPct: this.riskLimits.maxSymbolWeightPct,
+        check: ({ amountUsd, side, resultingSymbolWeightPct }) => {
+          if (this.killSwitchActive) return "킬스위치 활성화 상태 — 모든 주문 차단됨"
+          if (amountUsd > this.riskLimits.maxOrderAmountUsd) return `1회 최대 주문금액($${this.riskLimits.maxOrderAmountUsd}) 초과`
+          if (side === "buy" && resultingSymbolWeightPct > this.riskLimits.maxSymbolWeightPct)
+            return `종목당 최대 비중(${this.riskLimits.maxSymbolWeightPct}%) 초과`
+          return null
+        },
+        currentWeightPct: (symbol) => {
+          const pos = this.positions.find((p) => p.symbol === symbol)
+          if (!pos) return 0
+          const total = this.totalEquityUsd()
+          return total > 0 ? ((pos.qty * (this.symbols.get(symbol)?.last ?? 0)) / total) * 100 : 0
+        },
+        totalEquityUsd: () => this.totalEquityUsd(),
+      },
+    )
+    this.pipeline.onLog = (line) => this.emit({ ch: "pipeline:log", data: line })
+    this.pipeline.onNews = (scored) => this.emit({ ch: "sentiment", data: { scored } })
+    // 자동매매 실행기 — 파이프라인 신호를 주문으로 (백엔드 auto-trader.ts와 동일 규칙)
+    this.pipeline.onSignal = (sig) => this.onAutoTradeSignal(sig)
+  }
+
+  // ---- 자동매매 (백엔드 trade/auto-trader.ts 미러) ------------------------
+
+  autoTradeEnabled = false
+  autoTradeStartedAt: string | null = null
+  autoTradeHistory: AutoTradeRecord[] = []
+  private autoTradeCooldown = new Map<string, number>()
+
+  setAutoTrade(enabled: boolean): { ok: true } | { ok: false; error: string } {
+    if (enabled && this.killSwitchActive) {
+      return { ok: false, error: "킬스위치 활성화 상태 — 해제 후 다시 시도하세요" }
+    }
+    this.autoTradeEnabled = enabled
+    this.autoTradeStartedAt = enabled ? nowIso() : this.autoTradeStartedAt
+    this.pipeline.log("auto-trade", enabled ? "자동매매 ON" : "자동매매 OFF")
+    return { ok: true }
+  }
+
+  getAutoTradeStatus(): AutoTradeStatus {
+    return {
+      enabled: this.autoTradeEnabled,
+      startedAt: this.autoTradeStartedAt,
+      killSwitchActive: this.killSwitchActive,
+      mock: true,
+      kisMode: "mock",
+      executedToday: this.autoTradeHistory.filter((h) => h.outcome === "accepted").length,
+      recent: this.autoTradeHistory.slice(0, 20),
+    }
+  }
+
+  private onAutoTradeSignal(sig: { symbol: string; side: "buy" | "sell"; strengthPct: number; reason: string; blocked: string | null }) {
+    if (!this.autoTradeEnabled || this.killSwitchActive || sig.blocked) return
+    const now = Date.now()
+    const last = this.autoTradeCooldown.get(sig.symbol) ?? 0
+    if (now - last < 5 * 60_000) return
+    this.autoTradeCooldown.set(sig.symbol, now)
+
+    const s = this.symbols.get(sig.symbol)
+    if (!s || s.last <= 0) return
+    const budget = Math.min((sig.strengthPct / 100) * this.totalEquityUsd(), this.riskLimits.maxOrderAmountUsd * 0.5)
+    let qty: number
+    if (sig.side === "sell") {
+      const pos = this.positions.find((p) => p.symbol === sig.symbol)
+      if (!pos) return // 공매도 없음
+      qty = Math.min(pos.qty, Math.max(1, Math.floor(budget / s.last)))
+    } else {
+      qty = Math.floor(budget / s.last)
+      if (qty < 1) return
+    }
+
+    const result = this.placeOrder({
+      symbol: sig.symbol,
+      exch: s.exch,
+      side: sig.side,
+      orderType: "market",
+      qty,
+      session: "regular",
+    })
+    const record: AutoTradeRecord = {
+      ts: nowIso(),
+      symbol: sig.symbol,
+      side: sig.side,
+      qty,
+      refPrice: s.last,
+      orderId: result.ok ? result.orderId : null,
+      outcome: result.ok ? "accepted" : "blocked",
+      detail: result.ok ? sig.reason : result.error,
+    }
+    this.autoTradeHistory.unshift(record)
+    if (this.autoTradeHistory.length > 100) this.autoTradeHistory.length = 100
+    this.pipeline.log(
+      "auto-trade",
+      result.ok
+        ? `${sig.symbol} ${sig.side.toUpperCase()} ${qty}주 주문 접수 (${result.orderId}) — ${sig.reason}`
+        : `${sig.symbol} ${sig.side.toUpperCase()} 주문 실패 — ${result.error}`,
+    )
   }
 
   private seedOrders() {
@@ -223,6 +331,25 @@ class MockEngine {
           ts: nowIso(),
         },
       })
+    }
+    // 파이프라인 시뮬레이터에 틱 공급 → 1초 스로틀로 스냅샷 방송
+    for (const s of this.symbols.values()) {
+      if (s.halted) continue
+      const spread = this.spreadOf(s)
+      this.pipeline.onTick({
+        symbol: s.symbol,
+        last: s.last,
+        bid: s.last - spread,
+        ask: s.last + spread,
+        bidSize: Math.round(100 + Math.random() * 900),
+        askSize: Math.round(100 + Math.random() * 900),
+        volume: s.volume,
+      })
+    }
+    const now = Date.now()
+    if (now - this.lastPipelineEmit > 1000) {
+      this.lastPipelineEmit = now
+      this.emit({ ch: "pipeline", data: this.pipeline.snapshot() })
     }
     // occasionally emit positions refresh
     if (Math.random() < 0.2) {

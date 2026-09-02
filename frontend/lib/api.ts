@@ -1,12 +1,18 @@
 import type {
+  AutoTradeStatus,
   Balance,
   Candle,
   EquityPoint,
   Order,
   OrderRequest,
+  PipelineLogLine,
+  PipelineNodeDetail,
+  PipelineSnapshot,
   Position,
   Quote,
   RiskLimits,
+  ScoredNews,
+  SentimentOverview,
   Strategy,
   StrategyConfig,
   StrategyLog,
@@ -166,4 +172,56 @@ export async function searchSymbols(q: string): Promise<SymbolInfo[]> {
 export async function getEquityCurve(days = 30): Promise<EquityPoint[]> {
   await delay()
   return getEngine().getEquityCurve(days)
+}
+
+// ===== 데이터/ML 파이프라인 =====
+
+// GET /api/pipeline
+export async function getPipeline(): Promise<PipelineSnapshot> {
+  await delay(120)
+  return getEngine().pipeline.snapshot()
+}
+
+// GET /api/pipeline/nodes/:id
+export async function getPipelineNode(id: string): Promise<PipelineNodeDetail> {
+  await delay(100)
+  const detail = getEngine().pipeline.nodeDetail(id)
+  if (!detail) throw new ApiError(404, `노드를 찾을 수 없습니다: ${id}`)
+  return detail
+}
+
+// GET /api/pipeline/logs?limit=100
+export async function getPipelineLogs(limit = 100): Promise<PipelineLogLine[]> {
+  await delay(100)
+  return getEngine().pipeline.logs.slice(0, limit)
+}
+
+// ===== 감성 =====
+
+// GET /api/sentiment
+export async function getSentiment(): Promise<SentimentOverview> {
+  await delay(120)
+  return getEngine().pipeline.sentimentOverview()
+}
+
+// GET /api/sentiment/feed?limit=50
+export async function getSentimentFeed(limit = 50): Promise<ScoredNews[]> {
+  await delay(100)
+  return getEngine().pipeline.feed.slice(0, limit)
+}
+
+// ===== 자동매매 =====
+
+// GET /api/autotrade
+export async function getAutoTrade(): Promise<AutoTradeStatus> {
+  await delay(100)
+  return getEngine().getAutoTradeStatus()
+}
+
+// POST /api/autotrade {enabled} — 409 {error} if it cannot be enabled
+export async function setAutoTrade(enabled: boolean): Promise<AutoTradeStatus> {
+  await delay(150)
+  const res = getEngine().setAutoTrade(enabled)
+  if (!res.ok) throw new ApiError(409, res.error)
+  return getEngine().getAutoTradeStatus()
 }
