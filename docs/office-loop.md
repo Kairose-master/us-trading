@@ -73,3 +73,28 @@ XRP를 끼워 넣은 것을 퀀트가 제외), 리밸런스는 퀀트의 범위 
 - 오피스 역할의 최종 산출물이 요청한 JSON 블록을 항상 낼지는 채점자와
   에이전트에 달렸다 — 안 내면 주문표/문장 파싱으로 폴백하고, 그것도 없으면
   결정 없음(매매 없음).
+
+## 9역할 플로어 (securities-floor) — 2026-09-02
+
+4역할 데스크(securities-desk)는 핸드오프만 있었다. 지금 루프가 고용하는
+`securities-floor`는 **협의 구조**다 (Handsel `lib/office-world-data.ts`, 백엔드
+`office/roster.ts`가 role id 1:1 미러):
+
+| 노드 | 전용 툴 (워커 v1.6.0) | 받는 것 |
+|---|---|---|
+| 차트 | `upbit_market_report` | — |
+| 뉴스 | `upbit_news_report` | — |
+| 수급 | `upbit_flow_report` (호가 깊이·체결 테이프·거래대금 추세) | — |
+| 매크로 | `macro_report` (DXY·S&P·VIX·10y·금·BTC 상관, Yahoo) | — |
+| 퀀트 | `upbit_quant_report` (HMM/GARCH/VaR/Kelly) | 위 4개 산출물 |
+| 리스크 오피서 | `basket_risk_report` (상관행렬·바스켓 VaR/ES·낙폭) | **퀀트를 검토** — REVISE면 퀀트가 수정본을 낸다 |
+| 리밸런스 | `upbit_rebalance_draft` | 퀀트 + 리스크 |
+| 레드팀 | `upbit_backtest_report` | **리밸런스를 검토** — REVISE면 플래너가 수정 |
+| 위원장 | 없음 (플랫폼 에이전트) | 리밸런스 + 레드팀 → 결정 메모 + 결정 JSON 블록 |
+
+검토(reviewOf)는 Handsel의 escrow 홀드다: 검토 대상의 보수는 승인 전까지 묶인다.
+그래서 "협의"가 수사가 아니라 돈이 걸린 라운드가 된다. 9단계 전부 Completed여야
+결정이 유효(`expectedSteps = run.steps`). 최소 예산 $9, 기본 `OFFICE_BUDGET_USD=10`.
+
+/office 페이지의 그래프(`components/office/office-graph.tsx`)가 이 로스터를
+`/api/office/roster`로 읽어 그린다 — 노드 색·엣지 종류·채점 링이 전부 실데이터다.
