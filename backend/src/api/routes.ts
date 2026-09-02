@@ -13,6 +13,7 @@ import { pipeline } from "../pipeline/engine.js";
 import { executeOrder } from "../trade/execute.js";
 import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
+import { scannerServer } from "../crypto/scanner-server.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
@@ -418,6 +419,36 @@ router.get("/quant/report", async (req, res) => {
 // 페이퍼 에쿼티 커브 — 재시작을 견디는 라이브 기록 (data/crypto-paper-equity.jsonl)
 router.get("/crypto/paper/equity", (req, res) => {
   res.json(cryptoDesk.paperEquity(Number(req.query.limit ?? 2000)));
+});
+
+// ===== 알트코인 스캐너 (KRW 전 마켓 → 위험조정 랭킹 → 상위K 로테이션, 페이퍼 전용) =====
+
+router.get("/crypto/scanner", async (req, res) => {
+  try {
+    res.json({ ...(await scannerServer.scan(req.query.force === "true")), lastRotation: scannerServer.lastRotation, autoRotate: config.CRYPTO_SCANNER });
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
+});
+
+router.get("/crypto/scanner/backtest", async (req, res) => {
+  try {
+    const bt = await scannerServer.backtest(req.query.force === "true");
+    if (!bt) return res.status(422).json({ error: "데이터 부족 — 백테스트 불가" });
+    res.json(bt);
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
+});
+
+router.post("/crypto/scanner/rotate", async (_req, res) => {
+  try {
+    const r = await scannerServer.rotate();
+    if (r.error) return res.status(409).json(r);
+    res.json(r);
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message });
+  }
 });
 
 router.post("/crypto/autotrade", (req, res) => {

@@ -25,6 +25,32 @@ export interface CryptoCandle {
   v: number
 }
 
+/** KRW 전 마켓 목록 → 24h 거래대금 상위 topN (스캐너 유니버스) */
+export async function fetchTopKrwMarkets(topN: number): Promise<Array<{ market: string; koreanName: string; priceKrw: number; valueKrw24h: number; changePct: number }>> {
+  const res = await fetch(`${BASE}/market/all?is_details=false`)
+  if (!res.ok) throw new Error(`Upbit market/all HTTP ${res.status}`)
+  const all = (await res.json()) as Array<{ market: string; korean_name: string }>
+  const krw = all.filter((m) => m.market.startsWith("KRW-"))
+  const nameOf = new Map(krw.map((m) => [m.market, m.korean_name]))
+  const tickers: Array<{ market: string; trade_price: number; acc_trade_price_24h: number; signed_change_rate: number }> = []
+  for (let i = 0; i < krw.length; i += 100) {
+    const chunk = krw.slice(i, i + 100).map((m) => m.market)
+    const r = await fetch(`${BASE}/ticker?markets=${encodeURIComponent(chunk.join(","))}`)
+    if (!r.ok) throw new Error(`Upbit ticker HTTP ${r.status}`)
+    tickers.push(...((await r.json()) as typeof tickers))
+  }
+  return tickers
+    .sort((a, b) => b.acc_trade_price_24h - a.acc_trade_price_24h)
+    .slice(0, topN)
+    .map((t) => ({
+      market: t.market,
+      koreanName: nameOf.get(t.market) ?? t.market,
+      priceKrw: t.trade_price,
+      valueKrw24h: Math.round(t.acc_trade_price_24h),
+      changePct: +(t.signed_change_rate * 100).toFixed(2),
+    }))
+}
+
 export async function fetchTickers(markets: string[] = CRYPTO_MARKETS): Promise<UpbitTickerLite[]> {
   const res = await fetch(`${BASE}/ticker?markets=${encodeURIComponent(markets.join(","))}`)
   if (!res.ok) throw new Error(`Upbit ticker HTTP ${res.status}`)

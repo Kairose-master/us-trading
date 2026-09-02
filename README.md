@@ -21,6 +21,26 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 견딘다. 조회: `GET /api/crypto/status`(paperSince 포함),
 `GET /api/crypto/paper/equity`.
 
+## 알트코인 스캐너
+
+`/scanner` 페이지 + `GET /api/crypto/scanner` — 업비트 KRW 전 마켓(~287개) 중
+24h 거래대금 상위 30개를 스캔해 **위험조정 모멘텀(mom20/vol20)** 으로 랭킹하고,
+추세 필터(종가>MA20) 통과 + 양의 점수 상위 5개를 역변동성 가중(코인당 25% 상한)
+으로 로테이션 타깃을 만든다. 자격 코인이 없으면 100% 현금이 정답이고 그대로
+반환한다.
+
+- `GET /api/crypto/scanner/backtest` — 같은 규칙의 주 1회 리밸런스 백테스트
+  (비용 반영, BTC 보유·동일가중 벤치마크, 블록 부트스트랩 p-값 +
+  **유니버스 크기만큼 Bonferroni 다중검정 보정**). 스캔 자체가 N번의 암묵적
+  검정이라는 사실을 숫자로 노출한다.
+- `POST /api/crypto/scanner/rotate` — 페이퍼 장부를 타깃 비중으로 로테이션.
+  **페이퍼 전용** — 실주문 모드에서는 거부. `CRYPTO_SCANNER=true`면 24h마다
+  자동 로테이션.
+
+이 모드가 극대화하는 것은 "비용 차감 후 위험조정 기대수익"이라는 시도이지
+수익 자체가 아니다 — 백테스트는 인샘플 상한선이고, 판단은 페이퍼 장부의
+실기록이 한다.
+
 ## Handsel 연동
 
 `docs/handsel-office.md` — 테스트넷/메인넷 에이전트 배선 기록, MCP 워커 주소,

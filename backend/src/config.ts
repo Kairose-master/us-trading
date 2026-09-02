@@ -37,6 +37,11 @@ const Env = z.object({
     .string()
     .default("false")
     .transform((v) => v === "true"),
+  // 알트코인 스캐너 자동 로테이션 (24h 주기, 페이퍼 장부 전용 — 실주문 경로 없음)
+  CRYPTO_SCANNER: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   // ===== MCP 워커 (Handsel office 탈부착용) =====
   // /mcp 엔드포인트 인증 토큰 — 비우면 API_AUTH_TOKEN을 그대로 쓴다
   MCP_AUTH_TOKEN: z.string().default(""),

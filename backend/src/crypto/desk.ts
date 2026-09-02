@@ -95,8 +95,9 @@ class CryptoDesk extends EventEmitter {
 
   equityKrw(): number {
     let eq = this.paperCashKrw;
-    for (const [market, p] of this.paperPositions) {
-      const t = this.lastTickers.get(market);
+    // paperPositions 키는 심볼("BTC") — 티커 키는 마켓("KRW-BTC")
+    for (const [sym, p] of this.paperPositions) {
+      const t = this.lastTickers.get(`KRW-${sym}`);
       if (t) eq += p.qty * t.trade_price;
     }
     return eq;
@@ -194,14 +195,19 @@ class CryptoDesk extends EventEmitter {
 
   private async poll() {
     try {
+      // 기본 마켓 + 스캐너가 들고 온 알트 보유분 — 보유 중인 코인의 시세는
+      // 반드시 추적해야 에쿼티가 정확하다
+      const held = [...this.paperPositions.keys()].map((s) => `KRW-${s}`);
+      const watch = [...new Set([...CRYPTO_MARKETS, ...held])];
       const [tickers, books] = await Promise.all([
-        upbit.tickers(CRYPTO_MARKETS),
+        upbit.tickers(watch),
         upbit.orderbooks(CRYPTO_MARKETS),
       ]);
       this.lastError = null;
       const bookOf = new Map(books.map((b) => [b.market, b.orderbook_units[0]]));
       for (const t of tickers) {
         this.lastTickers.set(t.market, t);
+        if (!CRYPTO_MARKETS.includes(t.market)) continue; // 알트 보유분은 시세만 추적, 파이프라인엔 안 넣는다
         const top = bookOf.get(t.market);
         // 파이프라인 심볼은 통화 코드(BTC)로 — 뉴스/감성 심볼과 일치시킨다
         this.pipeline.onTick({
@@ -305,6 +311,108 @@ class CryptoDesk extends EventEmitter {
       `${market} ${sig.side.toUpperCase()} ${volume} (₩${order.amountKrw.toLocaleString()}) [${order.mode}] — ${sig.reason}`,
     );
     this.emit("order", order);
+  }
+
+  /**
+   * 스캐너 로테이션 — 페이퍼 장부를 타깃 비중으로 맞춘다. **페이퍼 전용**:
+   * 실주문 모드(CRYPTO_TRADE_ALLOW_REAL+키)가 켜져 있으면 거부한다 —
+   * 스캐너 규칙이 페이퍼에서 기록을 증명하기 전에는 실돈에 손대지 않는다.
+   * priceOf: 데스크가 추적하지 않는 알트 마켓의 현재가 (스캐너가 공급).
+   */
+  rotateTo(
+    targets: Array<{ market: string; weightPct: number }>,
+    priceOf: Map<string, number>,
+    reason: string,
+  ): { orders: CryptoOrder[]; skipped: string[]; error?: string } {
+    if (config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys()) {
+      return { orders: [], skipped: [], error: "스캐너 로테이션은 페이퍼 전용 — 실주문 모드에서는 거부한다 (페이퍼 기록으로 증명이 먼저)" };
+    }
+    const price = (market: string) => priceOf.get(market) ?? this.lastTickers.get(market)?.trade_price ?? 0;
+    // 현재 에쿼티 (스캐너 가격 우선 — 데스크 미추적 알트 포함)
+    let equity = this.paperCashKrw;
+    for (const [sym, p] of this.paperPositions) {
+      const px = price(`KRW-${sym}`);
+      if (px > 0) equity += p.qty * px;
+    }
+    const slip = PAPER_SLIP_PCT / 100;
+    const fee = PAPER_FEE_PCT / 100;
+    const done: CryptoOrder[] = [];
+    const skipped: string[] = [];
+    const fill = (market: string, side: "buy" | "sell", amountKrw: number) => {
+      const mid = price(market);
+      if (mid <= 0) {
+        skipped.push(`${market}: 현재가 없음`);
+        return;
+      }
+      const execPrice = side === "buy" ? mid * (1 + slip) : mid * (1 - slip);
+      const volume = +(amountKrw / execPrice).toFixed(8);
+      if (volume <= 0) return;
+      const grossKrw = volume * execPrice;
+      const feeKrw = grossKrw * fee;
+      const sym = COIN_OF(market);
+      const pos = this.paperPositions.get(sym);
+      if (side === "buy") {
+        if (this.paperCashKrw < grossKrw + feeKrw) {
+          skipped.push(`${market}: 현금 부족`);
+          return;
+        }
+        this.paperCashKrw -= grossKrw + feeKrw;
+        if (pos) {
+          pos.avgKrw = (pos.avgKrw * pos.qty + execPrice * volume) / (pos.qty + volume);
+          pos.qty += volume;
+        } else this.paperPositions.set(sym, { qty: volume, avgKrw: execPrice });
+      } else {
+        if (!pos) return;
+        const v = Math.min(volume, pos.qty);
+        this.paperCashKrw += v * execPrice * (1 - fee);
+        pos.qty -= v;
+        if (pos.qty <= 1e-10) this.paperPositions.delete(sym);
+      }
+      const order: CryptoOrder = {
+        id: `SCAN-${++this.orderSeq}-${Date.now()}`,
+        market,
+        side,
+        volume,
+        priceKrw: +execPrice.toFixed(0),
+        amountKrw: Math.round(grossKrw),
+        costKrw: Math.round(feeKrw + Math.abs(execPrice - mid) * volume),
+        mode: "paper",
+        reason,
+        ts: new Date().toISOString(),
+      };
+      done.push(order);
+      this.orders.unshift(order);
+    };
+
+    const targetOf = new Map(targets.map((t) => [t.market, t.weightPct]));
+    // 1) 타깃에 없는 보유분 전량 매도
+    for (const [sym, p] of [...this.paperPositions.entries()]) {
+      const market = `KRW-${sym}`;
+      if (!targetOf.has(market)) {
+        const px = price(market);
+        if (px > 0) fill(market, "sell", p.qty * px);
+        else skipped.push(`${market}: 현재가 없음 — 보유 유지`);
+      }
+    }
+    // 2) 타깃 비중으로 증감 (업비트 최소주문 ₩5,000 미만 차이는 무시)
+    for (const t of targets) {
+      const sym = COIN_OF(t.market);
+      const px = price(t.market);
+      if (px <= 0) {
+        skipped.push(`${t.market}: 현재가 없음`);
+        continue;
+      }
+      const cur = (this.paperPositions.get(sym)?.qty ?? 0) * px;
+      const want = (t.weightPct / 100) * equity;
+      const diff = want - cur;
+      if (Math.abs(diff) < 5_000) continue;
+      fill(t.market, diff > 0 ? "buy" : "sell", Math.abs(diff));
+    }
+    if (this.orders.length > 100) this.orders.length = 100;
+    this.saveState();
+    this.snapshotEquity();
+    this.pipeline.log("scanner", `로테이션 적용 — 주문 ${done.length}건, 스킵 ${skipped.length}건 [paper] — ${reason}`);
+    return { orders: done, skipped };
   }
 
   setTrade(enabled: boolean): string | null {

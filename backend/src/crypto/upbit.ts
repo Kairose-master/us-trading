@@ -60,6 +60,11 @@ export const upbit = {
 
   // ===== 공개 =====
 
+  /** 전체 마켓 목록 — KRW 마켓만 추리려면 filter(m => m.market.startsWith("KRW-")) */
+  markets(): Promise<Array<{ market: string; korean_name: string; english_name: string }>> {
+    return getJson(`/market/all?is_details=false`);
+  },
+
   tickers(markets: string[]): Promise<UpbitTicker[]> {
     return getJson(`/ticker?markets=${encodeURIComponent(markets.join(","))}`);
   },
