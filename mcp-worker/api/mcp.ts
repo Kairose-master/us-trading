@@ -528,7 +528,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
   {
     name: "upbit_market_report",
     description:
-      "Crypto analyst report for the coins in the query (default BTC/ETH): live Upbit price, RSI(14), 20-day momentum, volatility from real daily candles, plus lexicon-scored crypto news sentiment with evidence words. Nothing invented.",
+      "Crypto analyst report for the coins in the query (default BTC/ETH): live Upbit price, trend read vs MA20, 30-day support/resistance levels with the exact price AND date they printed, momentum call, RSI(14), volatility — all from real daily candles — plus lexicon-scored crypto news headlines each cited with date and source. Nothing invented.",
     inputSchema: QUERY_SCHEMA("Free text naming coins, e.g. 'BTC SOL outlook'"),
     handler: async (query) => {
       const coins = extractCoins(query).slice(0, 3);
@@ -548,6 +548,13 @@ const CRYPTO_TOOLS: ToolDef[] = [
           const rsi = +rsi14(closes).toFixed(1);
           const mom = +(((closes[closes.length - 1] - closes[closes.length - 21]) / closes[closes.length - 21]) * 100).toFixed(2);
           const vol = +stdevPct(closes.slice(-60)).toFixed(3);
+          // 지지/저항: 최근 30일 실캔들의 최저 저가/최고 고가 — 가격과 그 날짜를 그대로 인용
+          const last30 = candles.slice(-30);
+          const sup = last30.reduce((a, c) => (c.l < a.l ? c : a), last30[0]);
+          const res30 = last30.reduce((a, c) => (c.h > a.h ? c : a), last30[0]);
+          const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+          const lastC = candles[candles.length - 1];
+          const from = candles[candles.length - 21];
           const heads: string[] = [];
           let sSum = 0;
           let sDen = 0;
@@ -559,22 +566,102 @@ const CRYPTO_TOOLS: ToolDef[] = [
               .replace(/ - [^-]+$/, "")
               .trim();
             if (!t) continue;
+            const src = (/<source[^>]*>([\s\S]*?)<\/source>/.exec(m[1])?.[1] ?? "GoogleNews").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim();
+            const pub = /<pubDate>([\s\S]*?)<\/pubDate>/.exec(m[1])?.[1]?.trim() ?? "";
+            const pubDate = pub ? new Date(pub).toISOString().slice(0, 10) : "date n/a";
             const sc = scoreHeadline(t);
             sSum += sc.score * sc.confidence;
             sDen += sc.confidence;
-            heads.push(`    · [${labelOf(sc.score)} ${signed(sc.score)}] "${t.slice(0, 90)}"${sc.hits.length ? ` evidence: ${sc.hits.join(",")}` : ""}`);
+            heads.push(`    · [${labelOf(sc.score)} ${signed(sc.score)}] "${t.slice(0, 90)}" — ${src}, ${pubDate}${sc.hits.length ? ` · evidence: ${sc.hits.join(",")}` : ""}`);
           }
           const agg = sDen > 0 ? +(sSum / sDen).toFixed(3) : 0;
           const tk = tickers[0];
           return [
             `## ${market} — ₩${tk.price.toLocaleString()} (${tk.changePct >= 0 ? "+" : ""}${tk.changePct}% 24h)`,
-            `  technicals: RSI14=${rsi} momentum20d=${signed(mom)}% vol(daily)=${vol}%`,
-            `  news sentiment: ${labelOf(agg)} ${signed(agg)} (${heads.length} headlines)`,
+            `  trend: close ₩${lastC.c.toLocaleString()} (${lastC.t}) is ${lastC.c > ma20 ? "ABOVE" : "BELOW"} MA20 ₩${Math.round(ma20).toLocaleString()} → ${lastC.c > ma20 ? "uptrend bias" : "downtrend bias"}`,
+            `  support (30d low): ₩${sup.l.toLocaleString()} printed ${sup.t} · resistance (30d high): ₩${res30.h.toLocaleString()} printed ${res30.t}`,
+            `  momentum call: ${mom >= 0 ? "positive" : "negative"} — close moved ₩${from.c.toLocaleString()} (${from.t}) → ₩${lastC.c.toLocaleString()} (${lastC.t}), ${signed(mom)}% over 20 sessions`,
+            `  technicals: RSI14=${rsi} vol(daily)=${vol}%`,
+            `  news sentiment: ${labelOf(agg)} ${signed(agg)} (${heads.length} headlines${heads.length === 0 ? " — nothing material found in a genuine Google News search" : ""})`,
             ...heads,
           ].join("\n");
         }),
       );
       return [`# Upbit crypto report`, ...sections, `[data] Upbit public API + Google News RSS · lexicon-scored · ts=${new Date().toISOString()}`].join("\n\n");
+    },
+  },
+  {
+    name: "upbit_rebalance_draft",
+    description:
+      "DRAFT portfolio weights across the coins in the query (never an order — no account/order capability): target weight per coin proportional to a confidence-weighted blend of RSI-reversion + 20d-momentum technicals and dated news sentiment, 40% per-coin cap, remainder in cash. Every weight cites the exact technical and sentiment numbers (with dates) it is derived from. Real Upbit candles + Google News at call time.",
+    inputSchema: QUERY_SCHEMA("Coins to weigh, e.g. 'BTC ETH SOL'"),
+    handler: async (query) => {
+      const coins = extractCoins(query).slice(0, 5);
+      const rows = await Promise.all(
+        coins.map(async (coin) => {
+          const market = `KRW-${coin}`;
+          const [candles, newsRes] = await Promise.all([
+            upbitDayCandles(market, 90),
+            fetch(
+              `https://news.google.com/rss/search?q=${encodeURIComponent(`${coin} crypto`)}&hl=en-US&gl=US&ceid=US:en`,
+              { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
+            ).then((r) => (r.ok ? r.text() : "")).catch(() => ""),
+          ]);
+          if (candles.length < 21) return null;
+          const closes = candles.map((c) => c.c);
+          const rsi = +rsi14(closes).toFixed(1);
+          const mom = +(((closes[closes.length - 1] - closes[closes.length - 21]) / closes[closes.length - 21]) * 100).toFixed(2);
+          const vol = +stdevPct(closes.slice(-60)).toFixed(3);
+          const rsiSig = (50 - rsi) / 50;
+          const momSig = Math.tanh(mom / 10);
+          const techAlpha = +Math.tanh(0.6 * rsiSig + 0.4 * momSig).toFixed(3);
+          const techConf = +Math.max(0.1, 1 - Math.min(1, vol / 5)).toFixed(2);
+          let sSum = 0;
+          let sDen = 0;
+          let headCount = 0;
+          const itemRe = /<item>([\s\S]*?)<\/item>/g;
+          let m: RegExpExecArray | null;
+          while ((m = itemRe.exec(newsRes)) !== null && headCount < 8) {
+            const t = (/<title[^>]*>([\s\S]*?)<\/title>/.exec(m[1])?.[1] ?? "").replace(/<!\[CDATA\[([\s\S]*?)\]\]>/, "$1").trim();
+            if (!t) continue;
+            headCount++;
+            const sc = scoreHeadline(t);
+            sSum += sc.score * sc.confidence;
+            sDen += sc.confidence;
+          }
+          const sent = sDen > 0 ? +(sSum / sDen).toFixed(3) : 0;
+          const sentConf = +Math.min(1, sDen / 3).toFixed(2);
+          const wSum = techConf + sentConf;
+          const alpha = wSum > 0 ? +((techAlpha * techConf + sent * sentConf) / wSum).toFixed(3) : 0;
+          const lastC = candles[candles.length - 1];
+          const from = candles[candles.length - 21];
+          return { market, alpha, techAlpha, techConf, sent, sentConf, rsi, mom, lastC, from, headCount };
+        }),
+      );
+      const ok = rows.filter((r): r is NonNullable<typeof r> => r !== null);
+      if (ok.length === 0) return `데이터를 가져올 수 있는 코인이 없습니다.\n[data] Upbit public API`;
+      const CAP = 40;
+      const positive = ok.filter((r) => r.alpha > 0.05);
+      const sumPos = positive.reduce((a, r) => a + r.alpha, 0);
+      const lines = ok
+        .slice()
+        .sort((x, y) => y.alpha - x.alpha)
+        .map((r) => {
+          const target = r.alpha > 0.05 && sumPos > 0 ? Math.min(CAP, (r.alpha / sumPos) * Math.min(100, CAP * positive.length)) : 0;
+          return [
+            `  ${r.market}: target ${target.toFixed(1)}% — blended alpha ${signed(r.alpha)}`,
+            `    based on CHART: RSI14=${r.rsi}, momentum ₩${r.from.c.toLocaleString()} (${r.from.t}) → ₩${r.lastC.c.toLocaleString()} (${r.lastC.t}) = ${signed(r.mom)}% → techAlpha ${signed(r.techAlpha)} (conf ${r.techConf})`,
+            `    based on NEWS: sentiment ${labelOf(r.sent)} ${signed(r.sent)} from ${r.headCount} scored headlines (conf ${r.sentConf})`,
+          ].join("\n");
+        });
+      const alloc = ok.reduce((a, r) => a + (r.alpha > 0.05 && sumPos > 0 ? Math.min(CAP, (r.alpha / sumPos) * Math.min(100, CAP * positive.length)) : 0), 0);
+      return [
+        `# Crypto rebalance DRAFT (proposal only — no order capability exists in this worker)`,
+        ...lines,
+        `  cash / unallocated: ${Math.max(0, 100 - alloc).toFixed(1)}%`,
+        `method: weights ∝ positive blended alpha (chart techAlpha + news sentiment, confidence-weighted), ${CAP}% per-coin cap.`,
+        `[data] Upbit public API + Google News RSS · ts=${new Date().toISOString()}`,
+      ].join("\n");
     },
   },
   {
@@ -648,7 +735,7 @@ export default async function handler(req: any, res: any) {
         rpcResult(msg.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "us-trading-mcp-worker", version: "1.2.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
+          serverInfo: { name: "us-trading-mcp-worker", version: "1.3.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
         }),
       );
     case "notifications/initialized":
