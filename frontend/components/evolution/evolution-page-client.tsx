@@ -109,7 +109,9 @@ export function EvolutionPageClient() {
               <Tile label="mean fitness" value={last ? last.meanFitness.toFixed(2) : "—"} sub="sharpe − 2·mdd" />
               <Tile label="capital" value={krw(status.totalCapitalKrw)} sub={`vault ${krw(status.vaultKrw)}`} />
               <Tile label="last gen" value={status.lastGenerationAt ? t(status.lastGenerationAt) : "—"} sub={last ? last.engine : ""} />
-              <Tile label="marked" value={status.lastMarkedDate ?? "—"} sub="capital day" />
+              <Tile label="diversity" value={status.diversity.toFixed(3)} sub={`mutation rate ↑ below ${status.rules.diversityFloor}`} />
+              <Tile label="mutations" value={String(status.history.reduce((a, g) => a + (g.mutations ?? 0), 0))} sub={last ? `${last.mutations ?? 0} this gen` : ""} />
+              <Tile label="merges · forks" value={`${status.history.reduce((a, g) => a + (g.merges ?? 0), 0)} · ${status.history.reduce((a, g) => a + (g.forks ?? 0), 0)}`} sub={last ? `${last.merges ?? 0} · ${last.forks ?? 0} this gen` : ""} />
             </div>
             <div>
               <Label>tribes · archetypes</Label>
@@ -120,8 +122,16 @@ export function EvolutionPageClient() {
               </ul>
             </div>
             <div>
+              <Label>tribes · lineages</Label>
+              <ul className="mt-1 flex flex-col gap-0.5 text-[10px]">
+                {status.tribes.slice().sort((a, b) => b.capitalKrw - a.capitalKrw).slice(0, 8).map((tr) => (
+                  <li key={tr.tribe} className="flex justify-between"><span className="truncate text-[#c98a8a]">{tr.name}{tr.tribe.includes("/") ? "" : " lineage"}</span><span className="text-[#fecaca]">{tr.alive} · {krw(tr.capitalKrw)}</span></li>
+                ))}
+              </ul>
+            </div>
+            <div>
               <Label>rules</Label>
-              <p className="mt-1 text-[9.5px] leading-relaxed text-[#8a4b4b]">starve &lt; {status.rules.starveRatio * 100}% of seed · bottom {status.rules.bottomQuantile * 100}% for {status.rules.bottomStreakDeath} gens → retire · child gets {status.rules.childShare * 100}% of parent capital · seed {krw(status.seedKrw)}</p>
+              <p className="mt-1 text-[9.5px] leading-relaxed text-[#8a4b4b]">starve &lt; {status.rules.starveRatio * 100}% of seed · bottom {status.rules.bottomQuantile * 100}% for {status.rules.bottomStreakDeath} gens → retire · child gets {status.rules.childShare * 100}% of parent capital · mutation {status.rules.mutationBase * 100}%/gen (+ when diversity &lt; {status.rules.diversityFloor}) · merge when genome distance &lt; {status.rules.mergeDistance} or delegating ≥{status.rules.mergeDependence * 100}% to a far fitter peer · fork: elite splits capital 50/50 and pushes one gene both ways · seed {krw(status.seedKrw)}</p>
             </div>
           </div>
 
@@ -166,6 +176,14 @@ export function EvolutionPageClient() {
                   <p className="mt-1 text-[9.5px] text-[#c98a8a]">{sel.lastWeights.length ? sel.lastWeights.map((w) => `${w.market.replace("KRW-", "")} ${w.weightPct}%`).join(" · ") : "cash"}</p>
                 </div>
                 <div>
+                  <Label>lineage · tribe {agents.find((a) => a.id === sel.tribe.split("/")[0])?.name ?? sel.tribe}{sel.tribe.includes("/") ? ` · branch ${sel.tribe.split("/")[1]}` : ""}</Label>
+                  <ul className="mt-1 max-h-28 overflow-y-auto text-[9.5px]">
+                    {sel.events.slice().reverse().map((e, i) => (
+                      <li key={i} className="flex gap-2"><span className="shrink-0 text-[#8a4b4b]">g{e.gen}</span><span className={cn("shrink-0 uppercase", e.type === "mutated" ? "text-[#fbbf24]" : e.type === "forked" ? "text-[#86efac]" : e.type === "merged" ? "text-[#93c5fd]" : e.type === "absorbed" || e.type === "retired" ? "text-[#6b7280]" : "text-[#c98a8a]")}>{e.type}</span><span className="truncate text-[#c98a8a]">{e.detail}</span></li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
                   <Label>invests in</Label>
                   <p className="mt-1 text-[9.5px] text-[#c98a8a]">{sel.peers.length ? `${(sel.genes.peerAlloc * 100).toFixed(0)}% → ${sel.peers.map((p) => agents.find((a) => a.id === p)?.name ?? p).join(", ")}` : "no peer allocation"}</p>
                 </div>
@@ -187,7 +205,7 @@ export function EvolutionPageClient() {
         {/* 하단: 엔진 피드 + Handsel 계보 */}
         <div className="grid border-t border-[#3a1a1e] lg:grid-cols-2">
           <div className="border-b border-[#3a1a1e] lg:border-b-0 lg:border-r">
-            <div className="flex items-center justify-between px-3 py-1.5"><Label>live engine feed</Label><span className="text-[9px] text-[#8a4b4b]">births · retirements · exams — newest first</span></div>
+            <div className="flex items-center justify-between px-3 py-1.5"><Label>live engine feed</Label><span className="text-[9px] text-[#8a4b4b]">births · mutations · merges · forks · retirements — newest first</span></div>
             <ul className="max-h-48 overflow-y-auto px-3 pb-2 text-[10px] leading-relaxed">
               {logs.length === 0 && <li className="text-[#8a4b4b]">no events yet — first generation runs 3 minutes after boot</li>}
               {logs.map((l, i) => (

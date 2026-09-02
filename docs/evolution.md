@@ -6,7 +6,7 @@ it has never seen, only the survivors earn a place in your portfolio")의 구조
 
 | 층 | 무엇이 진화하나 | 적합도 | 엔진 |
 |---|---|---|---|
-| **전략 개체군** (`backend/src/evolution/`) | 로테이션 전략 유전자 10개 (모멘텀 룩백, 변동성 창, P(강세) 하한, 보유 수, 상한, 리밸런스 주기, 변동성 목표, 최대 노출, 동료 위탁 비율·수) | **본 적 없는 60일**(Upbit 실캔들, HMM은 훈련 구간만 적합) Sharpe − 2·MDD | **PyGAD** (`backend/evolution/pygad_step.py`, 토너먼트·균등 교차·범위 내 변이). 파이썬 없으면 내장 연산자, 결과에 engine 표기 |
+| **전략 개체군** (`backend/src/evolution/`) | 로테이션 전략 유전자 10개 (모멘텀 룩백, 변동성 창, P(강세) 하한, 보유 수, 상한, 리밸런스 주기, 변동성 목표, 최대 노출, 동료 위탁 비율·수) | **본 적 없는 60일**(Upbit 실캔들, HMM은 훈련 구간만 적합) Sharpe − 2·MDD | **PyGAD** (`backend/evolution/pygad_step.py`: 출생 = 토너먼트·균등 교차·변이, 자발 변이 = `random_mutation`). **병합·분기**는 PyGAD에 없는 개체군 연산이라 `population.ts`가 직접 한다. 파이썬 없으면 내장 연산자, 결과에 engine 표기 |
 | **Handsel 오피스 에이전트** | 실제 Handsel 에이전트(차트·뉴스·…·위원장) | 독립 채점 통과율 + 실제 정산 USDC | Handsel **lineage mandate** (복제·은퇴) + **Automaton** (본드 자동 충전). 테스트넷 오피스 1에 둘 다 ON |
 | **연결** | 개체가 쓰는 데이터·Handsel 조작 | — | **MCP** (워커 툴, Handsel MCP) |
 
@@ -22,6 +22,18 @@ it has never seen, only the survivors earn a place in your portfolio")의 구조
   자본은 금고로. 기록은 남는다.
 - **출생**: 생존자 상위를 부모로 PyGAD 자식 생성. 유전 거리가 가장 가까운 상위 개체가
   **자기 자본의 30%를 실제로 떼어** 시드로 준다. 여유가 없으면 못 낳는다. 인구 상한 24.
+- **변이**: 살아 있는 개체가 세대마다 확률 10%로 유전자 1~2개를 바꾼다 (PyGAD
+  `random_mutation`, gene_space 안 치환). 개체군 다양성(생존 개체 간 평균 유전 거리)이
+  0.18 아래로 떨어지면 변이율이 최대 +25%p 올라간다 — 수렴을 막는 적응 변이.
+- **병합**: (a) 유전 거리 < 0.06인 두 개체는 사실상 같은 전략이라 하나로 합친다 — 자본
+  합산, 유전자는 자본가중 혼합, 흡수된 쪽은 `merged into X`로 은퇴. (b) 동료에게 자본
+  25% 이상을 위탁하면서 그 동료보다 fitness가 1.0 이상 낮은 개체는 그 동료에 흡수된다.
+  세대당 최대 2건.
+- **분기**: 상위 20% 중 아직 분기하지 않은 개체(나이 ≥ 2세대, 자본 ≥ 시드 80%)가 두
+  가지로 갈라진다 — 자본 반씩, 무작위 유전자 하나를 서로 반대 방향으로 25% 밀어 서로
+  다른 탐색 계통(tribe `X/A`, `X/B`)을 만든다. 부모는 `forked into A / B`로 소멸. 세대당 1건.
+- **계통(tribe)**: 창세 개체 id 또는 분기 가지 id. 출생 자식은 부모의 계통을 잇는다.
+  개체 패널에 생애 사건(born · mutated · merged · absorbed · forked · retired)이 남는다.
 - **스쿼드 배치**: 상위 3 생존자의 최신 타깃을 적합도 가중 평균 → `DEPLOY`로 페이퍼 장부에
   회전(rotateTo). 실주문 모드면 거부.
 
@@ -43,6 +55,20 @@ WS `evolution`(세대 기록), `evolution:log`.
 3세대: 창세 12 → 15 → 18 → 22 생존, 출생 3/3/4 (전부 `pygad@3.7.0`
 tournament/uniform/random), 챔피언 JUNO-01 [DIVERSIFIER] fitness 4.16 (시험 60일).
 죽음은 0 — 시드 대비 60% 굶주림·3세대 하위 도태 조건이 며칠 자본 마킹 뒤에야 걸린다.
+
+변이·병합·분기를 넣은 뒤 9세대까지 이어 돌린 실제 사건(발췌):
+
+```
+MUTATED ORION-01 — rebalanceDays 9→12, peerAlloc 0.1588→0.3796 (pygad@3.7.0, rate 10%, diversity 0.318)
+MUTATED XENO-01 — pBullMin 0.1116→0.0906, topK 5→1 · BALANCED → CONCENTRATOR
+MERGED HALO-01 → ZEPHYR-01 — delegates 25% to a peer 3.66 fitter · capital now ₩1,287,323, genome blended 24/76
+MERGED PIKE-02 → DUNE-02 — genomes nearly identical (distance 0.045)
+FORKED VEGA-01 → VEGA-01/A (exposureMax=0.4297) | VEGA-01/B (exposureMax=0.8297) — two tribes, ₩1,101,810 each
+FORKED TERRA-01 → TERRA-01/A (topK=2) | TERRA-01/B (topK=6)
+RETIRED EMBER-01 [TREND_RIDER] — outcompeted — bottom 20% for 3 generations (fitness 1.2508)
+```
+
+9세대 시점 계통 13개(창세 6 + 분기 가지 7), 다양성 0.32(변이율 상승 없음).
 
 ## 정직성 규칙
 

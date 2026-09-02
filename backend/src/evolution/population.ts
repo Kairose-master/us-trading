@@ -7,8 +7,8 @@ import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel } from "../office/handsel-client.js";
 import { buildFeatures, dayReturn, evaluate, type FeatureSet } from "./evaluate.js";
-import { nextGeneration } from "./ga.js";
-import { ARCHETYPES, GENE_SPECS, archetypeOf, geneDistance, randomVector, reseed, toGenes, type GeneVector, type Genes } from "./genome.js";
+import { mutateVectors, nextGeneration } from "./ga.js";
+import { ARCHETYPES, GENE_SPECS, archetypeOf, clampGene, geneDistance, rand, randomVector, reseed, toGenes, type GeneVector, type Genes } from "./genome.js";
 
 /**
  * 에이전트 개체군 — 서로 투자하고, 성과를 낸 개체는 복제되고, 실패한 개체는 죽는다.
@@ -20,9 +20,17 @@ import { ARCHETYPES, GENE_SPECS, archetypeOf, geneDistance, randomVector, reseed
  *      자본이 잘하는 개체로 흘러가는 "서로 투자"의 실체
  *   3. 죽음: 자본 < 시드의 60%(굶주림) 또는 3세대 연속 하위 20%(도태). 최소 나이 3세대.
  *      죽은 개체의 자본은 금고(vault)로 돌아간다. 기록은 남는다
- *   4. 출생: 상위 개체를 부모로 PyGAD 교차·변이 → 자식. 시드는 부모 자본의 30% (부모가
+ *   4. 변이: 살아 있는 개체가 확률적으로 유전자 1~2개를 바꾼다 (PyGAD random_mutation).
+ *      개체군 다양성(평균 유전 거리)이 낮아질수록 변이율이 올라간다 — 수렴 방지
+ *   5. 병합: 유전적으로 거의 같은 두 개체(거리 < 0.06)는 하나로 합친다(자본 합산, 유전자
+ *      자본가중 혼합). 동료에게 자본 25%+를 위탁하면서 그 동료보다 한참 못한 개체는 그
+ *      동료에 흡수된다 — 자본이 잘하는 쪽으로 실제로 통합된다
+ *   6. 분기: 상위 개체가 두 계통으로 갈라진다 — 자본 반씩, 한 유전자를 서로 반대 방향으로
+ *      밀어 서로 다른 탐색 방향(tribe)을 만든다. 부모는 분기로 소멸, 두 가지가 계통을 잇는다
+ *   7. 출생: 상위 개체를 부모로 PyGAD 교차·변이 → 자식. 시드는 부모 자본의 30% (부모가
  *      실제로 나눠 준다). 인구 상한까지
- * 전부 페이퍼이고 전부 실데이터(Upbit 일봉)다. 숫자를 지어내는 곳이 없다.
+ * 전부 페이퍼이고 전부 실데이터(Upbit 일봉)다. 숫자를 지어내는 곳이 없다. 병합·분기는
+ * PyGAD에 없는 개체군 수준 연산이라 여기서 직접 한다 (docs/evolution.md).
  */
 
 export interface Agent {
@@ -47,6 +55,11 @@ export interface Agent {
   peers: string[];
   bottomStreak: number;
   children: number;
+  /** 계통(tribe) — 창세 개체 id 또는 분기로 생긴 가지 id. 구름에서 군집/색의 기준 */
+  tribe: string;
+  /** 생애 사건: 변이·병합·분기·출생 (세대, 종류, 설명) */
+  events: Array<{ gen: number; type: "born" | "mutated" | "merged" | "absorbed" | "forked" | "retired"; detail: string }>;
+  forked: boolean;
 }
 
 export interface GenerationRecord {
@@ -56,6 +69,10 @@ export interface GenerationRecord {
   alive: number;
   births: number;
   deaths: number;
+  mutations: number;
+  merges: number;
+  forks: number;
+  diversity: number;
   topFitness: number;
   meanFitness: number;
   championId: string | null;
@@ -93,13 +110,23 @@ const BOTTOM_STREAK_DEATH = 3;
 const MIN_AGE_GENS = 3;
 const CHILD_SHARE = 0.3;
 const EXAM_DAYS = 60;
+const MUTATION_BASE = 0.1; // 개체당 세대별 자발 변이 확률
+const DIVERSITY_FLOOR = 0.18; // 평균 유전 거리가 이 아래면 변이율 상승
+const MERGE_DISTANCE = 0.06; // 이보다 가까우면 사실상 같은 전략 → 병합
+const MERGE_DEPENDENCE = 0.25; // 위탁 비율이 이 이상이고 동료보다 한참 못하면 흡수
+const MAX_MERGES = 2;
+const MAX_FORKS = 1;
 const LOG_MAX = 300;
 
 const NAMES = ["ATLAS", "BORA", "CIEL", "DUNE", "EMBER", "FLINT", "GALE", "HALO", "IRIS", "JUNO", "KITE", "LUMEN", "MIRA", "NOVA", "ORION", "PIKE", "QUILL", "RIVER", "SOL", "TERRA", "UMBRA", "VEGA", "WREN", "XENO", "YARROW", "ZEPHYR"];
 
 function readState(): State {
   try {
-    if (existsSync(STATE_FILE)) return JSON.parse(readFileSync(STATE_FILE, "utf-8")) as State;
+    if (existsSync(STATE_FILE)) {
+      const st = JSON.parse(readFileSync(STATE_FILE, "utf-8")) as State;
+      for (const a of st.agents) { a.tribe ??= a.parents[0] ? (st.agents.find((p) => p.id === a.parents[0])?.tribe ?? a.id) : a.id; a.events ??= [{ gen: a.generationBorn, type: "born", detail: a.parents.length ? `child of ${a.parents.join(",")}` : "genesis" }]; a.forked ??= false; }
+      return st;
+    }
   } catch (e) {
     logger.warn("진화 상태 복원 실패 — 새로 시작", { error: (e as Error).message });
   }
@@ -145,9 +172,11 @@ class Evolution extends EventEmitter {
       seedKrw: SEED_KRW,
       examDays: EXAM_DAYS,
       champion: champion ? { id: champion.id, name: champion.name, archetype: champion.archetype, fitness: champion.exam?.fitness ?? null } : null,
+      diversity: this.diversity(alive),
+      tribes: [...new Set(alive.map((a) => a.tribe))].map((t) => ({ tribe: t, name: this.st.agents.find((a) => a.id === t)?.name ?? t, alive: alive.filter((a) => a.tribe === t).length, capitalKrw: Math.round(alive.filter((a) => a.tribe === t).reduce((s, a) => s + a.capitalKrw, 0)) })),
       archetypes: ARCHETYPES.map((k) => ({ archetype: k, alive: alive.filter((a) => a.archetype === k).length })),
       genes: GENE_SPECS,
-      rules: { starveRatio: STARVE_RATIO, bottomQuantile: BOTTOM_QUANTILE, bottomStreakDeath: BOTTOM_STREAK_DEATH, minAgeGens: MIN_AGE_GENS, childShare: CHILD_SHARE },
+      rules: { starveRatio: STARVE_RATIO, bottomQuantile: BOTTOM_QUANTILE, bottomStreakDeath: BOTTOM_STREAK_DEATH, minAgeGens: MIN_AGE_GENS, childShare: CHILD_SHARE, mutationBase: MUTATION_BASE, diversityFloor: DIVERSITY_FLOOR, mergeDistance: MERGE_DISTANCE, mergeDependence: MERGE_DEPENDENCE },
     };
   }
   agents() { return this.st.agents; }
@@ -177,14 +206,30 @@ class Evolution extends EventEmitter {
     return { squad: sq, result: r };
   }
 
-  private newAgent(vector: GeneVector, gen: number, parents: string[], seedKrw: number): Agent {
+  private newAgent(vector: GeneVector, gen: number, parents: string[], seedKrw: number, tribe?: string, nameOverride?: string): Agent {
     const genes = toGenes(vector);
     const n = this.st.seedCounter++;
-    const name = `${NAMES[n % NAMES.length]}-${String(Math.floor(n / NAMES.length) + 1).padStart(2, "0")}`;
+    const name = nameOverride ?? `${NAMES[n % NAMES.length]}-${String(Math.floor(n / NAMES.length) + 1).padStart(2, "0")}`;
+    const id = `ag_${gen}_${n.toString(36)}`;
     return {
-      id: `ag_${gen}_${n.toString(36)}`, name, archetype: archetypeOf(genes), genes, vector, generationBorn: gen, bornAt: new Date().toISOString(), parents,
+      id, name, archetype: archetypeOf(genes), genes, vector, generationBorn: gen, bornAt: new Date().toISOString(), parents,
       alive: true, diedAt: null, causeOfDeath: null, capitalKrw: seedKrw, seedKrw, peakKrw: seedKrw, exam: null, fitnessHistory: [], capitalHistory: [], lastWeights: [], peers: [], bottomStreak: 0, children: 0,
+      tribe: tribe ?? id, events: [{ gen, type: "born", detail: parents.length ? `child of ${parents.join(",")}` : "genesis" }], forked: false,
     };
+  }
+
+  /** 개체군 다양성 — 생존 개체 간 평균 유전 거리 (0 = 전부 같은 전략) */
+  private diversity(agents: Agent[]): number {
+    if (agents.length < 2) return 1;
+    let s = 0, n = 0;
+    for (let i = 0; i < agents.length; i++) for (let j = i + 1; j < agents.length; j++) { s += geneDistance(agents[i].vector, agents[j].vector); n++; }
+    return +(s / n).toFixed(4);
+  }
+
+  private reGenome(a: Agent, vector: GeneVector) {
+    a.vector = vector; a.genes = toGenes(vector);
+    const arch = archetypeOf(a.genes);
+    if (arch !== a.archetype) a.archetype = arch;
   }
 
   private async loadFeatures(): Promise<FeatureSet> {
@@ -245,26 +290,104 @@ class Evolution extends EventEmitter {
         if (a.capitalKrw < a.seedKrw * STARVE_RATIO && age >= 1) cause = `starved — capital ₩${Math.round(a.capitalKrw).toLocaleString()} < ${STARVE_RATIO * 100}% of seed`;
         else if (a.bottomStreak >= BOTTOM_STREAK_DEATH && age >= MIN_AGE_GENS) cause = `outcompeted — bottom ${BOTTOM_QUANTILE * 100}% for ${a.bottomStreak} generations (fitness ${a.exam!.fitness})`;
         if (cause && alive().length > POP_MIN / 2) {
-          a.alive = false; a.diedAt = new Date().toISOString(); a.causeOfDeath = cause;
+          a.alive = false; a.diedAt = new Date().toISOString(); a.causeOfDeath = cause; a.events.push({ gen, type: "retired", detail: cause });
           this.st.vaultKrw += a.capitalKrw; a.capitalKrw = 0; deaths++;
           this.log("warn", `RETIRED ${a.name} [${a.archetype}] — ${cause}`);
         }
       }
 
+      // 4) 변이 — 살아 있는 개체의 자발적 변이 (다양성이 낮으면 변이율 상승)
+      let mutations = 0;
+      const div = this.diversity(alive());
+      const mutRate = MUTATION_BASE + (div < DIVERSITY_FLOOR ? (DIVERSITY_FLOOR - div) / DIVERSITY_FLOOR * 0.25 : 0);
+      const mutants = alive().filter((a) => gen - a.generationBorn >= 1 && rand() < mutRate);
+      if (mutants.length) {
+        const m = await mutateVectors(mutants.map((a) => a.vector), rand() < 0.5 ? 1 : 2, gen * 7 + 1);
+        mutants.forEach((a, i) => {
+          const before = a.vector, after = m.mutated[i];
+          const changed = GENE_SPECS.map((g, k) => (before[k] !== after[k] ? `${g.key} ${before[k]}→${after[k]}` : null)).filter(Boolean);
+          if (changed.length === 0) return;
+          const archBefore = a.archetype;
+          this.reGenome(a, after);
+          a.events.push({ gen, type: "mutated", detail: changed.join(", ") });
+          mutations++;
+          this.log("info", `MUTATED ${a.name} — ${changed.join(", ")}${archBefore !== a.archetype ? ` · ${archBefore} → ${a.archetype}` : ""} (${m.engine}${m.version ? "@" + m.version : ""}, rate ${(mutRate * 100).toFixed(0)}%, diversity ${div})`);
+        });
+      }
+
+      // 5) 병합 — 거의 같은 전략끼리, 또는 위탁 종속 개체가 그 동료에 흡수
+      let merges = 0;
+      const mergeInto = (weak: Agent, strong: Agent, why: string) => {
+        const total = weak.capitalKrw + strong.capitalKrw;
+        const wS = total > 0 ? strong.capitalKrw / total : 0.5;
+        const blended = GENE_SPECS.map((g, k) => clampGene(g, strong.vector[k] * wS + weak.vector[k] * (1 - wS)));
+        this.reGenome(strong, blended);
+        strong.capitalKrw = total; strong.peakKrw = Math.max(strong.peakKrw, total); strong.seedKrw += weak.seedKrw;
+        strong.events.push({ gen, type: "merged", detail: `absorbed ${weak.name} (+₩${Math.round(weak.capitalKrw).toLocaleString()}) — ${why}` });
+        weak.alive = false; weak.diedAt = new Date().toISOString(); weak.causeOfDeath = `merged into ${strong.name} — ${why}`;
+        weak.events.push({ gen, type: "absorbed", detail: `into ${strong.name} — ${why}` });
+        weak.capitalKrw = 0; merges++;
+        this.log("warn", `MERGED ${weak.name} → ${strong.name} — ${why} · capital now ₩${Math.round(total).toLocaleString()}, genome blended ${(wS * 100).toFixed(0)}/${(100 - wS * 100).toFixed(0)}`);
+      };
+      {
+        const pool = alive().sort((a, b) => b.exam!.fitness - a.exam!.fitness);
+        // (a) 근접 복제체
+        for (let i = 0; i < pool.length && merges < MAX_MERGES; i++) {
+          for (let j = i + 1; j < pool.length && merges < MAX_MERGES; j++) {
+            const a = pool[i], b = pool[j];
+            if (!a.alive || !b.alive) continue;
+            const d = geneDistance(a.vector, b.vector);
+            if (d < MERGE_DISTANCE) mergeInto(b, a, `genomes nearly identical (distance ${d.toFixed(3)})`);
+          }
+        }
+        // (b) 위탁 종속 — 동료에 25%+ 위탁하고 그 동료보다 fitness 1.0 이상 못하면 흡수
+        for (const a of pool) {
+          if (merges >= MAX_MERGES || !a.alive) break;
+          if (a.genes.peerAlloc < MERGE_DEPENDENCE || gen - a.generationBorn < 2) continue;
+          const top = a.peers.map((id) => this.st.agents.find((x) => x.id === id)).find((p) => p?.alive);
+          if (top && top.exam && a.exam && top.exam.fitness - a.exam.fitness >= 1.0) mergeInto(a, top, `delegates ${(a.genes.peerAlloc * 100).toFixed(0)}% to a peer ${(top.exam.fitness - a.exam.fitness).toFixed(2)} fitter`);
+        }
+      }
+
+      // 6) 분기 — 상위 개체가 두 계통으로 갈라진다 (자본 반씩, 한 유전자를 반대로 밀기)
+      let forks = 0;
+      {
+        const elite = alive().sort((a, b) => b.exam!.fitness - a.exam!.fitness).slice(0, Math.max(1, Math.ceil(alive().length * 0.2)));
+        // 자본 바닥(시드의 절반)이 안 되는 개체는 분기하지 않는다 — 먼지 가지 방지
+        const cand = elite.find((a) => !a.forked && gen - a.generationBorn >= 2 && a.capitalKrw >= a.seedKrw * 0.8 && a.capitalKrw >= SEED_KRW * 0.5 && alive().length + 1 <= POP_MAX);
+        if (cand && forks < MAX_FORKS) {
+          const k = Math.floor(rand() * GENE_SPECS.length);
+          const g = GENE_SPECS[k];
+          const push = (g.max - g.min) * 0.25;
+          const vA = cand.vector.map((v, i) => (i === k ? clampGene(g, v - push) : v));
+          const vB = cand.vector.map((v, i) => (i === k ? clampGene(g, v + push) : v));
+          const half = cand.capitalKrw / 2;
+          const a = this.newAgent(vA, gen, [cand.id], half, `${cand.id}/A`, `${cand.name}/A`);
+          const b = this.newAgent(vB, gen, [cand.id], half, `${cand.id}/B`, `${cand.name}/B`);
+          a.events.push({ gen, type: "forked", detail: `branch A of ${cand.name}: ${g.key} ${cand.vector[k]}→${vA[k]}` });
+          b.events.push({ gen, type: "forked", detail: `branch B of ${cand.name}: ${g.key} ${cand.vector[k]}→${vB[k]}` });
+          cand.forked = true; cand.alive = false; cand.diedAt = new Date().toISOString(); cand.causeOfDeath = `forked into ${a.name} / ${b.name}`;
+          cand.events.push({ gen, type: "forked", detail: `split on ${g.key}: ${vA[k]} | ${vB[k]} — capital ₩${Math.round(half).toLocaleString()} each` });
+          cand.capitalKrw = 0; cand.children += 2;
+          this.st.agents.push(a, b); forks++;
+          this.log("ok", `FORKED ${cand.name} → ${a.name} (${g.key}=${vA[k]}) | ${b.name} (${g.key}=${vB[k]}) — two tribes, ₩${Math.round(half).toLocaleString()} each`);
+        }
+      }
+
       let births = 0;
       let engine = "none";
-      const survivors = alive().sort((a, b) => b.exam!.fitness - a.exam!.fitness);
+      const survivors = alive().sort((a, b) => (b.exam?.fitness ?? -9) - (a.exam?.fitness ?? -9));
       const slots = POP_MAX - survivors.length;
       const wanted = Math.min(slots, Math.max(2, Math.ceil(survivors.length * 0.2)));
       if (wanted > 0 && survivors.length >= 2) {
-        const ga = await nextGeneration(survivors.map((a) => a.vector), survivors.map((a) => a.exam!.fitness), wanted, gen);
+        const ga = await nextGeneration(survivors.map((a) => a.vector), survivors.map((a) => a.exam?.fitness ?? -1), wanted, gen);
         engine = ga.engine + (ga.version ? `@${ga.version}` : "");
         for (const child of ga.children) {
-          const parent = survivors.filter((p) => p.capitalKrw >= p.seedKrw * 0.9).sort((p, q) => geneDistance(p.vector, child) - geneDistance(q.vector, child))[0];
+          const parent = survivors.filter((p) => p.capitalKrw >= p.seedKrw * 0.9 && p.capitalKrw >= SEED_KRW * 0.5).sort((p, q) => geneDistance(p.vector, child) - geneDistance(q.vector, child))[0];
           if (!parent) { this.log("warn", "no parent has surplus over its seed — no births this generation"); break; }
           const seed = parent.capitalKrw * CHILD_SHARE;
           parent.capitalKrw -= seed; parent.children++;
-          const kid = this.newAgent(child, gen, [parent.id], seed);
+          const kid = this.newAgent(child, gen, [parent.id], seed, parent.tribe);
           this.st.agents.push(kid); births++;
           this.log("ok", `BORN ${kid.name} [${kid.archetype}] ← ${parent.name} seeds ₩${Math.round(seed).toLocaleString()} (${engine}: ${Object.values(ga.ops).join("/")})`);
         }
@@ -274,7 +397,7 @@ class Evolution extends EventEmitter {
       const fits = finalAlive.map((a) => a.exam?.fitness).filter((x): x is number => typeof x === "number");
       const champion = ranked[0] ?? null;
       const rec: GenerationRecord = {
-        gen, at: new Date().toISOString(), examWindow: { from: examFrom, to: examTo }, alive: finalAlive.length, births, deaths,
+        gen, at: new Date().toISOString(), examWindow: { from: examFrom, to: examTo }, alive: finalAlive.length, births, deaths, mutations, merges, forks, diversity: this.diversity(finalAlive),
         topFitness: fits.length ? Math.max(...fits) : 0, meanFitness: fits.length ? +(fits.reduce((a, b) => a + b, 0) / fits.length).toFixed(4) : 0,
         championId: champion?.id ?? null, engine, vaultKrw: Math.round(this.st.vaultKrw), totalCapitalKrw: Math.round(finalAlive.reduce((a, x) => a + x.capitalKrw, 0)),
       };
@@ -283,7 +406,7 @@ class Evolution extends EventEmitter {
       this.st.lastGenerationAt = rec.at;
       mkdirSync(ROOT, { recursive: true });
       appendFileSync(GEN_FILE, JSON.stringify(rec) + "\n");
-      this.log("ok", `GEN ${gen} done — survivors ${rec.alive}/${POP_MAX} · births ${births} · deaths ${deaths} · top ${rec.topFitness} (${champion?.name ?? "-"}) · mean ${rec.meanFitness} · engine ${engine}`);
+      this.log("ok", `GEN ${gen} done — survivors ${rec.alive}/${POP_MAX} · births ${births} · deaths ${deaths} · mutations ${mutations} · merges ${merges} · forks ${forks} · diversity ${rec.diversity} · top ${rec.topFitness} (${champion?.name ?? "-"}) · mean ${rec.meanFitness} · engine ${engine}`);
       this.save();
       this.emit("generation", rec);
       return rec;

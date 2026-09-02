@@ -122,7 +122,7 @@ export function PopulationCloud({ agents, selected, onSelect, height = 460 }: { 
       if (s.hover) {
         const a = s.agents.find((x) => x.id === s.hover); const pt = s.pts.find((x) => x.id === s.hover)
         if (a && pt) {
-          const lines = [`${a.name} · ${a.archetype}`, a.exam ? `${a.exam.totalReturnPct >= 0 ? "+" : ""}${a.exam.totalReturnPct}%  DD ${a.exam.maxDrawdownPct}%  sharpe ${a.exam.sharpe}` : "not examined yet", `₩${Math.round(a.capitalKrw).toLocaleString()} · gen ${a.generationBorn}${a.parents.length ? " · child" : " · genesis"}`]
+          const lines = [`${a.name} · ${a.archetype}`, a.exam ? `${a.exam.totalReturnPct >= 0 ? "+" : ""}${a.exam.totalReturnPct}%  DD ${a.exam.maxDrawdownPct}%  sharpe ${a.exam.sharpe}` : "not examined yet", `₩${Math.round(a.capitalKrw).toLocaleString()} · gen ${a.generationBorn} · tribe ${(s.agents.find((x) => x.id === a.tribe.split("/")[0])?.name ?? a.tribe).replace(/-\d+$/, "")}${a.tribe.includes("/") ? "/" + a.tribe.split("/")[1] : ""} · ${a.events.filter((e) => e.type === "mutated").length} mutations`]
           ctx.font = "10px ui-monospace, monospace"
           const wdt = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 18
           const x = Math.min(w - wdt - 6, pt.x + 12), y = Math.max(6, pt.y - 52)

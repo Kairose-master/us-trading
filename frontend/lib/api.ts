@@ -429,6 +429,9 @@ export interface EvoAgent {
   peers: string[]
   bottomStreak: number
   children: number
+  tribe: string
+  events: Array<{ gen: number; type: "born" | "mutated" | "merged" | "absorbed" | "forked" | "retired"; detail: string }>
+  forked: boolean
 }
 export interface EvoGeneration {
   gen: number
@@ -437,6 +440,10 @@ export interface EvoGeneration {
   alive: number
   births: number
   deaths: number
+  mutations: number
+  merges: number
+  forks: number
+  diversity: number
   topFitness: number
   meanFitness: number
   championId: string | null
@@ -459,9 +466,11 @@ export interface EvoStatus {
   seedKrw: number
   examDays: number
   champion: { id: string; name: string; archetype: string; fitness: number | null } | null
+  diversity: number
+  tribes: Array<{ tribe: string; name: string; alive: number; capitalKrw: number }>
   archetypes: Array<{ archetype: string; alive: number }>
   genes: Array<{ key: keyof EvoGenes; min: number; max: number; int: boolean; label: string }>
-  rules: { starveRatio: number; bottomQuantile: number; bottomStreakDeath: number; minAgeGens: number; childShare: number }
+  rules: { starveRatio: number; bottomQuantile: number; bottomStreakDeath: number; minAgeGens: number; childShare: number; mutationBase: number; diversityFloor: number; mergeDistance: number; mergeDependence: number }
   squad: { members: Array<{ id: string; name: string; archetype: string; fitness: number; capitalKrw: number; lastWeights: Array<{ market: string; weightPct: number }> }>; targets: Array<{ market: string; weightPct: number }> }
   history: EvoGeneration[]
 }

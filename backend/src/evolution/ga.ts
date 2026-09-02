@@ -78,3 +78,44 @@ function builtin(population: GeneVector[], fitness: number[], numChildren: numbe
   }
   return { engine: "builtin", children, parents: [...parents], ops: { selection: "tournament3", crossover: "uniform", mutation: "gaussian20%" } };
 }
+
+export interface MutateResult {
+  engine: "pygad" | "builtin";
+  version?: string;
+  mutated: GeneVector[];
+  ops: Record<string, string | number | boolean>;
+}
+
+/** 살아 있는 개체의 자발적 변이 — PyGAD random_mutation (유전자 numGenes개 치환). 대체 시 내장 가우시안 */
+export async function mutateVectors(vectors: GeneVector[], numGenes: number, seed: number): Promise<MutateResult> {
+  if (vectors.length > 0 && existsSync(SCRIPT)) {
+    try {
+      const r = await new Promise<MutateResult>((resolve, reject) => {
+        const py = spawn("python3", [SCRIPT], { stdio: ["pipe", "pipe", "pipe"] });
+        let out = "", err = "";
+        const timer = setTimeout(() => { py.kill(); reject(new Error("pygad timeout")); }, 60_000);
+        py.stdout.on("data", (d) => (out += d)); py.stderr.on("data", (d) => (err += d));
+        py.on("error", (e) => { clearTimeout(timer); reject(e); });
+        py.on("close", (code) => {
+          clearTimeout(timer);
+          if (code !== 0) return reject(new Error(`pygad exit ${code}: ${err.slice(-300)}`));
+          try {
+            const j = JSON.parse(out) as { version: string; mutated: GeneVector[]; ops?: Record<string, string | number | boolean> };
+            resolve({ engine: "pygad", version: j.version, mutated: j.mutated.map((c) => c.map((v, i) => clampGene(GENE_SPECS[i], v))), ops: j.ops ?? {} });
+          } catch (e) { reject(new Error(`pygad output unparseable: ${(e as Error).message}`)); }
+        });
+        py.stdin.write(JSON.stringify({ mode: "mutate", population: vectors, gene_space: GENE_SPECS.map((g) => ({ min: g.min, max: g.max, int: g.int })), mutation_num_genes: numGenes, seed }));
+        py.stdin.end();
+      });
+      if (r.mutated.length === vectors.length) return r;
+    } catch (e) {
+      logger.warn("PyGAD mutate unavailable — builtin", { error: (e as Error).message.slice(0, 200) });
+    }
+  }
+  const mutated = vectors.map((v) => {
+    const idx = new Set<number>();
+    while (idx.size < Math.min(numGenes, GENE_SPECS.length)) idx.add(Math.floor(rand() * GENE_SPECS.length));
+    return v.map((x, i) => (idx.has(i) ? clampGene(GENE_SPECS[i], x + (rand() - 0.5) * 0.4 * (GENE_SPECS[i].max - GENE_SPECS[i].min)) : x));
+  });
+  return { engine: "builtin", mutated, ops: { mutation: "gaussian", genes: numGenes } };
+}

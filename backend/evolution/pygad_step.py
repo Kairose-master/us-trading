@@ -12,8 +12,31 @@ import numpy as np
 import pygad
 
 
+def mutate_mode(req: dict) -> None:
+    """살아 있는 개체의 자발적 변이 — PyGAD의 random_mutation을 그대로 쓴다 (gene_space 안에서 유전자 일부 치환)."""
+    vecs = np.array(req["population"], dtype=float)
+    specs = req["gene_space"]
+    gene_space = [
+        {"low": s["min"], "high": s["max"] + (1 if s["int"] else 0), "step": 1} if s["int"] else {"low": s["min"], "high": s["max"]}
+        for s in specs
+    ]
+    gene_type = [int if s["int"] else float for s in specs]
+    ga = pygad.GA(
+        num_generations=1, num_parents_mating=2, initial_population=np.vstack([vecs, vecs]) if len(vecs) < 2 else vecs,
+        fitness_func=lambda g, sol, i: 0.0, gene_space=gene_space, gene_type=gene_type,
+        mutation_type="random", mutation_num_genes=int(req.get("mutation_num_genes", 2)), mutation_by_replacement=True,
+        random_seed=int(req.get("seed", 7)), suppress_warnings=True,
+    )
+    mutated = ga.random_mutation(vecs.copy())
+    json.dump({"engine": "pygad", "version": pygad.__version__, "mutated": [[round(float(x), 4) for x in row] for row in mutated],
+               "ops": {"mutation": "random", "mutation_num_genes": ga.mutation_num_genes, "by_replacement": True}}, sys.stdout)
+
+
 def main() -> None:
     req = json.load(sys.stdin)
+    if req.get("mode") == "mutate":
+        mutate_mode(req)
+        return
     pop = np.array(req["population"], dtype=float)
     fit = [float(x) for x in req["fitness"]]
     specs = req["gene_space"]  # [{min,max,int}]
