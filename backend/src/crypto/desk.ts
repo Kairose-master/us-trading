@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { PipelineEngine, type PipelineContext } from "../pipeline/engine.js";
 import type { ExecutionSignal } from "../pipeline/types.js";
 import { NewsIngestor } from "../sentiment/news.js";
@@ -23,6 +25,13 @@ const COIN_OF = (market: string) => market.split("-")[1];
 
 const POLL_MS = 4_000;
 const PAPER_START_KRW = 10_000_000; // 페이퍼 시드 (1천만원 — 가상)
+// 페이퍼 체결에도 실거래와 같은 비용을 부과한다 — 비용 없는 페이퍼 기록은 자기기만이다
+const PAPER_FEE_PCT = 0.05; // 업비트 현물 편도
+const PAPER_SLIP_PCT = 0.05; // 시장가 슬리피지 가정
+// 영속화 — 재시작해도 페이퍼 실적이 이어져야 "라이브 기록"이 된다
+const STATE_FILE = join(process.cwd(), "data", "crypto-paper.json");
+const EQUITY_FILE = join(process.cwd(), "data", "crypto-paper-equity.jsonl");
+const EQUITY_SNAPSHOT_MS = 60 * 60_000; // 1시간마다 에쿼티 스냅샷
 
 export interface CryptoRiskLimits {
   maxOrderKrw: number;
@@ -37,6 +46,8 @@ export interface CryptoOrder {
   volume: number;
   priceKrw: number;
   amountKrw: number;
+  /** 체결에 부과된 수수료+슬리피지 (KRW) — 페이퍼도 실비용을 문다 */
+  costKrw: number;
   mode: "paper" | "real";
   reason: string;
   ts: string;
@@ -53,7 +64,9 @@ class CryptoDesk extends EventEmitter {
   orders: CryptoOrder[] = [];
   lastTickers = new Map<string, UpbitTicker>();
   lastError: string | null = null;
+  paperSince: string | null = null;
   private timer: NodeJS.Timeout | null = null;
+  private equityTimer: NodeJS.Timeout | null = null;
   private orderSeq = 0;
 
   constructor() {
@@ -89,8 +102,84 @@ class CryptoDesk extends EventEmitter {
     return eq;
   }
 
+  // ===== 페이퍼 장부 영속화 =====
+
+  private loadState() {
+    try {
+      if (!existsSync(STATE_FILE)) return;
+      const s = JSON.parse(readFileSync(STATE_FILE, "utf-8")) as {
+        cashKrw: number;
+        positions: Array<[string, { qty: number; avgKrw: number }]>;
+        orders: CryptoOrder[];
+        orderSeq: number;
+        since: string;
+      };
+      this.paperCashKrw = s.cashKrw;
+      this.paperPositions = new Map(s.positions);
+      this.orders = s.orders ?? [];
+      this.orderSeq = s.orderSeq ?? 0;
+      this.paperSince = s.since ?? null;
+      logger.info("페이퍼 장부 복원", { cashKrw: Math.round(this.paperCashKrw), positions: this.paperPositions.size, orders: this.orders.length });
+    } catch (e) {
+      logger.warn("페이퍼 장부 복원 실패 — 새로 시작", { error: (e as Error).message });
+    }
+  }
+
+  private saveState() {
+    try {
+      mkdirSync(dirname(STATE_FILE), { recursive: true });
+      writeFileSync(
+        STATE_FILE,
+        JSON.stringify({
+          cashKrw: this.paperCashKrw,
+          positions: [...this.paperPositions.entries()],
+          orders: this.orders.slice(0, 100),
+          orderSeq: this.orderSeq,
+          since: this.paperSince ?? new Date().toISOString(),
+        }),
+      );
+    } catch (e) {
+      logger.warn("페이퍼 장부 저장 실패", { error: (e as Error).message });
+    }
+  }
+
+  private snapshotEquity() {
+    if (this.lastTickers.size === 0) return;
+    try {
+      mkdirSync(dirname(EQUITY_FILE), { recursive: true });
+      appendFileSync(
+        EQUITY_FILE,
+        JSON.stringify({ ts: new Date().toISOString(), equityKrw: Math.round(this.equityKrw()), cashKrw: Math.round(this.paperCashKrw), positions: this.paperPositions.size }) + "\n",
+      );
+    } catch (e) {
+      logger.warn("에쿼티 스냅샷 실패", { error: (e as Error).message });
+    }
+  }
+
+  /** 페이퍼 에쿼티 커브 (JSONL → 배열) */
+  paperEquity(limit = 2000): Array<{ ts: string; equityKrw: number; cashKrw: number; positions: number }> {
+    try {
+      if (!existsSync(EQUITY_FILE)) return [];
+      return readFileSync(EQUITY_FILE, "utf-8")
+        .trim()
+        .split("\n")
+        .slice(-limit)
+        .map((l) => JSON.parse(l));
+    } catch {
+      return [];
+    }
+  }
+
   start() {
     if (this.timer) return;
+    this.loadState();
+    if (!this.paperSince) {
+      this.paperSince = new Date().toISOString();
+      this.saveState();
+    }
+    this.equityTimer = setInterval(() => this.snapshotEquity(), EQUITY_SNAPSHOT_MS);
+    this.equityTimer.unref();
+    setTimeout(() => this.snapshotEquity(), 30_000).unref(); // 기동 직후 1회
     this.pipeline.start(CRYPTO_MARKETS.map(COIN_OF));
     this.pipeline.on("signal", (sig: ExecutionSignal) => void this.onSignal(sig));
     this.news.setSymbols(CRYPTO_MARKETS.map(COIN_OF));
@@ -157,13 +246,20 @@ class CryptoDesk extends EventEmitter {
     volume = +volume.toFixed(8);
 
     const realMode = config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys();
+    // 페이퍼 체결가 = 시세 ± 슬리피지, 수수료는 금액에 부과 (실거래와 같은 조건)
+    const slip = PAPER_SLIP_PCT / 100;
+    const fee = PAPER_FEE_PCT / 100;
+    const execPrice = sig.side === "buy" ? price * (1 + slip) : price * (1 - slip);
+    const grossKrw = volume * execPrice;
+    const feeKrw = grossKrw * fee;
     const order: CryptoOrder = {
       id: `CRYPTO-${++this.orderSeq}-${now}`,
       market,
       side: sig.side,
       volume,
-      priceKrw: price,
-      amountKrw: Math.round(volume * price),
+      priceKrw: +execPrice.toFixed(0),
+      amountKrw: Math.round(grossKrw),
+      costKrw: Math.round(feeKrw + Math.abs(execPrice - price) * volume),
       mode: realMode ? "real" : "paper",
       reason: sig.reason,
       ts: new Date().toISOString(),
@@ -183,18 +279,18 @@ class CryptoDesk extends EventEmitter {
       }
     }
 
-    // 페이퍼 장부 갱신 (실주문이어도 미러 기록)
+    // 페이퍼 장부 갱신 (실주문이어도 미러 기록) — 슬리피지 반영 체결가 + 수수료 차감
     const pos = this.paperPositions.get(sig.symbol);
     if (sig.side === "buy") {
-      this.paperCashKrw -= volume * price;
+      this.paperCashKrw -= grossKrw + feeKrw;
       if (pos) {
-        pos.avgKrw = (pos.avgKrw * pos.qty + price * volume) / (pos.qty + volume);
+        pos.avgKrw = (pos.avgKrw * pos.qty + execPrice * volume) / (pos.qty + volume);
         pos.qty += volume;
       } else {
-        this.paperPositions.set(sig.symbol, { qty: volume, avgKrw: price });
+        this.paperPositions.set(sig.symbol, { qty: volume, avgKrw: execPrice });
       }
     } else {
-      this.paperCashKrw += volume * price;
+      this.paperCashKrw += grossKrw - feeKrw;
       if (pos) {
         pos.qty -= volume;
         if (pos.qty <= 1e-10) this.paperPositions.delete(sig.symbol);
@@ -202,6 +298,8 @@ class CryptoDesk extends EventEmitter {
     }
     this.orders.unshift(order);
     if (this.orders.length > 100) this.orders.length = 100;
+    this.saveState();
+    this.snapshotEquity();
     this.pipeline.log(
       "auto-trade",
       `${market} ${sig.side.toUpperCase()} ${volume} (₩${order.amountKrw.toLocaleString()}) [${order.mode}] — ${sig.reason}`,
@@ -223,6 +321,9 @@ class CryptoDesk extends EventEmitter {
       tradeEnabled: this.tradeEnabled,
       mode: config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys() ? "real" : "paper",
       hasKeys: upbit.hasKeys(),
+      paperSince: this.paperSince,
+      paperStartKrw: PAPER_START_KRW,
+      costs: { feePct: PAPER_FEE_PCT, slipPct: PAPER_SLIP_PCT },
       markets: CRYPTO_MARKETS,
       equityKrw: Math.round(this.equityKrw()),
       cashKrw: Math.round(this.paperCashKrw),

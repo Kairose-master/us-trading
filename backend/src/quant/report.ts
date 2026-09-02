@@ -1,5 +1,5 @@
 import type { BtCandle } from "../crypto/backtest.js";
-import { SIGNALS } from "../crypto/backtest.js";
+import { SIGNALS, DEFAULT_COSTS } from "../crypto/backtest.js";
 import { fitHmm, type HmmResult } from "./regime.js";
 import { fitGarch, type GarchResult } from "./garch.js";
 import { exponentialWeights, type AllocatorResult, type ExpertSeries } from "./allocator.js";
@@ -40,14 +40,25 @@ export function buildQuantReport(candles: BtCandle[], market: string): QuantRepo
   const regime = fitHmm(returns, 3);
   const garch = fitGarch(returns);
 
-  // 전문가 = 룰 시그널 4종 + 단순보유. 룩어헤드 없음: t 시그널 → t+1 수익
+  // 전문가 = 룰 시그널 4종 + 단순보유. 룩어헤드 없음: t 시그널 → t+1 수익.
+  // 수수료+슬리피지(편도)를 포지션 변화(turnover)마다 차감 — 무비용 숫자는 상한선일 뿐.
+  const costRate = (DEFAULT_COSTS.feePct + DEFAULT_COSTS.slipPct) / 100;
+  const withCosts = (positions: Array<0 | 1>): number[] => {
+    let prev: 0 | 1 = 0;
+    return returns.map((r, t) => {
+      const pos = positions[t];
+      const turnover = Math.abs(pos - prev);
+      prev = pos;
+      return (pos === 1 ? r : 0) - turnover * costRate;
+    });
+  };
   const experts: ExpertSeries[] = [
     ...SIGNALS.map((s) => ({
       id: s.id,
       name: s.name,
-      returns: returns.map((r, t) => (s.position(candles, t) === 1 ? r : 0)),
+      returns: withCosts(returns.map((_, t) => s.position(candles, t))),
     })),
-    { id: "buy-hold", name: "단순보유", returns: returns.slice() },
+    { id: "buy-hold", name: "단순보유", returns: withCosts(returns.map(() => 1 as const)) },
   ];
   const allocator = exponentialWeights(experts, 10);
 

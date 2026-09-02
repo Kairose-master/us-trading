@@ -218,7 +218,7 @@ export function CryptoPageClient() {
             </pre>
             <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
               <p className="font-medium text-foreground/80">백테스트 규약</p>
-              <p>t 종가 시그널 → t+1 수익률 적용 (룩어헤드 없음) · 현물 롱/현금만 · 수수료/슬리피지 미반영 · 데이터: 업비트 일봉 실데이터</p>
+              <p>t 종가 시그널 → t+1 수익률 적용 (룩어헤드 없음) · 현물 롱/현금만 · 수수료 0.05% + 슬리피지 0.05%/편도 반영 · 데이터: 업비트 일봉 실데이터</p>
             </div>
             {m && (
               <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 font-mono text-[11px]">
@@ -228,6 +228,8 @@ export function CryptoPageClient() {
                 <dd>{m.trades}회</dd>
                 <dt className="text-muted-foreground">시장 노출</dt>
                 <dd>{m.exposurePct}%</dd>
+                <dt className="text-muted-foreground">비용 드래그</dt>
+                <dd className="text-destructive">-{m.costDragPct}%p</dd>
                 <dt className="text-muted-foreground">표본</dt>
                 <dd>{bt!.days}일봉</dd>
               </dl>

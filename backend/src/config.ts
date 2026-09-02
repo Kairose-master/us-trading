@@ -26,10 +26,11 @@ const Env = z.object({
   // 시세/캔들은 키 없이 공개 API. 키는 계좌 조회/주문에만 필요.
   UPBIT_ACCESS_KEY: z.string().default(""),
   UPBIT_SECRET_KEY: z.string().default(""),
-  // 크립토 신호 → 주문 기록(페이퍼). 기본 OFF.
+  // 크립토 신호 → 주문 기록. 기본 ON(페이퍼) — 라이브 기록을 쌓는 게 목적이고,
+  // 실주문은 여전히 CRYPTO_TRADE_ALLOW_REAL + 키 없이는 불가능하다.
   CRYPTO_TRADE: z
     .string()
-    .default("false")
+    .default("true")
     .transform((v) => v === "true"),
   // 실제 Upbit 주문까지 허용하는 명시적 이중 스위치 (키 + 이 플래그 둘 다 필요)
   CRYPTO_TRADE_ALLOW_REAL: z

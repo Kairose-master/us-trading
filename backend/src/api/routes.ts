@@ -415,6 +415,11 @@ router.get("/quant/report", async (req, res) => {
   }
 });
 
+// 페이퍼 에쿼티 커브 — 재시작을 견디는 라이브 기록 (data/crypto-paper-equity.jsonl)
+router.get("/crypto/paper/equity", (req, res) => {
+  res.json(cryptoDesk.paperEquity(Number(req.query.limit ?? 2000)));
+});
+
 router.post("/crypto/autotrade", (req, res) => {
   const enabled = req.body?.enabled;
   if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled: boolean 필요" });

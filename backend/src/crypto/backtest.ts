@@ -123,11 +123,22 @@ if RSI14 > 55: exit`,
 
 // ===== 백테스트 =====
 
+export interface TradingCosts {
+  /** 편도 수수료 % (업비트 현물 0.05) */
+  feePct: number;
+  /** 편도 슬리피지 가정 % (시장가, 유동 마켓 보수 가정) */
+  slipPct: number;
+}
+
+/** 기본 비용 — 왕복 0.2%. 비용 없는 백테스트 숫자는 상한선일 뿐이다. */
+export const DEFAULT_COSTS: TradingCosts = { feePct: 0.05, slipPct: 0.05 };
+
 export interface BacktestResult {
   signalId: string;
   market: string;
   days: number;
-  /** 전략 에쿼티 (1.0 시작) */
+  costs: TradingCosts;
+  /** 전략 에쿼티 (1.0 시작, 비용 차감 후) */
   equity: Array<{ t: string; strategy: number; benchmark: number }>;
   metrics: {
     totalReturnPct: number;
@@ -138,13 +149,22 @@ export interface BacktestResult {
     winRatePct: number; // 포지션 보유일 중 양(+)수익일 비율
     trades: number; // 진입 횟수
     exposurePct: number; // 포지션 보유일 비율
+    /** 비용이 갉아먹은 총수익 %p (무비용 총수익 − 비용반영 총수익) */
+    costDragPct: number;
   };
   monthlyReturns: Array<{ month: string; strategyPct: number; benchmarkPct: number }>;
 }
 
-export function runBacktest(candles: BtCandle[], signal: AlphaSignal, market: string): BacktestResult {
+export function runBacktest(
+  candles: BtCandle[],
+  signal: AlphaSignal,
+  market: string,
+  costs: TradingCosts = DEFAULT_COSTS,
+): BacktestResult {
   const n = candles.length;
+  const costRate = (costs.feePct + costs.slipPct) / 100; // 편도
   let eq = 1;
+  let eqGross = 1; // 무비용 (드래그 계산용)
   let bench = 1;
   let peak = 1;
   let maxDd = 0;
@@ -159,10 +179,13 @@ export function runBacktest(candles: BtCandle[], signal: AlphaSignal, market: st
   for (let i = 0; i < n - 1; i++) {
     const pos = signal.position(candles, i);
     if (pos === 1 && prevPos === 0) trades++;
+    const turnover = Math.abs(pos - prevPos); // 진입/청산 시 1
     prevPos = pos;
     const ret = candles[i + 1].c / candles[i].c - 1;
-    const stratRet = pos === 1 ? ret : 0;
+    const grossRet = pos === 1 ? ret : 0;
+    const stratRet = grossRet - turnover * costRate;
     eq *= 1 + stratRet;
+    eqGross *= 1 + grossRet;
     bench *= 1 + ret;
     dailyRets.push(stratRet);
     if (pos === 1) {
@@ -180,6 +203,11 @@ export function runBacktest(candles: BtCandle[], signal: AlphaSignal, market: st
     m.b *= 1 + ret;
     monthly.set(month, m);
   }
+  // 종료 시점 보유분 청산 비용 — 열린 포지션의 비용을 숨기지 않는다
+  if (prevPos === 1) {
+    eq *= 1 - costRate;
+    equity[equity.length - 1].strategy = +eq.toFixed(4);
+  }
 
   const years = (n - 1) / 365;
   const mean = dailyRets.reduce((a, b) => a + b, 0) / Math.max(1, dailyRets.length);
@@ -192,8 +220,10 @@ export function runBacktest(candles: BtCandle[], signal: AlphaSignal, market: st
     signalId: signal.id,
     market,
     days: n,
+    costs,
     equity,
     metrics: {
+      costDragPct: +((eqGross - eq) * 100).toFixed(2),
       totalReturnPct: +((eq - 1) * 100).toFixed(2),
       annualReturnPct: years > 0 ? +((Math.pow(eq, 1 / years) - 1) * 100).toFixed(2) : 0,
       benchmarkReturnPct: +((bench - 1) * 100).toFixed(2),

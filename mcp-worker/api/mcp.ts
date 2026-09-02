@@ -461,8 +461,12 @@ const CRYPTO_SIGNALS: Array<{ id: string; name: string; position: (cs: UpbitCand
   },
 ];
 
+// 비용: 업비트 현물 수수료 0.05% + 슬리피지 가정 0.05%/편도 — 백엔드 DEFAULT_COSTS와 동일
+const BT_COST_RATE = (0.05 + 0.05) / 100;
+
 function runCryptoBacktest(cs: UpbitCandle[], sig: (typeof CRYPTO_SIGNALS)[number]) {
   let eq = 1;
+  let eqGross = 1;
   let bench = 1;
   let peak = 1;
   let maxDd = 0;
@@ -474,10 +478,13 @@ function runCryptoBacktest(cs: UpbitCandle[], sig: (typeof CRYPTO_SIGNALS)[numbe
   for (let i = 0; i < cs.length - 1; i++) {
     const pos = sig.position(cs, i);
     if (pos === 1 && prev === 0) trades++;
+    const turnover = Math.abs(pos - prev);
     prev = pos;
     const r = cs[i + 1].c / cs[i].c - 1;
-    const sr = pos === 1 ? r : 0;
+    const gross = pos === 1 ? r : 0;
+    const sr = gross - turnover * BT_COST_RATE;
     eq *= 1 + sr;
+    eqGross *= 1 + gross;
     bench *= 1 + r;
     rets.push(sr);
     if (pos === 1) {
@@ -487,6 +494,7 @@ function runCryptoBacktest(cs: UpbitCandle[], sig: (typeof CRYPTO_SIGNALS)[numbe
     peak = Math.max(peak, eq);
     maxDd = Math.max(maxDd, (peak - eq) / peak);
   }
+  if (prev === 1) eq *= 1 - BT_COST_RATE; // 종료 시점 보유분 청산 비용
   const years = (cs.length - 1) / 365;
   const mean = rets.reduce((a, b) => a + b, 0) / Math.max(1, rets.length);
   const sd = Math.sqrt(rets.reduce((a, r) => a + (r - mean) ** 2, 0) / Math.max(1, rets.length));
@@ -498,6 +506,7 @@ function runCryptoBacktest(cs: UpbitCandle[], sig: (typeof CRYPTO_SIGNALS)[numbe
     winRatePct: held > 0 ? +((wins / held) * 100).toFixed(1) : 0,
     trades,
     exposurePct: +((held / Math.max(1, cs.length - 1)) * 100).toFixed(1),
+    costDragPct: +((eqGross - eq) * 100).toFixed(2),
   };
 }
 
@@ -571,7 +580,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
   {
     name: "upbit_backtest_report",
     description:
-      "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: vol-spike-reversion, rsi-reversion, momentum-20, vol-regime. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead.",
+      "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: vol-spike-reversion, rsi-reversion, momentum-20, vol-regime. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead; fee 0.05% + slippage 0.05% per side included.",
     inputSchema: QUERY_SCHEMA("e.g. 'KRW-ETH momentum-20' or 'BTC all signals'"),
     handler: async (query) => {
       const coin = extractCoins(query)[0];
@@ -582,11 +591,11 @@ const CRYPTO_TOOLS: ToolDef[] = [
       if (candles.length < 90) return `캔들 부족 (${candles.length}개) — 백테스트 불가\n[data] Upbit public API`;
       const rows = signals.map((s) => {
         const r = runCryptoBacktest(candles, s);
-        return `  ${s.name} [${s.id}]: annual=${r.annualPct}% (B&H ${r.benchPct}%) sharpe=${r.sharpe} MDD=${r.mddPct}% winRate=${r.winRatePct}% trades=${r.trades} exposure=${r.exposurePct}%`;
+        return `  ${s.name} [${s.id}]: annual=${r.annualPct}% (B&H ${r.benchPct}%) sharpe=${r.sharpe} MDD=${r.mddPct}% winRate=${r.winRatePct}% trades=${r.trades} exposure=${r.exposurePct}% costDrag=${r.costDragPct}%p`;
       });
       return [
         `# Upbit backtest — ${market}, ${candles.length} daily candles (${candles[0].t} ~ ${candles[candles.length - 1].t})`,
-        `convention: signal at close t → position for t+1 return; long/cash only (no lookahead, no shorting)`,
+        `convention: signal at close t → position for t+1 return; long/cash only (no lookahead, no shorting); costs: fee 0.05% + slippage 0.05% per side`,
         ...rows,
         `[data] Upbit public API · ts=${new Date().toISOString()}`,
       ].join("\n");
@@ -639,7 +648,7 @@ export default async function handler(req: any, res: any) {
         rpcResult(msg.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "us-trading-mcp-worker", version: "1.1.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
+          serverInfo: { name: "us-trading-mcp-worker", version: "1.2.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
         }),
       );
     case "notifications/initialized":

@@ -309,11 +309,11 @@ const upbitBacktestReport: McpToolDef = {
     const rows = signals.map((s) => {
       const bt = runBacktest(candles, s, market);
       const m = bt.metrics;
-      return `  ${s.name} [${s.id}]: annual=${m.annualReturnPct}% (B&H ${m.benchmarkReturnPct}%) sharpe=${m.sharpe} MDD=${m.maxDrawdownPct}% winRate=${m.winRatePct}% trades=${m.trades} exposure=${m.exposurePct}%`;
+      return `  ${s.name} [${s.id}]: annual=${m.annualReturnPct}% (B&H ${m.benchmarkReturnPct}%) sharpe=${m.sharpe} MDD=${m.maxDrawdownPct}% winRate=${m.winRatePct}% trades=${m.trades} exposure=${m.exposurePct}% costDrag=${m.costDragPct}%p`;
     });
     return [
       `# Upbit backtest — ${market}, ${candles.length} daily candles (${candles[0]?.t} ~ ${candles[candles.length - 1]?.t})`,
-      `convention: signal at close t → position for t+1 return; long/cash only (no lookahead, no shorting)`,
+      `convention: signal at close t → position for t+1 return; long/cash only (no lookahead, no shorting); costs: fee 0.05% + slippage 0.05% per side, charged on turnover`,
       ...rows,
       envLine(),
     ].join("\n");
@@ -349,7 +349,7 @@ const mlAlphaReport: McpToolDef = {
       `weights: ${w}`,
       `IN-SAMPLE  : annual=${r.inSample.annualReturnPct}% sharpe=${r.inSample.sharpe} MDD=${r.inSample.maxDrawdownPct}% (참고용 — 과적합 포함)`,
       `OUT-SAMPLE : annual=${r.outOfSample.annualReturnPct}% (B&H ${r.outOfSample.benchmarkReturnPct}%) sharpe=${r.outOfSample.sharpe} MDD=${r.outOfSample.maxDrawdownPct}% winRate=${r.outOfSample.winRatePct}% trades=${r.outOfSample.trades}`,
-      `신뢰할 수 있는 숫자는 OUT-SAMPLE 뿐이다. convention: t종가 시그널 → t+1 적용, 롱/현금만, 수수료 미반영.`,
+      `신뢰할 수 있는 숫자는 OUT-SAMPLE 뿐이다. convention: t종가 시그널 → t+1 적용, 롱/현금만, 수수료 0.05%+슬리피지 0.05%/편도 반영.`,
       envLine(),
     ].join("\n");
   },
