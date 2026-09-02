@@ -237,6 +237,8 @@ class ControlPlane extends EventEmitter {
     this.st.policy = { ...DEFAULT_POLICY };
     logger.warn("[control] ledger reset acknowledged — policy back to defaults", this.st.policy);
     this.save(); this.emitState();
+    // 빈 장부를 협의회가 곧바로 다시 채운다 — 다음 제안이 올 때까지 현금으로 기다릴 이유가 없다
+    void this.arbitrate("ledger reset").catch((e) => logger.warn("[control] re-arbitrate after reset failed", { error: (e as Error).message }));
   }
 
   /** 지속 정지 — 상태 파일에 남는다. 재배포해도 멈춰 있고, resume 전까지 어떤 결정도 집행되지 않는다 */
