@@ -290,7 +290,7 @@ const upbitPipelineReport: McpToolDef = {
 const upbitBacktestReport: McpToolDef = {
   name: "upbit_backtest_report",
   description:
-    "Run a REAL backtest on live Upbit daily candles and report Sharpe, annualized return vs buy&hold, max drawdown, win rate, trades. Query names a market (default KRW-BTC) and optionally a signal id: vol-spike-reversion | rsi-reversion | momentum-20 | vol-regime (default: all four, 365 days).",
+    "Run a REAL backtest on live Upbit daily candles and report Sharpe, annualized return vs buy&hold, max drawdown, win rate, trades. Query names a market (default KRW-BTC) and optionally a signal id: hmm-regime | momentum-20 | vol-regime (default: all three, 365 days). No RSI-style indicators — regime belief (HMM), momentum factor, volatility clustering only.",
   inputSchema: QUERY_SCHEMA("e.g. 'KRW-ETH momentum-20' or 'BTC all signals'"),
   handler: async (query) => {
     const up = query.toUpperCase();

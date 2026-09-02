@@ -1,5 +1,9 @@
+import { fitHmm } from "../quant/regime.js";
+
 /**
  * 알파 백테스트 엔진 — 순수 함수 (릴2 "Alpha Research" 뷰의 계산부).
+ * RSI 같은 장난감 지표는 쓰지 않는다 — 시그널은 레짐 belief(HMM), 모멘텀
+ * 팩터, 변동성 군집 세 가지뿐이다.
  * 실제 캔들을 넣으면 실제 성과 지표가 나온다. 프론트(lib/crypto/backtest.ts)와
  * 동일 로직 — 한쪽을 고치면 다른 쪽도 맞출 것.
  *
@@ -35,20 +39,6 @@ function ma(values: number[], end: number, period: number): number {
   return s / period;
 }
 
-export function rsiAt(closes: number[], i: number, period = 14): number {
-  if (i < period) return 50;
-  let gains = 0;
-  let losses = 0;
-  for (let k = i - period + 1; k <= i; k++) {
-    const d = closes[k] - closes[k - 1];
-    if (d > 0) gains += d;
-    else losses -= d;
-  }
-  if (losses === 0) return 100;
-  const rs = gains / period / (losses / period);
-  return 100 - 100 / (1 + rs);
-}
-
 function realizedVol(closes: number[], end: number, period: number): number {
   if (end + 1 < period + 1) return NaN;
   const rets: number[] = [];
@@ -59,48 +49,64 @@ function realizedVol(closes: number[], end: number, period: number): number {
 
 // ===== 시그널 라이브러리 (릴2의 Alpha Signal Library에 해당) =====
 
+/**
+ * HMM 레짐 시그널의 캐시 — 같은 캔들 배열에 대해 한 번만 적합한다.
+ * 규약: 파라미터는 앞 FIT_WINDOW 개 수익률로만 적합(EM), 그 뒤는 포워드 필터로
+ * P(Z_t | Y_1:t)만 갱신한다 — t 시점에 실제로 알 수 있는 belief. 적합 구간
+ * 안쪽(i < FIT_WINDOW)은 파라미터가 미래를 본 셈이라 포지션 0으로 둔다.
+ */
+const HMM_FIT_WINDOW = 120;
+const hmmCache = new WeakMap<BtCandle[], { pBull: number[] }>();
+
+function hmmBullProb(candles: BtCandle[]): number[] {
+  const hit = hmmCache.get(candles);
+  if (hit) return hit.pBull;
+  const rets: number[] = [];
+  for (let i = 1; i < candles.length; i++) rets.push(Math.log(candles[i].c / candles[i - 1].c));
+  const pBull = new Array<number>(candles.length).fill(0);
+  if (rets.length >= HMM_FIT_WINDOW) {
+    const fit = fitHmm(rets.slice(0, HMM_FIT_WINDOW), 3);
+    const bull = fit.states.reduce((b, st, i) => (st.mu > fit.states[b].mu ? i : b), 0);
+    // 적합 구간 끝의 belief에서 출발해 앞으로 필터
+    let belief = fit.filtered[fit.filtered.length - 1].slice();
+    const k = fit.k;
+    const gauss = (y: number, mu: number, sigma: number) => {
+      const sd = Math.max(sigma, 1e-5);
+      const z = (y - mu) / sd;
+      return Math.exp(-0.5 * z * z) / (sd * Math.sqrt(2 * Math.PI));
+    };
+    for (let t = HMM_FIT_WINDOW; t < rets.length; t++) {
+      const pred = new Array<number>(k).fill(0);
+      for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) pred[j] += belief[i] * fit.transition[i][j];
+      let norm = 0;
+      const upd = pred.map((pp, i) => {
+        const v = pp * Math.max(gauss(rets[t], fit.states[i].mu, fit.states[i].sigma), 1e-300);
+        norm += v;
+        return v;
+      });
+      belief = upd.map((v) => v / norm);
+      pBull[t + 1] = belief[bull]; // rets[t]는 candles[t+1] 종가까지의 정보
+    }
+  }
+  hmmCache.set(candles, { pBull });
+  return pBull;
+}
+
 export const SIGNALS: AlphaSignal[] = [
   {
-    id: "vol-spike-reversion",
-    name: "거래량 스파이크 평균회귀",
+    id: "hmm-regime",
+    name: "HMM 레짐 필터",
     description:
-      "거래량이 20일 평균의 2배를 넘긴 날의 급락은 과잉반응일 확률이 높다 — 스파이크+음봉이면 다음 날부터 3일간 롱, 아니면 현금.",
-    code: `spike = v[t] > MA(v,20)*2
-if spike and c[t] < o[t]: hold long 3d`,
-    position: (candles, i) => {
-      // 최근 3일 내 스파이크+음봉이 있었으면 롱
-      for (let k = Math.max(0, i - 2); k <= i; k++) {
-        if (k < 20) continue;
-        const vAvg = ma(candles.map((c) => c.v), k, 20);
-        if (!Number.isNaN(vAvg) && candles[k].v > vAvg * 2 && candles[k].c < candles[k].o) return 1;
-      }
-      return 0;
-    },
-  },
-  {
-    id: "rsi-reversion",
-    name: "RSI 평균회귀",
-    description: "RSI(14) 30 하향 이탈 시 진입, 55 회복 시 청산. 과매도 반등을 먹는 고전 전략.",
-    code: `if RSI14 < 30: enter
-if RSI14 > 55: exit`,
-    position: (() => {
-      // 상태(보유 여부)가 필요한 시그널 — 클로저 없이 매 호출 재계산 (순수성 유지)
-      return (candles: BtCandle[], i: number): 0 | 1 => {
-        const closes = candles.map((c) => c.c);
-        let held: 0 | 1 = 0;
-        for (let k = 14; k <= i; k++) {
-          const r = rsiAt(closes, k);
-          if (held === 0 && r < 30) held = 1;
-          else if (held === 1 && r > 55) held = 0;
-        }
-        return held;
-      };
-    })(),
+      "3상태 가우시안 HMM을 앞 120일로 적합하고, 그 뒤는 포워드 필터로 P(강세 레짐 | 지금까지의 수익률)를 갱신한다. 그 확률이 0.5를 넘을 때만 롱. 지표가 아니라 belief state다.",
+    code: `fit HMM(k=3) on first 120d
+π_t = filter(π_{t-1}, r_t)   # P(Z_t | Y_1:t)
+if π_t[bull] > 0.5: long else cash`,
+    position: (candles, i) => (hmmBullProb(candles)[i] > 0.5 ? 1 : 0),
   },
   {
     id: "momentum-20",
-    name: "20일 모멘텀 추세추종",
-    description: "종가가 20일 이동평균 위면 롱, 아래면 현금. 추세장에서 벌고 횡보장에서 잃는 만큼만 잃는다.",
+    name: "20일 모멘텀 팩터",
+    description: "종가가 20일 이동평균 위면 롱, 아래면 현금. 학술적으로 문서화된 시계열 모멘텀 팩터의 가장 단순한 형태 — 추세장에서 벌고 횡보장에서 비용만큼 잃는다.",
     code: `if c[t] > MA(c,20): long else cash`,
     position: (candles, i) => {
       const m = ma(candles.map((c) => c.c), i, 20);
@@ -110,7 +116,7 @@ if RSI14 > 55: exit`,
   {
     id: "vol-regime",
     name: "변동성 레짐 필터",
-    description: "단기(10일) 실현변동성이 장기(60일)보다 낮은 안정 레짐에서만 롱. 급변동 구간을 피한다.",
+    description: "단기(10일) 실현변동성이 장기(60일)보다 낮은 안정 레짐에서만 롱. 변동성 군집(GARCH가 모델링하는 그것)을 가장 단순하게 쓰는 필터.",
     code: `if RV(10) < RV(60)*0.9: long else cash`,
     position: (candles, i) => {
       const closes = candles.map((c) => c.c);

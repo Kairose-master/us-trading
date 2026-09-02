@@ -94,7 +94,7 @@ export function ScannerPageClient() {
           <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5">
             <Radar className="size-3.5 text-muted-foreground" aria-hidden="true" />
             <h2 className="text-sm font-semibold">위험조정 모멘텀 랭킹</h2>
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground">score = mom20 / vol20 · t 종가 기준</span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">score = mom20 / vol20 · 자격 = HMM P(강세) ≥ 0.5 · 가중 = 1/GARCH σ</span>
           </div>
           {!data ? (
             <div className="p-4">
@@ -112,8 +112,8 @@ export function ScannerPageClient() {
                     <th className="px-3 py-1.5 font-medium">mom20</th>
                     <th className="px-3 py-1.5 font-medium">mom60</th>
                     <th className="px-3 py-1.5 font-medium">vol20</th>
-                    <th className="px-3 py-1.5 font-medium">RSI</th>
-                    <th className="px-3 py-1.5 font-medium">추세</th>
+                    <th className="px-3 py-1.5 font-medium">P(강세)</th>
+                    <th className="px-3 py-1.5 font-medium">GARCH σ</th>
                     <th className="px-3 py-1.5 font-medium">24h 대금</th>
                   </tr>
                 </thead>
@@ -130,8 +130,8 @@ export function ScannerPageClient() {
                       <td className={cn("px-3 py-1", s.mom20Pct >= 0 ? "text-chart-1" : "text-destructive")}>{pct(s.mom20Pct)}</td>
                       <td className={cn("px-3 py-1", s.mom60Pct >= 0 ? "text-chart-1" : "text-destructive")}>{pct(s.mom60Pct)}</td>
                       <td className="px-3 py-1">{s.vol20Pct}%</td>
-                      <td className="px-3 py-1">{s.rsi14}</td>
-                      <td className="px-3 py-1">{s.aboveMa20 ? <span className="text-chart-1">MA20↑</span> : <span className="text-muted-foreground">MA20↓</span>}</td>
+                      <td className={cn("px-3 py-1", s.pBull >= 0.5 ? "text-chart-1" : "text-muted-foreground")}>{s.pBull} <span className="text-[10px] text-muted-foreground">{s.regime}</span></td>
+                      <td className="px-3 py-1">{s.garchSigmaPct}%</td>
                       <td className="px-3 py-1 text-muted-foreground">₩{(s.valueKrw24h / 1e8).toFixed(0)}억</td>
                     </tr>
                   ))}
@@ -151,7 +151,7 @@ export function ScannerPageClient() {
               <Skeleton className="h-40 w-full" />
             ) : portfolio.targets.length === 0 ? (
               <p className="text-xs leading-relaxed text-muted-foreground">
-                자격(MA20 위 + 양의 위험조정 모멘텀)을 갖춘 코인이 없음 — <b className="text-foreground">100% 현금이 현재 정답</b>이고 그대로 표시한다.
+                자격(HMM 강세 레짐 확률 ≥ 0.5 + 양의 위험조정 모멘텀)을 갖춘 코인이 없음 — <b className="text-foreground">100% 현금이 현재 정답</b>이고 그대로 표시한다.
               </p>
             ) : (
               <ul className="flex flex-col gap-2">

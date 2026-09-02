@@ -111,7 +111,7 @@ class OfficeLoop {
   async buildScope(): Promise<{ scope: string; markets: string[] } | null> {
     const scan = await scannerServer.scan();
     const picks = scan.portfolio.targets.map((t) => t.market);
-    const pool = picks.length >= 3 ? picks : scan.scores.filter((s) => s.aboveMa20).slice(0, 5).map((s) => s.market);
+    const pool = picks.length >= 3 ? picks : scan.scores.filter((s) => s.pBull >= 0.5).slice(0, 5).map((s) => s.market);
     if (pool.length < 2) return null;
     const coins = pool.map((m) => m.replace("KRW-", "")).join(", ");
     const scope =

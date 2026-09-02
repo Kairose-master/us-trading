@@ -68,22 +68,131 @@ function labelOf(score: number): string {
   return score > 0.15 ? "BULLISH" : score < -0.15 ? "BEARISH" : "NEUTRAL";
 }
 
-// ===== 지표 계산 (backend/src/pipeline/engine.ts와 동일 로직) =====
+// ===== 지표 계산 =====
 
-function rsi14(prices: number[]): number {
-  const period = 14;
-  const slice = prices.slice(-(period + 1));
-  if (slice.length < period + 1) return 50;
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < slice.length; i++) {
-    const d = slice[i] - slice[i - 1];
-    if (d > 0) gains += d;
-    else losses -= d;
+// ===== 퀀트 코어 (backend/src/quant/{regime,garch}.ts와 동일 로직) — RSI 같은 장난감 지표 대신 =====
+
+function hmmFit(returns: number[], k = 3, maxIters = 80): { states: Array<{ mu: number; sigma: number; label: string }>; current: number[] } {
+  const n = returns.length;
+  const FLOOR = 1e-5;
+  const gauss = (y: number, mu: number, sigma: number) => {
+    const s = Math.max(sigma, FLOOR);
+    const z = (y - mu) / s;
+    return Math.exp(-0.5 * z * z) / (s * Math.sqrt(2 * Math.PI));
+  };
+  const mean = returns.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(returns.reduce((a, r) => a + (r - mean) ** 2, 0) / n);
+  let states = [mean + 0.3 * sd, mean - 0.3 * sd, mean].slice(0, k).map((mu, i) => ({ mu, sigma: Math.max([0.7, 1.0, 2.0][i] * sd, FLOOR) }));
+  let A = Array.from({ length: k }, (_, i) => Array.from({ length: k }, (_, j) => (i === j ? 0.9 : 0.1 / (k - 1))));
+  let pi0 = new Array<number>(k).fill(1 / k);
+  let logLik = -Infinity;
+  const alpha = Array.from({ length: n }, () => new Array<number>(k).fill(0));
+  const beta = Array.from({ length: n }, () => new Array<number>(k).fill(0));
+  const scale = new Array<number>(n).fill(0);
+  for (let it = 0; it < maxIters; it++) {
+    const B = returns.map((y) => states.map((st) => Math.max(gauss(y, st.mu, st.sigma), 1e-300)));
+    let c = 0;
+    for (let i = 0; i < k; i++) { alpha[0][i] = pi0[i] * B[0][i]; c += alpha[0][i]; }
+    scale[0] = c;
+    for (let i = 0; i < k; i++) alpha[0][i] /= c;
+    for (let t = 1; t < n; t++) {
+      c = 0;
+      for (let j = 0; j < k; j++) { let sm = 0; for (let i = 0; i < k; i++) sm += alpha[t - 1][i] * A[i][j]; alpha[t][j] = sm * B[t][j]; c += alpha[t][j]; }
+      scale[t] = c;
+      for (let j = 0; j < k; j++) alpha[t][j] /= c;
+    }
+    const ll = scale.reduce((a, v) => a + Math.log(v), 0);
+    for (let i = 0; i < k; i++) beta[n - 1][i] = 1;
+    for (let t = n - 2; t >= 0; t--) for (let i = 0; i < k; i++) { let sm = 0; for (let j = 0; j < k; j++) sm += A[i][j] * B[t + 1][j] * beta[t + 1][j]; beta[t][i] = sm / scale[t + 1]; }
+    const gammaSum = new Array<number>(k).fill(0), muNum = new Array<number>(k).fill(0), gammaSumNoLast = new Array<number>(k).fill(0);
+    const xiNum = Array.from({ length: k }, () => new Array<number>(k).fill(0));
+    const gamma = Array.from({ length: n }, () => new Array<number>(k).fill(0));
+    for (let t = 0; t < n; t++) {
+      let norm = 0;
+      for (let i = 0; i < k; i++) { gamma[t][i] = alpha[t][i] * beta[t][i]; norm += gamma[t][i]; }
+      for (let i = 0; i < k; i++) { gamma[t][i] /= norm; gammaSum[i] += gamma[t][i]; muNum[i] += gamma[t][i] * returns[t]; if (t < n - 1) gammaSumNoLast[i] += gamma[t][i]; }
+    }
+    for (let t = 0; t < n - 1; t++) for (let i = 0; i < k; i++) for (let j = 0; j < k; j++) xiNum[i][j] += (alpha[t][i] * A[i][j] * B[t + 1][j] * beta[t + 1][j]) / scale[t + 1];
+    pi0 = gamma[0].slice();
+    A = xiNum.map((row, i) => row.map((v) => v / Math.max(gammaSumNoLast[i], 1e-12)));
+    states = states.map((_, i) => {
+      const mu = muNum[i] / Math.max(gammaSum[i], 1e-12);
+      let varr = 0;
+      for (let t = 0; t < n; t++) varr += gamma[t][i] * (returns[t] - mu) ** 2;
+      return { mu, sigma: Math.max(Math.sqrt(varr / Math.max(gammaSum[i], 1e-12)), FLOOR) };
+    });
+    if (Math.abs(ll - logLik) < 1e-7 * Math.abs(ll)) { logLik = ll; break; }
+    logLik = ll;
   }
-  if (losses === 0) return 100;
-  const rs = gains / period / (losses / period);
-  return 100 - 100 / (1 + rs);
+  // 포워드 필터 (예측→관측→갱신) — 마지막 belief
+  let belief = pi0.slice();
+  for (let t = 0; t < n; t++) {
+    const pred = new Array<number>(k).fill(0);
+    if (t === 0) for (let i = 0; i < k; i++) pred[i] = pi0[i];
+    else for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) pred[j] += belief[i] * A[i][j];
+    let norm = 0;
+    const upd = pred.map((p, i) => { const v = p * Math.max(gauss(returns[t], states[i].mu, states[i].sigma), 1e-300); norm += v; return v; });
+    belief = upd.map((v) => v / norm);
+  }
+  const maxSigma = Math.max(...states.map((st) => st.sigma));
+  return {
+    states: states.map((st) => ({ ...st, label: st.sigma === maxSigma && k > 2 ? "고변동" : st.mu >= 0 ? "강세" : "약세" })),
+    current: belief.map((v) => +v.toFixed(4)),
+  };
+}
+
+function garchForecastSigma(returns: number[], maxEvals = 300): { forecastSigma: number; persistence: number } {
+  const n = returns.length;
+  const mean = returns.reduce((a, b) => a + b, 0) / n;
+  const eps = returns.map((r) => r - mean);
+  const uncondVar = eps.reduce((a, e) => a + e * e, 0) / n;
+  const nll = (omega: number, a: number, b: number) => {
+    let v = uncondVar, s = 0;
+    const sig = new Array<number>(n);
+    for (let t = 0; t < n; t++) { if (t > 0) v = omega + a * eps[t - 1] * eps[t - 1] + b * v; v = Math.max(v, 1e-12); sig[t] = v; s += Math.log(v) + (eps[t] * eps[t]) / v; }
+    return { s, lastVar: sig[n - 1] };
+  };
+  let best = { omega: uncondVar * 0.05, alpha: 0.08, beta: 0.88 };
+  let bestNll = nll(best.omega, best.alpha, best.beta).s;
+  let evals = 1, step = 0.5;
+  const clamp = (p: typeof best) => ({ omega: Math.max(1e-12, p.omega), alpha: Math.min(0.5, Math.max(0, p.alpha)), beta: Math.min(0.998, Math.max(0, p.beta)) });
+  while (evals < maxEvals && step > 1e-4) {
+    let improved = false;
+    const moves: Array<(p: typeof best, d: 1 | -1) => typeof best> = [
+      (p, d) => ({ ...p, omega: p.omega * (d === 1 ? 1 + step : 1 / (1 + step)) }),
+      (p, d) => ({ ...p, alpha: p.alpha + d * 0.05 * step }),
+      (p, d) => ({ ...p, beta: p.beta + d * 0.05 * step }),
+    ];
+    for (const mv of moves) for (const d of [1, -1] as const) {
+      const cand = clamp(mv(best, d));
+      if (cand.alpha + cand.beta >= 0.999) continue;
+      const r = nll(cand.omega, cand.alpha, cand.beta).s; evals++;
+      if (r < bestNll - 1e-10) { bestNll = r; best = cand; improved = true; }
+    }
+    if (!improved) step *= 0.5;
+  }
+  const { lastVar } = nll(best.omega, best.alpha, best.beta);
+  const lastEps = eps[n - 1];
+  return { forecastSigma: Math.sqrt(best.omega + best.alpha * lastEps * lastEps + best.beta * lastVar), persistence: +(best.alpha + best.beta).toFixed(3) };
+}
+
+/** 종가열 → 레짐 belief + GARCH σ. 60개 미만이면 null (지어내지 않는다) */
+function regimeView(closes: number[]): { pBull: number; pBear: number; label: string; garchSigmaPct: number; persistence: number } | null {
+  if (closes.length < 61) return null;
+  const rets: number[] = [];
+  for (let i = 1; i < closes.length; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  const r = rets.slice(-200);
+  const hmm = hmmFit(r, 3);
+  const bull = hmm.states.reduce((b, st, i) => (st.mu > hmm.states[b].mu ? i : b), 0);
+  const bear = hmm.states.reduce((b, st, i) => (st.mu < hmm.states[b].mu ? i : b), 0);
+  const g = garchForecastSigma(r);
+  return {
+    pBull: hmm.current[bull],
+    pBear: hmm.current[bear],
+    label: hmm.states[hmm.current.indexOf(Math.max(...hmm.current))].label,
+    garchSigmaPct: +(g.forecastSigma * 100).toFixed(3),
+    persistence: g.persistence,
+  };
 }
 
 function stdevPct(prices: number[]): number {
@@ -183,7 +292,8 @@ async function fetchNews(symbol: string): Promise<ScoredHeadline[]> {
 
 interface Analysis {
   m: MarketData;
-  rsi: number;
+  /** HMM 레짐 belief (없으면 null — 데이터 부족) */
+  regime: { pBull: number; pBear: number; label: string; garchSigmaPct: number; persistence: number } | null;
   momentumPct: number;
   volPct: number;
   techAlpha: number;
@@ -197,14 +307,15 @@ interface Analysis {
 async function analyze(symbol: string): Promise<Analysis | null> {
   const [m, news] = await Promise.all([fetchMarket(symbol), fetchNews(symbol)]);
   if (!m) return null;
-  const rsi = +rsi14(m.closes).toFixed(1);
+  const regime = regimeView(m.closes);
   const momentumPct =
     m.closes.length > 20 ? +(((m.closes[m.closes.length - 1] - m.closes[m.closes.length - 21]) / m.closes[m.closes.length - 21]) * 100).toFixed(2) : 0;
   const volPct = +stdevPct(m.closes.slice(-60)).toFixed(3);
-  const rsiSig = (50 - rsi) / 50;
+  // 기술 알파 = 레짐 belief(강세−약세) + 모멘텀 팩터. RSI 없음.
+  const regimeSig = regime ? regime.pBull - regime.pBear : 0;
   const momSig = Math.tanh(momentumPct / 10);
-  const techAlpha = +Math.tanh(0.6 * rsiSig + 0.4 * momSig).toFixed(3);
-  const techConf = +Math.max(0.1, 1 - Math.min(1, volPct / 5)).toFixed(2);
+  const techAlpha = +Math.tanh(0.6 * regimeSig + 0.4 * momSig).toFixed(3);
+  const techConf = +Math.max(0.1, 1 - Math.min(1, (regime?.garchSigmaPct ?? volPct) / 5)).toFixed(2);
 
   let num = 0;
   let den = 0;
@@ -216,7 +327,7 @@ async function analyze(symbol: string): Promise<Analysis | null> {
   const sentConf = +Math.min(1, den / 3).toFixed(2);
   const wSum = techConf + sentConf;
   const ensemble = wSum > 0 ? +((techAlpha * techConf + sentScore * sentConf) / wSum).toFixed(3) : 0;
-  return { m, rsi, momentumPct, volPct, techAlpha, techConf, news, sentScore, sentConf, ensemble };
+  return { m, regime, momentumPct, volPct, techAlpha, techConf, news, sentScore, sentConf, ensemble };
 }
 
 async function analyzeQuery(query: string): Promise<{ analyses: Analysis[]; skipped: string[] }> {
@@ -259,7 +370,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "us_market_report",
     description:
-      "Full analyst report for the US tickers in the query (default NVDA/AAPL/TSLA/MSFT): live price, RSI(14), 20-day momentum, volatility, news sentiment with evidence words, and a blended alpha per symbol. Every number is computed from live Yahoo Finance and Google News data at call time; symbols without data are skipped, never invented.",
+      "Full analyst report for the US tickers in the query (default NVDA/AAPL/TSLA/MSFT): live price, HMM regime belief (P(bull)/P(bear), filtered), GARCH next-day volatility, 20-day momentum factor, news sentiment with evidence words, and a blended alpha per symbol — no RSI-style indicators. Every number is computed from live Yahoo Finance and Google News data at call time; symbols without data are skipped, never invented.",
     inputSchema: QUERY_SCHEMA("Free text naming US tickers, e.g. 'NVDA TSLA outlook'"),
     handler: async (query) => {
       const { analyses, skipped } = await analyzeQuery(query);
@@ -270,7 +381,8 @@ const TOOLS: ToolDef[] = [
           .map((h) => `    · [${labelOf(h.score)} ${signed(h.score)}] "${h.title.slice(0, 90)}" (${h.source})${h.hits.length ? ` evidence: ${h.hits.join(",")}` : ""}`);
         return [
           `## ${a.m.symbol} — ${fmt(a.m.price)} (${signed(+a.m.changePct.toFixed(2))}% vs prev close)`,
-          `  technicals: RSI14=${a.rsi} momentum20d=${signed(a.momentumPct)}% vol(daily)=${a.volPct}% → techAlpha=${signed(a.techAlpha)} (conf ${a.techConf})`,
+          `  regime (HMM 3-state, filtered): P(bull)=${a.regime?.pBull ?? "n/a"} P(bear)=${a.regime?.pBear ?? "n/a"} [${a.regime?.label ?? "insufficient data"}] · GARCH σ_next=${a.regime?.garchSigmaPct ?? "n/a"}%/d (persistence ${a.regime?.persistence ?? "n/a"})`,
+          `  factors: momentum20d=${signed(a.momentumPct)}% realizedVol(daily)=${a.volPct}% → techAlpha=${signed(a.techAlpha)} (conf ${a.techConf})`,
           `  sentiment: ${labelOf(a.sentScore)} ${signed(a.sentScore)} from ${a.news.length} scored headlines (conf ${a.sentConf})`,
           ...newsLines,
           `  blended alpha: ${signed(a.ensemble)} — ${a.ensemble > 0.1 ? "constructive" : a.ensemble < -0.1 ? "cautious" : "neutral"}`,
@@ -326,14 +438,14 @@ const TOOLS: ToolDef[] = [
         .sort((x, y) => y.ensemble - x.ensemble)
         .map((a) => {
           const target = a.ensemble > 0.05 && sumPos > 0 ? Math.min(CAP, (a.ensemble / sumPos) * Math.min(100, CAP * positive.length)) : 0;
-          return `  ${a.m.symbol}: target ${target.toFixed(1)}% — alpha ${signed(a.ensemble)} (tech ${signed(a.techAlpha)}·${a.techConf}, sent ${signed(a.sentScore)}·${a.sentConf}), RSI ${a.rsi}, mom20d ${signed(a.momentumPct)}%`;
+          return `  ${a.m.symbol}: target ${target.toFixed(1)}% — alpha ${signed(a.ensemble)} (tech ${signed(a.techAlpha)}·${a.techConf}, sent ${signed(a.sentScore)}·${a.sentConf}), P(bull) ${a.regime?.pBull ?? "n/a"}, GARCH σ ${a.regime?.garchSigmaPct ?? "n/a"}%/d, mom20d ${signed(a.momentumPct)}%`;
         });
       const cash = 100 - analyses.reduce((acc, a) => acc + (a.ensemble > 0.05 && sumPos > 0 ? Math.min(CAP, (a.ensemble / sumPos) * Math.min(100, CAP * positive.length)) : 0), 0);
       return [
         `# Rebalance DRAFT (proposal only — no order capability exists in this worker)`,
         ...rows,
         `  cash / unallocated: ${Math.max(0, cash).toFixed(1)}%`,
-        `method: weights ∝ positive blended alpha, ${CAP}% per-symbol cap; alpha = confidence-weighted blend of RSI-reversion+momentum technicals and lexicon news sentiment.`,
+        `method: weights ∝ positive blended alpha, ${CAP}% per-symbol cap; alpha = confidence-weighted blend of HMM regime belief + momentum factor (no RSI) and lexicon news sentiment.`,
         metaLine(skipped),
       ].join("\n");
     },
@@ -414,33 +526,6 @@ function rvAt(closes: number[], end: number, period: number): number {
 }
 
 const CRYPTO_SIGNALS: Array<{ id: string; name: string; position: (cs: UpbitCandle[], i: number) => 0 | 1 }> = [
-  {
-    id: "vol-spike-reversion",
-    name: "Volume-spike mean reversion",
-    position: (cs, i) => {
-      for (let k = Math.max(0, i - 2); k <= i; k++) {
-        if (k < 20) continue;
-        const vAvg = maAt(cs.map((c) => c.v), k, 20);
-        if (!Number.isNaN(vAvg) && cs[k].v > vAvg * 2 && cs[k].c < cs[k].o) return 1;
-      }
-      return 0;
-    },
-  },
-  {
-    id: "rsi-reversion",
-    name: "RSI mean reversion (30/55)",
-    position: (cs, i) => {
-      const closes = cs.map((c) => c.c);
-      let held: 0 | 1 = 0;
-      for (let k = 14; k <= i; k++) {
-        const slice = closes.slice(0, k + 1);
-        const r = rsi14(slice);
-        if (held === 0 && r < 30) held = 1;
-        else if (held === 1 && r > 55) held = 0;
-      }
-      return held;
-    },
-  },
   {
     id: "momentum-20",
     name: "20-day momentum trend",
@@ -528,7 +613,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
   {
     name: "upbit_market_report",
     description:
-      "Crypto analyst report for the coins in the query (default BTC/ETH): live Upbit price, trend read vs MA20, 30-day support/resistance levels with the exact price AND date they printed, momentum call, RSI(14), volatility — all from real daily candles — plus lexicon-scored crypto news headlines each cited with date and source. Nothing invented.",
+      "Crypto analyst report for the coins in the query (default BTC/ETH): live Upbit price, trend read vs MA20, 30-day support/resistance levels with the exact price AND date they printed, momentum call, HMM regime belief (P(bull)/P(bear)) and GARCH next-day volatility — all from real daily candles, no RSI-style indicators — plus lexicon-scored crypto news headlines each cited with date and source. Nothing invented.",
     inputSchema: QUERY_SCHEMA("Free text naming coins, e.g. 'BTC SOL outlook'"),
     handler: async (query) => {
       const coins = extractCoins(query).slice(0, 3);
@@ -545,7 +630,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
           ]);
           if (candles.length < 21 || tickers.length === 0) return `## ${market} — no data (skipped, not invented)`;
           const closes = candles.map((c) => c.c);
-          const rsi = +rsi14(closes).toFixed(1);
+          const rg = regimeView(closes);
           const mom = +(((closes[closes.length - 1] - closes[closes.length - 21]) / closes[closes.length - 21]) * 100).toFixed(2);
           const vol = +stdevPct(closes.slice(-60)).toFixed(3);
           // 지지/저항: 최근 30일 실캔들의 최저 저가/최고 고가 — 가격과 그 날짜를 그대로 인용
@@ -581,7 +666,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
             `  trend: close ₩${lastC.c.toLocaleString()} (${lastC.t}) is ${lastC.c > ma20 ? "ABOVE" : "BELOW"} MA20 ₩${Math.round(ma20).toLocaleString()} → ${lastC.c > ma20 ? "uptrend bias" : "downtrend bias"}`,
             `  support (30d low): ₩${sup.l.toLocaleString()} printed ${sup.t} · resistance (30d high): ₩${res30.h.toLocaleString()} printed ${res30.t}`,
             `  momentum call: ${mom >= 0 ? "positive" : "negative"} — close moved ₩${from.c.toLocaleString()} (${from.t}) → ₩${lastC.c.toLocaleString()} (${lastC.t}), ${signed(mom)}% over 20 sessions`,
-            `  technicals: RSI14=${rsi} vol(daily)=${vol}%`,
+            `  regime (HMM 3-state, filtered on ${Math.min(200, closes.length - 1)} daily returns): P(bull)=${rg?.pBull ?? "n/a"} P(bear)=${rg?.pBear ?? "n/a"} [${rg?.label ?? "insufficient data"}] · GARCH σ_next=${rg?.garchSigmaPct ?? "n/a"}%/d (persistence ${rg?.persistence ?? "n/a"}) · realizedVol(daily)=${vol}%`,
             `  news sentiment: ${labelOf(agg)} ${signed(agg)} (${heads.length} headlines${heads.length === 0 ? " — nothing material found in a genuine Google News search" : ""})`,
             ...heads,
           ].join("\n");
@@ -593,7 +678,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
   {
     name: "upbit_rebalance_draft",
     description:
-      "DRAFT portfolio weights across the coins in the query (never an order — no account/order capability): target weight per coin proportional to a confidence-weighted blend of RSI-reversion + 20d-momentum technicals and dated news sentiment, 40% per-coin cap, remainder in cash. Every weight cites the exact technical and sentiment numbers (with dates) it is derived from. Real Upbit candles + Google News at call time.",
+      "DRAFT portfolio weights across the coins in the query (never an order — no account/order capability): target weight per coin proportional to a confidence-weighted blend of HMM regime belief + 20d momentum factor (GARCH-volatility confidence, no RSI) and dated news sentiment, 40% per-coin cap, remainder in cash. Every weight cites the exact technical and sentiment numbers (with dates) it is derived from. Real Upbit candles + Google News at call time.",
     inputSchema: QUERY_SCHEMA("Coins to weigh, e.g. 'BTC ETH SOL'"),
     handler: async (query) => {
       const coins = extractCoins(query).slice(0, 5);
@@ -609,13 +694,13 @@ const CRYPTO_TOOLS: ToolDef[] = [
           ]);
           if (candles.length < 21) return null;
           const closes = candles.map((c) => c.c);
-          const rsi = +rsi14(closes).toFixed(1);
+          const rg = regimeView(closes);
           const mom = +(((closes[closes.length - 1] - closes[closes.length - 21]) / closes[closes.length - 21]) * 100).toFixed(2);
           const vol = +stdevPct(closes.slice(-60)).toFixed(3);
-          const rsiSig = (50 - rsi) / 50;
+          const regimeSig = rg ? rg.pBull - rg.pBear : 0;
           const momSig = Math.tanh(mom / 10);
-          const techAlpha = +Math.tanh(0.6 * rsiSig + 0.4 * momSig).toFixed(3);
-          const techConf = +Math.max(0.1, 1 - Math.min(1, vol / 5)).toFixed(2);
+          const techAlpha = +Math.tanh(0.6 * regimeSig + 0.4 * momSig).toFixed(3);
+          const techConf = +Math.max(0.1, 1 - Math.min(1, (rg?.garchSigmaPct ?? vol) / 5)).toFixed(2);
           let sSum = 0;
           let sDen = 0;
           let headCount = 0;
@@ -635,7 +720,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
           const alpha = wSum > 0 ? +((techAlpha * techConf + sent * sentConf) / wSum).toFixed(3) : 0;
           const lastC = candles[candles.length - 1];
           const from = candles[candles.length - 21];
-          return { market, alpha, techAlpha, techConf, sent, sentConf, rsi, mom, lastC, from, headCount };
+          return { market, alpha, techAlpha, techConf, sent, sentConf, rg, mom, lastC, from, headCount };
         }),
       );
       const ok = rows.filter((r): r is NonNullable<typeof r> => r !== null);
@@ -650,7 +735,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
           const target = r.alpha > 0.05 && sumPos > 0 ? Math.min(CAP, (r.alpha / sumPos) * Math.min(100, CAP * positive.length)) : 0;
           return [
             `  ${r.market}: target ${target.toFixed(1)}% — blended alpha ${signed(r.alpha)}`,
-            `    based on CHART: RSI14=${r.rsi}, momentum ₩${r.from.c.toLocaleString()} (${r.from.t}) → ₩${r.lastC.c.toLocaleString()} (${r.lastC.t}) = ${signed(r.mom)}% → techAlpha ${signed(r.techAlpha)} (conf ${r.techConf})`,
+            `    based on CHART: HMM P(bull)=${r.rg?.pBull ?? "n/a"} P(bear)=${r.rg?.pBear ?? "n/a"} [${r.rg?.label ?? "n/a"}], GARCH σ_next=${r.rg?.garchSigmaPct ?? "n/a"}%/d, momentum ₩${r.from.c.toLocaleString()} (${r.from.t}) → ₩${r.lastC.c.toLocaleString()} (${r.lastC.t}) = ${signed(r.mom)}% → techAlpha ${signed(r.techAlpha)} (conf ${r.techConf})`,
             `    based on NEWS: sentiment ${labelOf(r.sent)} ${signed(r.sent)} from ${r.headCount} scored headlines (conf ${r.sentConf})`,
           ].join("\n");
         });
@@ -659,7 +744,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
         `# Crypto rebalance DRAFT (proposal only — no order capability exists in this worker)`,
         ...lines,
         `  cash / unallocated: ${Math.max(0, 100 - alloc).toFixed(1)}%`,
-        `method: weights ∝ positive blended alpha (chart techAlpha + news sentiment, confidence-weighted), ${CAP}% per-coin cap.`,
+        `method: weights ∝ positive blended alpha (HMM regime + momentum factor techAlpha, GARCH-vol confidence; + news sentiment), ${CAP}% per-coin cap. No RSI.`,
         `[data] Upbit public API + Google News RSS · ts=${new Date().toISOString()}`,
       ].join("\n");
     },
@@ -667,7 +752,7 @@ const CRYPTO_TOOLS: ToolDef[] = [
   {
     name: "upbit_backtest_report",
     description:
-      "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: vol-spike-reversion, rsi-reversion, momentum-20, vol-regime. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead; fee 0.05% + slippage 0.05% per side included.",
+      "Run a REAL backtest on live Upbit daily candles (365d) and report annualized return vs buy&hold, Sharpe, max drawdown, win rate, trades per signal. Signals: momentum-20, vol-regime (regime/HMM signal lives in the backend backtest). No RSI-style indicators. Convention: signal at close t applies to t+1 return; long/cash only, no lookahead; fee 0.05% + slippage 0.05% per side included.",
     inputSchema: QUERY_SCHEMA("e.g. 'KRW-ETH momentum-20' or 'BTC all signals'"),
     handler: async (query) => {
       const coin = extractCoins(query)[0];
@@ -735,7 +820,7 @@ export default async function handler(req: any, res: any) {
         rpcResult(msg.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: {} },
-          serverInfo: { name: "us-trading-mcp-worker", version: "1.3.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
+          serverInfo: { name: "us-trading-mcp-worker", version: "1.4.0", title: "US Trading Desk — read-only analyst (stocks + crypto)" },
         }),
       );
     case "notifications/initialized":

@@ -1,5 +1,7 @@
 import { DEFAULT_COSTS, type BtCandle, type TradingCosts } from "@/lib/crypto/backtest";
 import { backtestStats, type BacktestStats } from "@/lib/quant/stats";
+import { fitHmm } from "@/lib/quant/regime";
+import { fitGarch } from "@/lib/quant/garch";
 
 /**
  * 알트코인 스캐너 — 업비트 KRW 전 마켓을 훑어 비용 차감 후 위험조정 점수로
@@ -25,25 +27,15 @@ export interface CoinScore {
   mom60Pct: number;
   /** 20일 실현변동성 (일간, %) */
   vol20Pct: number;
-  rsi14: number;
-  /** 종가 > MA20 — 추세 필터 */
-  aboveMa20: boolean;
+  /** HMM(3상태) 포워드 필터 — 지금 강세 레짐일 확률 P(Z_t=강세 | Y_1:t) */
+  pBull: number;
+  /** 현재 belief가 가장 큰 레짐의 사후 라벨 */
+  regime: string;
+  /** GARCH(1,1) 익일 σ 예측 (일간, %) — 역변동성 가중의 분모 */
+  garchSigmaPct: number;
   /** 위험조정 모멘텀 = mom20 / vol20 — 랭킹의 기준 점수 */
   score: number;
   days: number;
-}
-
-function rsiOf(closes: number[], period = 14): number {
-  if (closes.length < period + 1) return 50;
-  let gains = 0;
-  let losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const d = closes[i] - closes[i - 1];
-    if (d > 0) gains += d;
-    else losses -= d;
-  }
-  if (losses === 0) return 100;
-  return 100 - 100 / (1 + gains / period / (losses / period));
 }
 
 function realizedVolPct(closes: number[], period: number): number {
@@ -64,7 +56,21 @@ export function scoreCoin(market: string, candles: BtCandle[], valueKrw24h: numb
   const mom60 = (last / closes[n - 61] - 1) * 100;
   const vol20 = realizedVolPct(closes, 20);
   if (!Number.isFinite(vol20) || vol20 <= 0) return null;
-  const ma20 = closes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+  // 레짐 belief + 조건부 변동성 — 지표가 아니라 모델. 실패하면 null (지어내지 않는다)
+  const rets: number[] = [];
+  for (let i = 1; i < n; i++) rets.push(Math.log(closes[i] / closes[i - 1]));
+  let pBull = 0;
+  let regime = "?";
+  let garchSigmaPct = vol20;
+  try {
+    const hmm = fitHmm(rets.slice(-200), 3);
+    const bull = hmm.states.reduce((b, st, i) => (st.mu > hmm.states[b].mu ? i : b), 0);
+    pBull = hmm.current[bull];
+    regime = hmm.states[hmm.current.indexOf(Math.max(...hmm.current))].label;
+    garchSigmaPct = fitGarch(rets.slice(-200)).forecastSigma * 100;
+  } catch {
+    return null;
+  }
   return {
     market,
     priceKrw: last,
@@ -72,8 +78,9 @@ export function scoreCoin(market: string, candles: BtCandle[], valueKrw24h: numb
     mom20Pct: +mom20.toFixed(2),
     mom60Pct: +mom60.toFixed(2),
     vol20Pct: +vol20.toFixed(3),
-    rsi14: +rsiOf(closes).toFixed(1),
-    aboveMa20: last > ma20,
+    pBull: +pBull.toFixed(3),
+    regime,
+    garchSigmaPct: +garchSigmaPct.toFixed(3),
     score: +(mom20 / vol20).toFixed(3),
     days: n,
   };
@@ -95,8 +102,8 @@ export interface ScannerPortfolio {
 export const SCANNER_DEFAULTS = { topK: 5, capPct: 25 };
 
 /**
- * 상위 K 로테이션 타깃: 추세 필터(MA20 위) + 양(+)의 위험조정 모멘텀만,
- * 비중은 역변동성(1/vol) 가중 + 코인당 상한. 나머지는 현금 —
+ * 상위 K 로테이션 타깃: 레짐 필터(HMM P(강세) ≥ 0.5) + 양(+)의 위험조정 모멘텀만,
+ * 비중은 GARCH 예측변동성의 역수 가중 + 코인당 상한. 나머지는 현금 —
  * 자격 있는 코인이 없으면 100% 현금이 정답이고, 그걸 그대로 반환한다.
  */
 export function buildTargets(
@@ -106,22 +113,22 @@ export function buildTargets(
   const topK = opts.topK ?? SCANNER_DEFAULTS.topK;
   const capPct = opts.capPct ?? SCANNER_DEFAULTS.capPct;
   const eligible = scores
-    .filter((s) => s.aboveMa20 && s.score > 0)
+    .filter((s) => s.pBull >= 0.5 && s.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
-  const invVolSum = eligible.reduce((a, s) => a + 1 / s.vol20Pct, 0);
+  const invVolSum = eligible.reduce((a, s) => a + 1 / Math.max(s.garchSigmaPct, 1e-6), 0);
   const budget = Math.min(100, capPct * eligible.length);
   let targets = eligible.map((s) => ({
     market: s.market,
-    weightPct: invVolSum > 0 ? Math.min(capPct, ((1 / s.vol20Pct) / invVolSum) * budget) : 0,
-    why: `score ${s.score} (mom20 ${s.mom20Pct >= 0 ? "+" : ""}${s.mom20Pct}% / vol20 ${s.vol20Pct}%) · RSI ${s.rsi14} · MA20 위`,
+    weightPct: invVolSum > 0 ? Math.min(capPct, ((1 / Math.max(s.garchSigmaPct, 1e-6)) / invVolSum) * budget) : 0,
+    why: `score ${s.score} (mom20 ${s.mom20Pct >= 0 ? "+" : ""}${s.mom20Pct}% / vol20 ${s.vol20Pct}%) · P(강세)=${s.pBull} [${s.regime}] · GARCH σ=${s.garchSigmaPct}%/d`,
   }));
   targets = targets.map((t) => ({ ...t, weightPct: +t.weightPct.toFixed(1) }));
   const alloc = targets.reduce((a, t) => a + t.weightPct, 0);
   return {
     targets,
     cashPct: +(100 - alloc).toFixed(1),
-    method: `추세 필터(종가>MA20) + 위험조정 모멘텀(mom20/vol20) 상위 ${topK} · 역변동성 가중 · 코인당 ${capPct}% 상한 · 자격 없으면 현금`,
+    method: `레짐 필터(HMM P(강세)≥0.5) + 위험조정 모멘텀(mom20/vol20) 상위 ${topK} · GARCH 예측변동성 역수 가중 · 코인당 ${capPct}% 상한 · 자격 없으면 현금`,
   };
 }
 

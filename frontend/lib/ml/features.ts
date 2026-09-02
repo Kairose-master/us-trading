@@ -1,5 +1,4 @@
 import type { CryptoCandle as BtCandle } from "@/lib/crypto/upbit";
-import { rsiAt } from "@/lib/crypto/backtest";
 
 /**
  * ML 피처 추출 — 순수 함수 (릴3 "Model Lab"의 데이터 준비부).
@@ -9,7 +8,6 @@ import { rsiAt } from "@/lib/crypto/backtest";
 
 export const FEATURE_NAMES = [
   "bias",
-  "rsi14",       // (rsi-50)/50 → [-1,1]
   "mom5",        // 5일 수익률 tanh 스케일
   "mom20",       // 20일 수익률 tanh 스케일
   "volRatio",    // 단기/장기 실현변동성 비율 - 1
@@ -34,7 +32,6 @@ export function featuresAt(candles: BtCandle[], i: number): FeatureVector | null
   const closes = candles.map((c) => c.c);
   const c = candles[i];
 
-  const rsi = (rsiAt(closes, i) - 50) / 50;
   const mom5 = Math.tanh(((closes[i] - closes[i - 5]) / closes[i - 5]) * 10);
   const mom20 = Math.tanh(((closes[i] - closes[i - 20]) / closes[i - 20]) * 5);
 
@@ -53,7 +50,7 @@ export function featuresAt(candles: BtCandle[], i: number): FeatureVector | null
   const range = c.c > 0 ? Math.min(1, (c.h - c.l) / c.c) : 0;
   const closePos = c.h > c.l ? ((c.c - c.l) / (c.h - c.l)) * 2 - 1 : 0;
 
-  return [1, rsi, mom5, mom20, volRatio, volumeZ, range, closePos];
+  return [1, mom5, mom20, volRatio, volumeZ, range, closePos];
 }
 
 export interface Dataset {

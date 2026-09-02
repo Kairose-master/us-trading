@@ -6,7 +6,6 @@ import { router } from "./api/routes.js";
 import { attachWsRelay } from "./api/wsRelay.js";
 import { state } from "./api/state.js";
 import { engine, type StrategyContext } from "./strategy/engine.js";
-import { RsiReversal } from "./strategy/strategies/rsiReversal.js";
 import { OuMeanReversion } from "./strategy/strategies/ouMeanReversion.js";
 import { riskManager } from "./risk/riskManager.js";
 import { kisWs } from "./kis/ws.js";
@@ -44,16 +43,6 @@ const server = http.createServer(app);
 attachWsRelay(server);
 
 // ===== 전략 엔진 배선 =====
-const rsi = new RsiReversal({
-  entryRule: "RSI(14) < 30 매수 / > 70 매도",
-  stopLossPct: 5,
-  takeProfitPct: 10,
-  maxPositions: 3,
-  maxAmountPerSymbolUsd: 500,
-  allowedSession: "regular",
-});
-engine.register(rsi);
-
 const ou = new OuMeanReversion({
   entryRule: "OU-HJB 자유경계: x ≤ x* 매수 / x ≥ x** 청산",
   stopLossPct: 5,

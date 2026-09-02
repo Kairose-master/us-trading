@@ -49,8 +49,8 @@ export const NODE_DEFS: PipelineNodeDef[] = [
     id: "technical",
     stage: "features",
     name: "기술적 지표",
-    description: "틱 히스토리에서 RSI(14), 20틱 모멘텀, 수익률 표준편차(변동성)를 계산한다.",
-    codeHint: `rsi14(prices); stdev(logReturns) * 100`,
+    description: "틱 히스토리에서 20틱 모멘텀과 수익률 표준편차(실현변동성)를 계산한다. RSI 같은 장난감 지표는 쓰지 않는다.",
+    codeHint: `momentum = p[t]/p[t-20]-1; stdev(logReturns) * 100`,
   },
   {
     id: "microstructure",
@@ -70,8 +70,8 @@ export const NODE_DEFS: PipelineNodeDef[] = [
     id: "alpha-technical",
     stage: "models",
     name: "기술 알파",
-    description: "RSI 평균회귀 + 모멘텀 + 주문흐름의 tanh 앙상블 → [-1,1] 알파. 변동성이 높을수록 신뢰도 하향.",
-    codeHint: `tanh(0.6*rsiSig + 0.3*mom + 0.3*flow)`,
+    description: "모멘텀 팩터 + 주문흐름 불균형의 tanh 블렌드 → [-1,1] 알파. 변동성이 높을수록 신뢰도 하향. 이것은 피처이지 결정이 아니다 — 결정은 오피스가 한다.",
+    codeHint: `tanh(0.6*mom + 0.4*flow)`,
   },
   {
     id: "alpha-sentiment",
@@ -192,22 +192,6 @@ class NodeRuntime {
 
 // ===== 순수 계산 함수 =====
 
-export function rsi14(prices: number[]): number {
-  const period = 14;
-  const slice = prices.slice(-(period + 1));
-  if (slice.length < period + 1) return 50;
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i < slice.length; i++) {
-    const d = slice[i] - slice[i - 1];
-    if (d > 0) gains += d;
-    else losses -= d;
-  }
-  if (losses === 0) return 100;
-  const rs = gains / period / (losses / period);
-  return 100 - 100 / (1 + rs);
-}
-
 function stdevPct(prices: number[]): number {
   if (prices.length < 3) return 0;
   const rets: number[] = [];
@@ -300,7 +284,6 @@ export class PipelineEngine extends EventEmitter {
       const mom = arr.length > 20 ? ((arr[arr.length - 1] - arr[arr.length - 21]) / arr[arr.length - 21]) * 100 : 0;
       return {
         symbol: q.symbol,
-        rsi14: +rsi14(arr).toFixed(1),
         momentumPct: +mom.toFixed(3),
         volatilityPct: +stdevPct(arr.slice(-60)).toFixed(4),
         ts,
@@ -308,8 +291,8 @@ export class PipelineEngine extends EventEmitter {
     });
     this.techFeatures.set(q.symbol, tech);
     techNode.pushSample(
-      ["ts", "symbol", "rsi14", "momentum%", "vol%"],
-      [ts.slice(11, 19), q.symbol, tech.rsi14, tech.momentumPct, tech.volatilityPct],
+      ["ts", "symbol", "momentum%", "vol%"],
+      [ts.slice(11, 19), q.symbol, tech.momentumPct, tech.volatilityPct],
     );
 
     // FEATURES: microstructure
@@ -337,10 +320,9 @@ export class PipelineEngine extends EventEmitter {
     // MODELS: alpha-technical
     const aTechNode = this.nodes.get("alpha-technical")!;
     const aTech = aTechNode.run<AlphaValue>(() => {
-      const rsiSig = (50 - tech.rsi14) / 50; // 과매도 → +
       const momSig = Math.tanh(tech.momentumPct / 2);
       const flowSig = micro.orderFlowImbalance;
-      const alpha = Math.tanh(0.6 * rsiSig + 0.3 * momSig + 0.3 * flowSig);
+      const alpha = Math.tanh(0.6 * momSig + 0.4 * flowSig);
       const conf = Math.max(0.1, 1 - Math.min(1, tech.volatilityPct * 2));
       return { symbol: q.symbol, alpha: +alpha.toFixed(3), confidence: +conf.toFixed(2), source: "technical", ts };
     });

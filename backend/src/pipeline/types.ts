@@ -84,7 +84,6 @@ export interface PipelineTick {
 
 export interface TechnicalFeatures {
   symbol: string;
-  rsi14: number;
   momentumPct: number;
   volatilityPct: number;
   ts: string;
