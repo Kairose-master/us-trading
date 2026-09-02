@@ -19,7 +19,7 @@ import { cryptoDesk } from "./crypto/desk.js";
 import { scannerServer } from "./crypto/scanner-server.js";
 
 const app = express();
-app.use(cors({ origin: ["http://localhost:3000"], credentials: false }));
+app.use(cors({ origin: config.corsOrigins, credentials: false }));
 app.use(express.json());
 
 // 프론트-백엔드 간 간단 토큰 인증 (개인용)

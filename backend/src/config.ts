@@ -12,6 +12,8 @@ const Env = z.object({
     .default("true")
     .transform((v) => v === "true"),
   API_AUTH_TOKEN: z.string().default("dev-token"),
+  // 허용 CORS 오리진 (콤마 구분). 배포 시 대시보드 도메인을 추가할 것.
+  CORS_ORIGINS: z.string().default("http://localhost:3000"),
   // ===== 자동매매 (전부 기본 OFF) =====
   AUTO_TRADE: z
     .string()
@@ -70,6 +72,9 @@ export const config = {
   },
   get acntPrdtCd() {
     return env.KIS_ACCOUNT_NO.split("-")[1] ?? "01";
+  },
+  get corsOrigins() {
+    return env.CORS_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean);
   },
   /** MCP 엔드포인트 인증 토큰 — 전용 토큰이 없으면 API 토큰 재사용 */
   get mcpAuthToken() {
