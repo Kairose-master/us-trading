@@ -1,6 +1,6 @@
 {
   "name": "us-trading-mcp-worker",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "private": true,
   "description": "Read-only market-analysis MCP worker for Handsel offices — US stocks + Upbit crypto, no account/order capability"
 }

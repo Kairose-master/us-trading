@@ -26,10 +26,18 @@ export interface LocalDeliberation { output: string; steps: LocalStep[]; rounds:
 const MAX_REVIEW_ROUNDS = 2;
 const sym = (m: string) => m.replace("KRW-", "");
 
-async function tool(role: OfficeRole, query: string): Promise<{ text: string; ms: number }> {
+/** 워커 보고서가 "데이터 없음"으로 돌아오면(대개 Upbit 429 버스트) 1.5초 뒤 한 번 더 — 재시도해도 없으면 그대로 실패로 기록 */
+const NO_DATA = /Need at least 2 coins[^\n]*got 0|캔들 부족|no data \(skipped, not invented\)\s*$|no order-book\/trade data/m;
+async function tool(role: OfficeRole, query: string): Promise<{ text: string; ms: number; retried: boolean }> {
   const t0 = Date.now();
-  const text = await mcpCall("worker", role.tool!, { query }, 90_000);
-  return { text, ms: Date.now() - t0 };
+  let text = await mcpCall("worker", role.tool!, { query }, 90_000);
+  let retried = false;
+  if (NO_DATA.test(text) && !/^## KRW-[A-Z0-9]+ — [^\n]*(₩|headlines|mid ₩|returns)/m.test(text)) {
+    await new Promise((r) => setTimeout(r, 1500));
+    text = await mcpCall("worker", role.tool!, { query }, 90_000);
+    retried = true;
+  }
+  return { text, ms: Date.now() - t0, retried };
 }
 
 /** 보고서에 실데이터 섹션이 있는가 — 기계적 수락 조건 */

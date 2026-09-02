@@ -23,6 +23,37 @@ const DEFAULT_SYMBOLS = ["NVDA", "AAPL", "TSLA", "MSFT"];
 const MAX_SYMBOLS = 4;
 const FETCH_TIMEOUT_MS = 6000;
 
+// ===== Upbit 호출 예산 — 한 툴 호출이 코인 5개 × 캔들·호가·체결을 한꺼번에 두드리면 Upbit가 429를 낸다.
+// 인스턴스 하나에 초당 8회 토큰 버킷 + 429/5xx 재시도(300→700→1500ms). 실패는 여전히 실패다 — 지어내지 않는다.
+const UPBIT_RATE_PER_SEC = 8;
+let upbitTokens = UPBIT_RATE_PER_SEC;
+let upbitRefillAt = Date.now();
+async function upbitAcquire(): Promise<void> {
+  for (;;) {
+    const now = Date.now();
+    const elapsed = (now - upbitRefillAt) / 1000;
+    if (elapsed > 0) { upbitTokens = Math.min(UPBIT_RATE_PER_SEC, upbitTokens + elapsed * UPBIT_RATE_PER_SEC); upbitRefillAt = now; }
+    if (upbitTokens >= 1) { upbitTokens -= 1; return; }
+    await new Promise((r) => setTimeout(r, Math.ceil(((1 - upbitTokens) / UPBIT_RATE_PER_SEC) * 1000)));
+  }
+}
+async function upbitFetch(url: string): Promise<Response> {
+  const waits = [300, 700, 1500];
+  let last: Response | null = null;
+  for (let attempt = 0; attempt <= waits.length; attempt++) {
+    await upbitAcquire();
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+      if (res.status !== 429 && res.status < 500) return res;
+      last = res;
+    } catch (e) {
+      if (attempt === waits.length) throw e;
+    }
+    if (attempt < waits.length) await new Promise((r) => setTimeout(r, waits[attempt]));
+  }
+  return last!;
+}
+
 // ===== 렉시콘 채점 (backend/src/sentiment/scorer.ts와 동일 로직) =====
 
 const POSITIVE: Record<string, number> = {
@@ -464,7 +495,7 @@ let krwUniverse: { at: number; coins: Set<string> } | null = null;
 async function upbitKrwUniverse(): Promise<Set<string>> {
   if (krwUniverse && Date.now() - krwUniverse.at < 10 * 60_000) return krwUniverse.coins;
   try {
-    const res = await fetch("https://api.upbit.com/v1/market/all?is_details=false", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await upbitFetch("https://api.upbit.com/v1/market/all?is_details=false");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = (await res.json()) as Array<{ market: string }>;
     const coins = new Set(rows.map((r) => r.market).filter((m) => m.startsWith("KRW-")).map((m) => m.slice(4)));
@@ -495,9 +526,7 @@ interface UpbitCandle {
 
 async function upbitTickers(coins: string[]): Promise<Array<{ market: string; price: number; changePct: number; high: number; low: number; vol24h: number }>> {
   const markets = coins.map((c) => `KRW-${c}`).join(",");
-  const res = await fetch(`https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets)}`, {
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  const res = await upbitFetch(`https://api.upbit.com/v1/ticker?markets=${encodeURIComponent(markets)}`);
   if (!res.ok) return [];
   const data = (await res.json()) as Array<{ market: string; trade_price: number; signed_change_rate: number; high_price: number; low_price: number; acc_trade_volume_24h: number }>;
   return data.map((t) => ({
@@ -516,9 +545,7 @@ async function upbitDayCandles(market: string, n: number): Promise<UpbitCandle[]
   while (out.length < n) {
     const count = Math.min(200, n - out.length);
     const toParam: string = to ? `&to=${encodeURIComponent(to)}` : "";
-    const res = await fetch(`https://api.upbit.com/v1/candles/days?market=${market}&count=${count}${toParam}`, {
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+    const res = await upbitFetch(`https://api.upbit.com/v1/candles/days?market=${market}&count=${count}${toParam}`);
     if (!res.ok) break;
     const batch = (await res.json()) as Array<{ candle_date_time_utc: string; opening_price: number; high_price: number; low_price: number; trade_price: number; candle_acc_trade_volume: number }>;
     if (batch.length === 0) break;
@@ -868,10 +895,10 @@ const CRYPTO_TOOLS: ToolDef[] = [
         coins.map(async (coin) => {
           const market = `KRW-${coin}`;
           const [ob, trades, candles] = await Promise.all([
-            fetch(`https://api.upbit.com/v1/orderbook?markets=${market}`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+            upbitFetch(`https://api.upbit.com/v1/orderbook?markets=${market}`)
               .then((r) => (r.ok ? r.json() : null))
               .catch(() => null) as Promise<Array<{ total_bid_size: number; total_ask_size: number; orderbook_units: Array<{ ask_price: number; bid_price: number; ask_size: number; bid_size: number }> }> | null>,
-            fetch(`https://api.upbit.com/v1/trades/ticks?market=${market}&count=200`, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+            upbitFetch(`https://api.upbit.com/v1/trades/ticks?market=${market}&count=200`)
               .then((r) => (r.ok ? r.json() : null))
               .catch(() => null) as Promise<Array<{ trade_price: number; trade_volume: number; ask_bid: "ASK" | "BID"; timestamp: number }> | null>,
             upbitDayCandles(market, 30).catch(() => [] as UpbitCandle[]),
