@@ -94,6 +94,12 @@ export const upbit = {
   },
 
   /** 일봉 count개 (최신부터, 최대 200/호출 — n>200은 페이지네이션) */
+  /** 1분봉 (최대 200개, 최신→과거로 오므로 오름차순으로 뒤집는다) — 감독자 백필용 */
+  async minuteCandles(market: string, n: number): Promise<UpbitCandle[]> {
+    const batch: UpbitCandle[] = await getJson(`/candles/minutes/1?market=${market}&count=${Math.min(200, Math.max(1, n))}`);
+    return batch.reverse();
+  },
+
   async dayCandles(market: string, n: number): Promise<UpbitCandle[]> {
     const out: UpbitCandle[] = [];
     let to: string | null = null;

@@ -3,8 +3,9 @@
 import { useEffect, useMemo, useState } from "react"
 import useSWR from "swr"
 import { cn } from "@/lib/utils"
-import { getPipelineNode, type Market } from "@/lib/api"
-import { useLiveStatus } from "@/hooks/useLiveSocket"
+import { ApiError, breakSource, getPipelineNode, getSupervisor, getSupervisorLogs, supervisorAction, supervisorAutoRecovery, type Market, type OpsLogLine, type SupervisorSnapshot } from "@/lib/api"
+import { toast } from "sonner"
+import { useLiveChannel, useLiveStatus } from "@/hooks/useLiveSocket"
 import type { PipelineLogLine, PipelineSnapshot, PipelineStage } from "@/lib/types"
 import { MonitorGraph, STAGE_LABEL, STAGE_TAG, STATUS_COLOR, STATUS_LABEL, fmtRate, resetCameraHint } from "./monitor-graph"
 
@@ -40,6 +41,36 @@ function logTone(msg: string) {
 export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, onSelect }: { snapshot: PipelineSnapshot; logs: PipelineLogLine[]; market: Market; onMarket: (m: Market) => void; selected: string | null; onSelect: (id: string | null) => void }) {
   const ws = useLiveStatus()
   const [mode, setMode] = useState<"3d" | "flat">("3d")
+  // ===== 수집 감독자 (self-healing) — 실측 상태 + 오케스트레이터 로그 =====
+  const { data: supFetched, mutate: mutateSup } = useSWR(["supervisor", market], () => getSupervisor(market), { refreshInterval: 4000 })
+  const { data: opsFetched } = useSWR(["supervisor-logs", market], () => getSupervisorLogs(80, market), { refreshInterval: 4000 })
+  const [supLive, setSupLive] = useState<SupervisorSnapshot | null>(null)
+  const [opsLive, setOpsLive] = useState<OpsLogLine[]>([])
+  useLiveChannel(["ops", "ops:log"], (raw) => {
+    const msg = raw as unknown as { ch: string; data: unknown }
+    if (msg.ch === "ops") setSupLive(msg.data as SupervisorSnapshot)
+    if (msg.ch === "ops:log") setOpsLive((prev) => [msg.data as OpsLogLine, ...prev].slice(0, 80))
+  })
+  const sup = supLive ?? supFetched ?? null
+  const supSources = (sup?.sources ?? []).filter((x) => x.market === market || x.market === "all")
+  const opsLogs = dedupeOps([...opsLive, ...(opsFetched ?? [])]).filter((l) => l.source === "supervisor" || supSources.some((x) => x.id === l.source)).slice(0, 60)
+  const [breakSec, setBreakSec] = useState(30)
+  const [busy, setBusy] = useState(false)
+  const act = async (fn: () => Promise<unknown>, label: string) => {
+    setBusy(true)
+    try {
+      await fn()
+      toast.success(label)
+      mutateSup()
+    } catch (e) {
+      const err = e as ApiError
+      toast.error(err.status === 401 || err.code === "NO_SESSION" ? "로그인(owner)이 필요합니다 — 설정 · 키에서 로그인" : err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const sourceForNode = (nodeId: string) => supSources.find((x) => x.feedsNode === nodeId) ?? null
+  const selSource = selected ? sourceForNode(selected) : null
   const [resetKey, setResetKey] = useState(0)
   const { data: detail } = useSWR(selected ? ["pipeline-node", market, selected] : null, () => getPipelineNode(selected!, market), { refreshInterval: 2000 })
   const [flashRow, setFlashRow] = useState<string | null>(null)
@@ -72,6 +103,7 @@ export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, on
         <div className="ml-auto flex flex-wrap items-center gap-3 uppercase tracking-[0.12em] text-[#7c8c7c]">
           <span className="flex items-center gap-1"><i className={cn("inline-block size-1.5 rounded-full", ws === "connected" ? "bg-[#a3e635] shadow-[0_0_6px_#a3e635]" : "bg-[#6b7280]")} />stream {ws === "connected" ? "live" : "poll"}</span>
           <span>nodes <b className="text-[#e5efe5]">{snapshot.nodesActive}/{snapshot.nodesTotal}</b> active</span>
+          {sup && <span>sources <b className={sup.failing ? "text-[#f87171]" : "text-[#e5efe5]"}>{supSources.filter((x) => x.status === "healthy").length}/{supSources.length}</b> healthy{sup.paused ? " · PAUSED" : ""}</span>}
           <span>failing <b className={errors ? "text-[#f87171]" : "text-[#e5efe5]"}>{errors}</b></span>
           <span>latency <b className="text-[#e5efe5]">{snapshot.latencyMs.toFixed(2)}ms</b></span>
           <span>throughput <b className="text-[#e5efe5]">{fmtRate(throughput)}</b></span>
@@ -81,8 +113,43 @@ export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, on
 
       <div className="grid lg:grid-cols-[190px_1fr_300px]">
         {/* 좌측 */}
-        <aside className="hidden max-h-[720px] overflow-y-auto border-r border-[#1c221c] p-3 lg:block">
-          <Label>pipeline health</Label>
+        <aside className="hidden max-h-[760px] overflow-y-auto border-r border-[#1c221c] p-3 lg:block">
+          <Label>run control</Label>
+          <div className="mt-1.5 grid grid-cols-3 gap-1">
+            <button type="button" disabled={busy || !sup} onClick={() => act(() => supervisorAction(sup?.paused ? "resume" : "pause"), sup?.paused ? "재개" : "일시정지")} className="rounded border border-[#2a332a] bg-[#0b0e0b] px-1 py-1.5 text-[9px] uppercase tracking-[0.12em] text-[#b7c4b7] hover:border-[#a3e635] disabled:opacity-50">{sup?.paused ? "resume" : "pause"}</button>
+            <button type="button" disabled={busy || !selSource} title={selSource ? `${selSource.id}에 ${breakSec}s 장애 주입` : "그래프에서 소스 노드(tick-data / news-stream)를 선택"} onClick={() => selSource && act(() => breakSource(selSource.id, breakSec), `${selSource.id} 장애 주입 ${breakSec}s`)} className="rounded border border-[#2a332a] bg-[#0b0e0b] px-1 py-1.5 text-[9px] uppercase tracking-[0.12em] text-[#fbbf24] hover:border-[#fbbf24] disabled:opacity-40">break node</button>
+            <button type="button" disabled={busy || !sup} onClick={() => act(() => supervisorAction("heal"), "HEAL ALL")} className="rounded border border-[#2a332a] bg-[#0b0e0b] px-1 py-1.5 text-[9px] uppercase tracking-[0.12em] text-[#a3e635] hover:border-[#a3e635] disabled:opacity-50">heal all</button>
+          </div>
+          <div className="mt-1.5 flex items-center gap-2 text-[9px] text-[#7c8c7c]">
+            <span>break for</span>
+            <input type="range" min={5} max={180} step={5} value={breakSec} onChange={(e) => setBreakSec(Number(e.target.value))} className="h-1 flex-1 accent-[#a3e635]" aria-label="장애 주입 시간(초)" />
+            <span className="w-8 text-right text-[#b7c4b7]">{breakSec}s</span>
+          </div>
+          <label className="mt-1.5 flex cursor-pointer items-center gap-1.5 text-[9.5px] text-[#9fb09f]">
+            <input type="checkbox" checked={sup?.autoRecovery ?? true} disabled={busy || !sup} onChange={(e) => act(() => supervisorAutoRecovery(e.target.checked), e.target.checked ? "auto-recovery ON" : "auto-recovery OFF")} className="accent-[#a3e635]" />
+            auto-recovery (retry + backfill)
+          </label>
+          <p className="mt-1 text-[8.5px] leading-snug text-[#4b5a4b]">break는 진짜 장애 주입이다 — 그 소스의 수집이 실제로 실패하고, 감독자가 실제로 재시도·회복·백필한다. 조작은 owner 로그인 필요.</p>
+
+          <div className="mt-4"><Label>sources · self-healing</Label></div>
+          <ul className="mt-1.5 flex flex-col gap-1">
+            {supSources.length === 0 && <li className="text-[9.5px] text-[#4b5a4b]">no sources registered</li>}
+            {supSources.map((x) => (
+              <li key={x.id} className="rounded border border-[#1c221c] bg-[#0b0e0b] px-2 py-1.5 text-[9.5px]">
+                <div className="flex items-center gap-1.5">
+                  <i className={cn("inline-block size-1.5 rounded-full", x.status === "healthy" ? "bg-[#a3e635]" : x.status === "degraded" ? "bg-[#fbbf24] animate-pulse" : x.status === "paused" ? "bg-[#6b7280]" : "bg-[#ef4444] animate-pulse")} />
+                  <span className="truncate font-semibold text-[#c7d2c7]">{x.id}</span>
+                  <span className="ml-auto uppercase" style={{ color: x.status === "healthy" ? "#a3e635" : x.status === "degraded" ? "#fbbf24" : x.status === "paused" ? "#6b7280" : "#ef4444" }}>{x.status}</span>
+                </div>
+                <div className="mt-0.5 flex justify-between text-[#7c8c7c]">
+                  <span>{x.rowsPerSec.toFixed(1)}/s · lag {(x.lagMs / 1000).toFixed(1)}s{x.lagMs > x.slaMs ? " ⚠ sla" : ""}</span>
+                  <span>{x.consecutiveFailures > 0 ? `retry ${x.attempt} · ${(x.backoffMs / 1000).toFixed(1)}s` : `${x.recoveries} rec · ${x.failures} fail`}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          <div className="mt-4"><Label>pipeline health</Label></div>
           <div className="mt-1.5 grid grid-cols-2 gap-1.5">
             <Tile label="active" value={`${snapshot.nodesActive}/${snapshot.nodesTotal}`} />
             <Tile label="failing" value={String(errors)} />
@@ -126,7 +193,7 @@ export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, on
             ))}
             <button type="button" onClick={() => setResetKey((k) => k + 1)} className="border-l border-[#1c221c] px-2.5 py-1 text-[#5b6b5b] hover:text-[#9fb09f]">reset view</button>
           </div>
-          <MonitorGraph snapshot={snapshot} selected={selected} onSelect={onSelect} mode={mode} resetKey={resetKey} height={480} />
+          <MonitorGraph snapshot={snapshot} selected={selected} onSelect={onSelect} mode={mode} resetKey={resetKey} height={480} sourceStatus={Object.fromEntries(supSources.map((x) => [x.feedsNode, x.status]))} />
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[#1c221c] px-3 py-1.5 text-[9px] uppercase tracking-[0.1em] text-[#5b6b5b]">
             {STAGES.map((s) => (
               <span key={s}><b className="mr-1 rounded border border-[#2a332a] px-1 py-px text-[#9fb09f]">{STAGE_TAG[s]}</b>{STAGE_LABEL[s].toLowerCase()}</span>
@@ -138,6 +205,24 @@ export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, on
             </span>
           </div>
           <p className="border-t border-[#1c221c] px-3 py-1 text-[9px] text-[#4b5a4b]">{resetCameraHint()} · click a node for its detail and live rows</p>
+
+          {/* 오케스트레이터 로그 — 감독자의 실제 결정 */}
+          <div className="border-t border-[#1c221c]">
+            <div className="flex items-center justify-between px-3 py-1.5">
+              <Label>orchestrator log</Label>
+              <span className="text-[9px] text-[#4b5a4b]">failures retry with exponential backoff, then backfill — newest first</span>
+            </div>
+            <ul className="max-h-36 overflow-y-auto px-3 pb-2 text-[10px] leading-relaxed">
+              {opsLogs.length === 0 && <li className="text-[#4b5a4b]">no orchestrator events yet</li>}
+              {opsLogs.map((l, i) => (
+                <li key={`${l.ts}-${i}`} className="flex gap-3">
+                  <span className="shrink-0 text-[#4b5a4b]">{t(l.ts)}</span>
+                  <span className="w-28 shrink-0 truncate text-[#7c8c7c]">{l.source}</span>
+                  <span className={cn("truncate", l.level === "error" ? "text-[#f87171]" : l.level === "warn" ? "text-[#fbbf24]" : l.level === "ok" ? "text-[#bef264]" : "text-[#9fb09f]")}>{l.message}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
 
           {/* 하단 로그 */}
           <div className="border-t border-[#1c221c]">
@@ -179,6 +264,14 @@ export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, on
                 <Tile label="msgs seen" value={sel.metrics.totalMsgs >= 1000 ? `${(sel.metrics.totalMsgs / 1000).toFixed(1)}k` : String(sel.metrics.totalMsgs)} sub="since boot" />
                 <Tile label="latency" value={`${sel.metrics.avgLatencyMs.toFixed(2)}ms`} sub={`last ${sel.metrics.lastLatencyMs.toFixed(2)}ms`} />
               </div>
+              {selSource && (
+                <div className="rounded border border-[#1c221c] bg-[#0b0e0b] p-2">
+                  <div className="flex items-center justify-between"><Label>source · {selSource.id}</Label><span className="text-[9px] uppercase" style={{ color: selSource.status === "healthy" ? "#a3e635" : selSource.status === "degraded" ? "#fbbf24" : "#ef4444" }}>{selSource.status}</span></div>
+                  <p className="mt-1 text-[9.5px] text-[#9fb09f]">{selSource.name} · every {(selSource.intervalMs / 1000).toFixed(0)}s · sla {(selSource.slaMs / 1000).toFixed(0)}s · {selSource.replayable ? "replayable (backfill)" : "not replayable"}</p>
+                  <p className="text-[9.5px] text-[#7c8c7c]">lag {(selSource.lagMs / 1000).toFixed(1)}s · {selSource.rowsTotal.toLocaleString()} rows · {selSource.recoveries} recoveries · {selSource.failures} failures{selSource.consecutiveFailures > 0 ? ` · retry ${selSource.attempt} in ${(selSource.backoffMs / 1000).toFixed(1)}s` : ""}</p>
+                  {selSource.lastError && <p className="mt-0.5 text-[9.5px] text-[#f87171]">{selSource.lastError}</p>}
+                </div>
+              )}
               <div>
                 <Label>state</Label>
                 <p className="text-[13px] font-bold" style={{ color: STATUS_COLOR[sel.metrics.status] }}>{STATUS_LABEL[sel.metrics.status]}</p>
@@ -225,4 +318,14 @@ export function PipelineMonitor({ snapshot, logs, market, onMarket, selected, on
       </div>
     </div>
   )
+}
+
+function dedupeOps(lines: OpsLogLine[]): OpsLogLine[] {
+  const seen = new Set<string>()
+  return lines.filter((l) => {
+    const k = `${l.ts}|${l.source}|${l.message}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
 }

@@ -1,5 +1,6 @@
 import { state } from "../api/state.js";
 import { logger } from "../core/logger.js";
+import { supervisor } from "../core/supervisor.js";
 import { currentMarketSession } from "../core/marketSession.js";
 import type { Exchange } from "../kis/types.js";
 
@@ -80,7 +81,7 @@ export async function fetchYahooQuote(symbol: string): Promise<YahooQuote | null
   }
 }
 
-let timer: NodeJS.Timeout | null = null;
+let timer: true | null = null;
 
 /**
  * 추적 심볼을 순회하며 state.quotes를 실시세로 갱신하고 "tick"을 낸다.
@@ -88,14 +89,13 @@ let timer: NodeJS.Timeout | null = null;
  */
 export function startYahooTicks(symbols: string[], intervalMs = 15_000) {
   if (timer) return;
+  timer = true;
   const list = [...new Set(symbols)];
-  let inFlight = false;
-  const tick = async () => {
-    if (inFlight) return;
-    inFlight = true;
+  const sweep = async () => {
     let ok = 0;
+    let lastErr = "";
     for (const symbol of list) {
-      const y = await fetchYahooQuote(symbol);
+      const y = await fetchYahooQuote(symbol).catch((e: Error) => { lastErr = e.message; return null; });
       if (!y) continue;
       const q = state.ensureQuote(symbol, y.name, y.exch, y.last);
       q.name = y.name;
@@ -117,11 +117,10 @@ export function startYahooTicks(symbols: string[], intervalMs = 15_000) {
       ok++;
     }
     if (ok > 0) state.refreshPositionPrices();
-    else logger.warn("Yahoo 시세 전부 실패 — 이번 주기 틱 없음", { symbols: list });
-    inFlight = false;
+    if (ok === 0 && list.length > 0) throw new Error(`all ${list.length} Yahoo quotes failed${lastErr ? ` — ${lastErr}` : ""}`);
+    return { rows: ok, note: ok < list.length ? `${list.length - ok} symbols skipped (no data)` : undefined };
   };
-  void tick();
-  timer = setInterval(() => void tick(), intervalMs);
-  timer.unref();
+  // 자기 setInterval 대신 감독자 아래로: 재시도·백오프·로그는 거기서. 지연 시세는 replay 불가.
+  supervisor.register({ id: "yahoo-quotes", name: "Yahoo Finance quotes", market: "us", feedsNode: "tick-data", intervalMs, slaMs: intervalMs * 3, run: sweep });
   logger.info("Yahoo Finance 실시세 폴링 시작 (지연 시세, 키 불필요)", { symbols: list, intervalMs });
 }

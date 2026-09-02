@@ -34,7 +34,7 @@ export function fmtRate(v: number): string {
   return `${v.toFixed(1)}/s`
 }
 
-export function MonitorGraph({ snapshot, selected, onSelect, mode, resetKey = 0, height = 520 }: { snapshot: PipelineSnapshot; selected: string | null; onSelect: (id: string | null) => void; mode: "3d" | "flat"; resetKey?: number; height?: number }) {
+export function MonitorGraph({ snapshot, selected, onSelect, mode, resetKey = 0, height = 520, sourceStatus = {} }: { snapshot: PipelineSnapshot; selected: string | null; onSelect: (id: string | null) => void; mode: "3d" | "flat"; resetKey?: number; height?: number; sourceStatus?: Record<string, string> }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const st = useRef({
     nodes: [] as N3[],
@@ -48,11 +48,13 @@ export function MonitorGraph({ snapshot, selected, onSelect, mode, resetKey = 0,
     snap: snapshot,
     mode,
     selected,
+    sourceStatus,
   })
   const [hover, setHover] = useState<string | null>(null)
   st.current.snap = snapshot
   st.current.mode = mode
   st.current.selected = selected
+  st.current.sourceStatus = sourceStatus
 
   // 레이아웃 + 실제 이벤트 → 빛
   useEffect(() => {
@@ -138,6 +140,7 @@ export function MonitorGraph({ snapshot, selected, onSelect, mode, resetKey = 0,
     const tick = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
+      // (now는 상태 펄스에도 쓴다)
       // 아주 느린 궤도 드리프트 — 카메라만 움직인다 (데이터는 실측 그대로)
       if (!s.drag && s.mode === "3d") s.cam.yaw += dt * 0.03
       project()
@@ -210,8 +213,11 @@ export function MonitorGraph({ snapshot, selected, onSelect, mode, resetKey = 0,
       for (const n of nodesSorted) {
         const m = metrics.get(n.id)
         if (!m) continue
-        const color = STATUS_COLOR[m.metrics.status]
-        const r = 13 * n.s
+        // 소스 노드는 감독자 상태가 우선: degraded 앰버, failed/broken 빨강 (실패 중 펄스)
+        const src = s.sourceStatus[n.id]
+        const color = src === "degraded" ? "#fbbf24" : src === "failed" || src === "broken" ? "#ef4444" : src === "paused" ? "#6b7280" : STATUS_COLOR[m.metrics.status]
+        const failing = src === "degraded" || src === "failed" || src === "broken"
+        const r = 13 * n.s * (failing ? 1 + 0.08 * Math.sin(now / 160) : 1)
         const bl = blurFor(n.zz)
         ctx.filter = bl > 0.5 ? `blur(${bl.toFixed(1)}px)` : "none"
         ctx.globalAlpha = dim(n.id) * (1 - Math.min(0.45, bl / 8))
@@ -225,6 +231,7 @@ export function MonitorGraph({ snapshot, selected, onSelect, mode, resetKey = 0,
         ctx.beginPath(); ctx.arc(n.sx, n.sy, r, 0, Math.PI * 2); ctx.stroke()
         ctx.fillStyle = color; ctx.font = `600 ${Math.max(6, 7.5 * n.s)}px ui-monospace, SFMono-Regular, monospace`; ctx.textAlign = "center"
         ctx.fillText(STAGE_TAG[n.stage], n.sx, n.sy + 2.5 * n.s)
+        if (failing) { ctx.fillStyle = color; ctx.font = `700 ${9 * n.s}px ui-monospace, monospace`; ctx.textAlign = "left"; ctx.fillText(src === "broken" ? "BROKEN · retrying" : src === "failed" ? "FAILED · backoff" : "DEGRADED · retry", n.sx + r + 8 * n.s, n.sy - 20 * n.s) }
         // 라벨 블록: id(굵게) / name(흐리게) / 처리량·레이턴시 / 상태
         const lx = n.sx + r + 8 * n.s
         ctx.textAlign = "left"

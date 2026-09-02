@@ -333,3 +333,62 @@ export async function putKeys(provider: "upbit" | "kis", keys: Record<string, st
 export async function deleteKeys(provider: "upbit" | "kis"): Promise<{ ok: true; keys: MaskedKeys }> {
   return write(`keys/${provider}`, "DELETE")
 }
+
+// ===== 수집 감독자 (self-healing) — 읽기는 공개, 조작은 로그인(owner) 세션 =====
+
+export type SourceStatus = "healthy" | "degraded" | "failed" | "paused" | "broken"
+export interface SourceState {
+  id: string
+  name: string
+  market: "us" | "crypto" | "all"
+  feedsNode: string
+  status: SourceStatus
+  intervalMs: number
+  slaMs: number
+  replayable: boolean
+  consecutiveFailures: number
+  attempt: number
+  backoffMs: number
+  nextRunAt: string | null
+  lastRunAt: string | null
+  lastSuccessAt: string | null
+  lastError: string | null
+  lagMs: number
+  rowsTotal: number
+  rowsPerSec: number
+  failures: number
+  recoveries: number
+  brokenUntil: string | null
+  inFlight: boolean
+}
+export interface SupervisorSnapshot {
+  ts: string
+  paused: boolean
+  autoRecovery: boolean
+  healthy: number
+  total: number
+  failing: number
+  sources: SourceState[]
+}
+export interface OpsLogLine {
+  ts: string
+  source: string
+  level: "info" | "ok" | "warn" | "error"
+  message: string
+}
+
+export async function getSupervisor(market?: Market): Promise<SupervisorSnapshot> {
+  return req(`ops/supervisor${market ? `?market=${market}` : ""}`)
+}
+export async function getSupervisorLogs(limit = 100, market?: Market): Promise<OpsLogLine[]> {
+  return req(`ops/supervisor/logs?limit=${limit}${market ? `&market=${market}` : ""}`)
+}
+export async function supervisorAction(action: "pause" | "resume" | "heal"): Promise<{ ok: true }> {
+  return write(`ops/supervisor/${action}`, "POST", {})
+}
+export async function supervisorAutoRecovery(on: boolean): Promise<{ ok: true }> {
+  return write("ops/supervisor/auto-recovery", "POST", { on })
+}
+export async function breakSource(id: string, seconds: number): Promise<{ ok: true }> {
+  return write(`ops/supervisor/${encodeURIComponent(id)}/break`, "POST", { seconds })
+}

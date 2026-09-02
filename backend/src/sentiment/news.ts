@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { config } from "../config.js";
+import { supervisor } from "../core/supervisor.js";
 import { logger } from "../core/logger.js";
 
 /**
@@ -74,6 +75,9 @@ function decodeEntities(s: string): string {
 export interface NewsIngestorOpts {
   /** 심볼 → 검색 쿼리 (기본 "{sym} stock"; 크립토 데스크는 "{sym} crypto") */
   queryFor?: (symbol: string) => string;
+  /** 감독자에 등록될 소스 id/시장 — 기본 us */
+  sourceId?: string;
+  market?: "us" | "crypto";
   /** true면 합성 헤드라인 모드 (기본: config.NEWS_MOCK — 명시적 opt-in) */
   mockMode?: boolean;
 }
@@ -84,6 +88,8 @@ export class NewsIngestor extends EventEmitter {
   private seen = new Set<string>();
   private cursor = 0;
   private queryFor: (symbol: string) => string;
+  private sourceId: string;
+  private market: "us" | "crypto";
   private mockMode: boolean;
   /** 최근 수집분 (프론트 피드/재기동용) */
   recent: NewsItem[] = [];
@@ -91,6 +97,8 @@ export class NewsIngestor extends EventEmitter {
   constructor(opts: NewsIngestorOpts = {}) {
     super();
     this.queryFor = opts.queryFor ?? ((s) => `${s} stock`);
+    this.sourceId = opts.sourceId ?? "news-rss-us";
+    this.market = opts.market ?? "us";
     this.mockMode = opts.mockMode ?? config.NEWS_MOCK;
   }
 
@@ -107,9 +115,23 @@ export class NewsIngestor extends EventEmitter {
       logger.info("뉴스 수집기 기동 (MOCK 헤드라인 모드)");
     } else {
       const step = Math.max(15_000, Math.floor(POLL_INTERVAL_MS / Math.max(1, this.symbols.length)));
-      this.timer = setInterval(() => void this.pollNext(), step);
-      void this.pollNext();
-      logger.info("뉴스 수집기 기동 (Google News RSS)", { symbols: this.symbols });
+      // 감독자 아래로: 실패는 백오프 재시도, 회복 시 전 심볼 RSS를 다시 받아 놓친 기사를 백필한다
+      supervisor.register({
+        id: this.sourceId,
+        name: `Google News RSS (${this.market})`,
+        market: this.market,
+        feedsNode: "news-stream",
+        intervalMs: step,
+        slaMs: POLL_INTERVAL_MS * 2,
+        run: () => this.pollNext(),
+        backfill: async () => {
+          let rows = 0;
+          for (let i = 0; i < this.symbols.length; i++) rows += (await this.pollNext()).rows;
+          return { rows, note: `re-fetched RSS for ${this.symbols.length} symbols — fresh headlines only, duplicates dropped` };
+        },
+      });
+      this.timer = setInterval(() => undefined, 60_000); // start() 중복 호출 가드
+      logger.info("뉴스 수집기 기동 (Google News RSS)", { symbols: this.symbols, sourceId: this.sourceId });
     }
     this.timer.unref();
   }
@@ -119,9 +141,9 @@ export class NewsIngestor extends EventEmitter {
     this.timer = null;
   }
 
-  private push(items: NewsItem[]) {
+  private push(items: NewsItem[]): number {
     const fresh = items.filter((i) => !this.seen.has(i.id));
-    if (fresh.length === 0) return;
+    if (fresh.length === 0) return 0;
     for (const i of fresh) {
       this.seen.add(i.id);
       this.recent.unshift(i);
@@ -129,6 +151,7 @@ export class NewsIngestor extends EventEmitter {
     if (this.recent.length > 200) this.recent.length = 200;
     if (this.seen.size > 2000) this.seen = new Set(this.recent.map((i) => i.id));
     this.emit("news", fresh);
+    return fresh.length;
   }
 
   private emitMock() {
@@ -150,11 +173,12 @@ export class NewsIngestor extends EventEmitter {
     ]);
   }
 
-  private async pollNext() {
-    if (this.symbols.length === 0) return;
+  /** 다음 심볼 하나를 수집 — 감독자가 돌린다. 실패는 throw (감독자가 재시도) */
+  private async pollNext(): Promise<{ rows: number; note?: string }> {
+    if (this.symbols.length === 0) return { rows: 0 };
     const symbol = this.symbols[this.cursor % this.symbols.length];
     this.cursor++;
-    try {
+    {
       const url = `https://news.google.com/rss/search?q=${encodeURIComponent(this.queryFor(symbol))}&hl=en-US&gl=US&ceid=US:en`;
       const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -169,9 +193,8 @@ export class NewsIngestor extends EventEmitter {
         publishedAt: r.pubDate ? new Date(r.pubDate).toISOString() : now,
         fetchedAt: now,
       }));
-      this.push(items);
-    } catch (e) {
-      logger.warn("뉴스 수집 실패 — 다음 주기에 재시도", { symbol, error: (e as Error).message });
+      const fresh = this.push(items);
+      return { rows: fresh, note: `${symbol}: ${items.length} items, ${fresh} fresh` };
     }
   }
 }

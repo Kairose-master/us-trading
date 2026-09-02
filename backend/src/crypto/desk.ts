@@ -6,6 +6,7 @@ import type { ExecutionSignal } from "../pipeline/types.js";
 import { NewsIngestor } from "../sentiment/news.js";
 import { upbit, type UpbitTicker } from "./upbit.js";
 import { config } from "../config.js";
+import { supervisor } from "../core/supervisor.js";
 import { logger } from "../core/logger.js";
 
 /**
@@ -92,7 +93,7 @@ class CryptoDesk extends EventEmitter {
       },
     };
     this.pipeline = new PipelineEngine(ctx);
-    this.news = new NewsIngestor({ queryFor: (s) => `${s} crypto`, mockMode: false });
+    this.news = new NewsIngestor({ queryFor: (s) => `${s} crypto`, mockMode: false, sourceId: "news-rss-crypto", market: "crypto" });
   }
 
   equityKrw(): number {
@@ -188,15 +189,40 @@ class CryptoDesk extends EventEmitter {
     this.news.setSymbols(CRYPTO_MARKETS.map(COIN_OF));
     this.news.on("news", (items) => this.pipeline.onNews(items));
     this.news.start();
-    const loop = () => void this.poll();
-    this.timer = setInterval(loop, POLL_MS);
-    this.timer.unref();
-    void this.poll();
+    // 감독자 아래로: 실패는 백오프 재시도, 회복 시 놓친 구간의 1분봉을 실제로 받아 파이프라인에 재생한다
+    supervisor.register({
+      id: "upbit-tickers",
+      name: "Upbit tickers + order book",
+      market: "crypto",
+      feedsNode: "tick-data",
+      intervalMs: POLL_MS,
+      slaMs: POLL_MS * 5,
+      run: () => this.poll(),
+      backfill: (since) => this.backfill(since),
+    });
+    this.timer = setInterval(() => undefined, 60_000); // start() 중복 호출 가드
     logger.info("크립토 데스크 기동 (Upbit 공개 API — 실데이터)", { markets: CRYPTO_MARKETS });
   }
 
-  private async poll() {
-    try {
+  /** 놓친 구간의 1분봉을 받아 종가를 틱으로 재생 — 실제 과거 데이터, 라벨은 replay */
+  private async backfill(sinceIso: string): Promise<{ rows: number; note: string }> {
+    const since = Date.parse(sinceIso);
+    const minutes = Math.min(200, Math.max(1, Math.ceil((Date.now() - since) / 60_000)));
+    let rows = 0;
+    for (const market of CRYPTO_MARKETS) {
+      const candles = await upbit.minuteCandles(market, minutes);
+      for (const c of candles) {
+        // 캔들은 그 분의 시작 시각을 갖는다 — 장애 시작이 포함된 분봉부터 재생
+        if (Date.parse(`${c.candle_date_time_utc}Z`) + 60_000 <= since) continue;
+        this.pipeline.onTick({ symbol: COIN_OF(market), last: c.trade_price, bid: c.trade_price, ask: c.trade_price, bidSize: 0, askSize: 0, volume: Math.round(c.candle_acc_trade_volume) });
+        rows++;
+      }
+    }
+    return { rows, note: `${minutes} minute candles × ${CRYPTO_MARKETS.length} markets replayed as ticks (no order book — sizes 0)` };
+  }
+
+  private async poll(): Promise<{ rows: number }> {
+    {
       // 기본 마켓 + 스캐너가 들고 온 알트 보유분 — 보유 중인 코인의 시세는
       // 반드시 추적해야 에쿼티가 정확하다
       const held = [...this.paperPositions.keys()].map((s) => `KRW-${s}`);
@@ -222,9 +248,7 @@ class CryptoDesk extends EventEmitter {
           volume: Math.round(t.acc_trade_volume_24h),
         });
       }
-    } catch (e) {
-      this.lastError = (e as Error).message;
-      logger.warn("Upbit 폴링 실패 — 다음 주기 재시도", { error: this.lastError });
+      return { rows: tickers.length };
     }
   }
 

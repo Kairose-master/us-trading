@@ -16,6 +16,8 @@ import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
+import { supervisor, type Market as SupMarket } from "../core/supervisor.js";
+import { requireSession } from "../auth/routes.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
@@ -498,4 +500,25 @@ router.get("/system/status", (_req, res) => {
     marketSession: currentMarketSession(),
     nextSessionStartEt: nextRegularOpenEt(),
   });
+});
+
+// ===== 수집 감독자 (self-healing) — 읽기 공개, 조작은 로그인 세션 =====
+
+router.get("/ops/supervisor", (req, res) => {
+  res.json(supervisor.snapshot((req.query.market as SupMarket) || undefined));
+});
+router.get("/ops/supervisor/logs", (req, res) => {
+  res.json(supervisor.logs(Number(req.query.limit ?? 100), (req.query.market as SupMarket) || undefined));
+});
+router.post("/ops/supervisor/pause", requireSession, (_req, res) => { supervisor.pause(); res.json({ ok: true }); });
+router.post("/ops/supervisor/resume", requireSession, (_req, res) => { supervisor.resume(); res.json({ ok: true }); });
+router.post("/ops/supervisor/heal", requireSession, (_req, res) => { supervisor.healAll(); res.json({ ok: true }); });
+router.post("/ops/supervisor/auto-recovery", requireSession, (req, res) => { supervisor.setAutoRecovery(Boolean(req.body?.on)); res.json({ ok: true }); });
+router.post("/ops/supervisor/:id/break", requireSession, (req, res) => {
+  try {
+    supervisor.breakSource(String(req.params.id), Number(req.body?.seconds ?? 30));
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(404).json({ error: (e as Error).message });
+  }
 });
