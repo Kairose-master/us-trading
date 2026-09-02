@@ -8,7 +8,8 @@ import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel } from "../office/handsel-client.js";
 import { buildFeatures, dayReturn, evaluate, type FeatureSet } from "./evaluate.js";
 import { mutateVectors, nextGeneration } from "./ga.js";
-import { ARCHETYPES, GENE_SPECS, archetypeOf, clampGene, geneDistance, rand, randomVector, reseed, toGenes, type GeneVector, type Genes } from "./genome.js";
+import { ARCHETYPES, GENE_SPECS, archetypeOf, clampGene, geneDistance, rand, randomVector, reseed, toGenes, upgradeVector, type GeneVector, type Genes } from "./genome.js";
+import { DESKS, OFFICE_RENT_PCT, applySkills, consultDesks, latestOfficeDecision, rentFor, resetDeskCache, type DeskId, type DeskReading } from "./capabilities.js";
 
 /**
  * 에이전트 개체군 — 서로 투자하고, 성과를 낸 개체는 복제되고, 실패한 개체는 죽는다.
@@ -58,8 +59,21 @@ export interface Agent {
   /** 계통(tribe) — 창세 개체 id 또는 분기로 생긴 가지 id. 구름에서 군집/색의 기준 */
   tribe: string;
   /** 생애 사건: 변이·병합·분기·출생 (세대, 종류, 설명) */
-  events: Array<{ gen: number; type: "born" | "mutated" | "merged" | "absorbed" | "forked" | "retired"; detail: string }>;
+  events: Array<{ gen: number; type: "born" | "mutated" | "merged" | "absorbed" | "forked" | "retired" | "tooled"; detail: string }>;
   forked: boolean;
+  /** 이 개체의 오피스 — 이번 세대에 빌린 데스크, 읽은 것, 스킬이 타깃을 어떻게 바꿨는지, 낸 임대료 */
+  office: {
+    at: string;
+    desks: DeskId[];
+    usesOffice: boolean;
+    readings: DeskReading[];
+    notes: string[];
+    baseWeights: Array<{ market: string; weightPct: number }>;
+    rentKrw: number;
+    rentPct: number;
+  } | null;
+  /** 누적 임대료 — 이 개체가 도구에 쓴 돈 전부 */
+  rentPaidKrw: number;
 }
 
 export interface GenerationRecord {
@@ -124,7 +138,12 @@ function readState(): State {
   try {
     if (existsSync(STATE_FILE)) {
       const st = JSON.parse(readFileSync(STATE_FILE, "utf-8")) as State;
-      for (const a of st.agents) { a.tribe ??= a.parents[0] ? (st.agents.find((p) => p.id === a.parents[0])?.tribe ?? a.id) : a.id; a.events ??= [{ gen: a.generationBorn, type: "born", detail: a.parents.length ? `child of ${a.parents.join(",")}` : "genesis" }]; a.forked ??= false; }
+      for (const a of st.agents) {
+        a.tribe ??= a.parents[0] ? (st.agents.find((p) => p.id === a.parents[0])?.tribe ?? a.id) : a.id; a.events ??= [{ gen: a.generationBorn, type: "born", detail: a.parents.length ? `child of ${a.parents.join(",")}` : "genesis" }]; a.forked ??= false;
+        a.office ??= null; a.rentPaidKrw ??= 0;
+        // 구버전 10유전자 개체 — 데스크 유전자 0(눈 없음)으로 확장. 도구는 진화가 스스로 켠다
+        if (a.vector.length !== GENE_SPECS.length) { a.vector = upgradeVector(a.vector); a.genes = toGenes(a.vector); a.archetype = archetypeOf(a.genes); }
+      }
       return st;
     }
   } catch (e) {
@@ -176,6 +195,9 @@ class Evolution extends EventEmitter {
       tribes: [...new Set(alive.map((a) => a.tribe))].map((t) => ({ tribe: t, name: this.st.agents.find((a) => a.id === t)?.name ?? t, alive: alive.filter((a) => a.tribe === t).length, capitalKrw: Math.round(alive.filter((a) => a.tribe === t).reduce((s, a) => s + a.capitalKrw, 0)) })),
       archetypes: ARCHETYPES.map((k) => ({ archetype: k, alive: alive.filter((a) => a.archetype === k).length })),
       genes: GENE_SPECS,
+      desks: DESKS.map((d) => ({ id: d.id, label: d.label, labelKo: d.labelKo, tool: d.tool, server: d.server === "worker" ? config.OFFICE_WORKER_URL : d.server, rentPct: d.rentPct, skill: d.skill, tenants: alive.filter((a) => a.genes[d.id] >= 1).length })),
+      officeRentPct: OFFICE_RENT_PCT,
+      rentPaidKrw: Math.round(this.st.agents.reduce((a, x) => a + (x.rentPaidKrw ?? 0), 0)),
       rules: { starveRatio: STARVE_RATIO, bottomQuantile: BOTTOM_QUANTILE, bottomStreakDeath: BOTTOM_STREAK_DEATH, minAgeGens: MIN_AGE_GENS, childShare: CHILD_SHARE, mutationBase: MUTATION_BASE, diversityFloor: DIVERSITY_FLOOR, mergeDistance: MERGE_DISTANCE, mergeDependence: MERGE_DEPENDENCE },
     };
   }
@@ -221,7 +243,7 @@ class Evolution extends EventEmitter {
     return {
       id, name, archetype: archetypeOf(genes), genes, vector, generationBorn: gen, bornAt: new Date().toISOString(), parents,
       alive: true, diedAt: null, causeOfDeath: null, capitalKrw: seedKrw, seedKrw, peakKrw: seedKrw, exam: null, fitnessHistory: [], capitalHistory: [], lastWeights: [], peers: [], bottomStreak: 0, children: 0,
-      tribe: tribe ?? id, events: [{ gen, type: "born", detail: parents.length ? `child of ${parents.join(",")}` : "genesis" }], forked: false,
+      tribe: tribe ?? id, events: [{ gen, type: "born", detail: parents.length ? `child of ${parents.join(",")}` : "genesis" }], forked: false, office: null, rentPaidKrw: 0,
     };
   }
 
@@ -267,6 +289,35 @@ class Evolution extends EventEmitter {
         a.fitnessHistory.push({ gen, fitness: r.fitness });
         if (a.fitnessHistory.length > 200) a.fitnessHistory.shift();
         a.lastWeights = r.lastWeights;
+      }
+
+      // 1b) 오피스 — 데스크를 켠 개체는 실제 MCP 보고서를 읽고 스킬로 라이브 타깃을 고친다. 임대료는 자본에서.
+      //     시험(exam)은 그대로 숫자 전략의 성적이고, 자본 마킹은 도구를 거친 타깃으로 된다 — 도구값을 못 하면 굶는다.
+      {
+        resetDeskCache(gen);
+        const universe = f.markets.map((m) => m.market.replace("KRW-", ""));
+        const officeDecision = latestOfficeDecision();
+        const tenants = alive().filter((a) => rentFor(a.genes, a.capitalKrw, false).desks.length > 0 || (officeDecision && a.genes.toolTrust >= 0.5 && a.genes.deskChart >= 1 && a.genes.deskRisk >= 1));
+        const t0 = Date.now();
+        let rentTotal = 0, consulted = 0, failed = 0;
+        for (const a of alive()) a.office = null;
+        await Promise.all(tenants.map(async (a) => {
+          const usesOffice = Boolean(officeDecision) && a.genes.toolTrust >= 0.5 && a.genes.deskChart >= 1 && a.genes.deskRisk >= 1;
+          const base = a.lastWeights.map((w) => ({ ...w }));
+          const session = await consultDesks(a.genes, base, universe);
+          if (usesOffice && officeDecision) { session.input.office = officeDecision.targets; session.readings.push({ desk: "office", ok: true, summary: `committee ${officeDecision.delegationId} (${officeDecision.decidedAt.slice(0, 10)}): ${officeDecision.targets.map((t) => `${t.market.replace("KRW-", "")} ${t.weightPct}%`).join(" ")}`, ms: 0 }); }
+          const ov = applySkills(base, a.genes.toolTrust, session.input);
+          const rent = rentFor(a.genes, a.capitalKrw, usesOffice);
+          a.capitalKrw = Math.max(0, a.capitalKrw - rent.krw); a.rentPaidKrw = (a.rentPaidKrw ?? 0) + rent.krw; rentTotal += rent.krw;
+          a.lastWeights = ov.targets;
+          a.office = { at: new Date().toISOString(), desks: rent.desks, usesOffice, readings: session.readings, notes: ov.notes, baseWeights: base, rentKrw: rent.krw, rentPct: rent.pct };
+          consulted++; failed += session.readings.filter((r) => !r.ok).length;
+          const changed = JSON.stringify(base) !== JSON.stringify(ov.targets);
+          if (changed || session.readings.some((r) => !r.ok)) a.events.push({ gen, type: "tooled", detail: `${rent.desks.map((d) => d.replace("desk", "").toLowerCase()).join("+")}${usesOffice ? "+office" : ""} · rent ₩${rent.krw.toLocaleString()} · ${ov.notes.length ? ov.notes.join(" | ") : "no change"}${session.readings.filter((r) => !r.ok).length ? ` · failed: ${session.readings.filter((r) => !r.ok).map((r) => r.desk).join(",")}` : ""}` });
+          if (a.events.length > 60) a.events.splice(1, a.events.length - 60);
+        }));
+        if (tenants.length) this.log("info", `OFFICES — ${consulted} agents consulted real desks (${[...new Set(tenants.flatMap((a) => rentFor(a.genes, 0, false).desks))].map((d) => d.replace("desk", "").toLowerCase()).join(",")}${officeDecision ? ", committee decision available" : ""}) in ${((Date.now() - t0) / 1000).toFixed(1)}s · rent ₩${rentTotal.toLocaleString()} · ${failed} desk reads failed`);
+        else this.log("info", "OFFICES — no agent rents a desk this generation (all desk genes off)");
       }
       const ranked = alive().sort((a, b) => b.exam!.fitness - a.exam!.fitness);
 

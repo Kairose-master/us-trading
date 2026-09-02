@@ -73,6 +73,14 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 매일 실현 수익으로 귀속되어 가중치가 스스로 움직인다. 대시보드 홈이 그 화면이다.
 → `docs/control-plane.md`
 
+## 동시 작업 (여러 세션이 같은 레포를 만질 때)
+
+`conversation.md`가 세션 간 경고 채널이고,
+`.claude/skills/parallel-repo-coordination`이 그 규칙과 게이트다. 작업 시작 전
+`node .claude/skills/parallel-repo-coordination/scripts/coordination-check.mjs`를
+돌려 새 노트를 읽고 `--ack`, 다른 세션이 걸려 넘어질 만한 일은 `--note "…"`로
+남긴 뒤 같이 커밋한다. `--install-hook`은 이 체크아웃의 pre-push에 게이트를 건다.
+
 ## Handsel 연동
 
 `docs/handsel-office.md` — 테스트넷/메인넷 에이전트 배선 기록, MCP 워커 주소,
@@ -87,6 +95,7 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 - **진화 캠페인.** 전략 유전자 개체군이 본 적 없는 60일 실캔들로 시험을 보고, 서로 자본을 위탁하고, 성과 낸 개체는 PyGAD로 복제되고, 굶주리거나 도태된 개체는 죽는다. Handsel 오피스는 lineage mandate·Automaton으로 같은 원리. `/evolution`, `docs/evolution.md`.
 - **Self-healing 수집 감독자.** Yahoo·Upbit·뉴스 수집을 한 감독자가 돌린다 — 지수 백오프 재시도, 회복 시 실제 백필(1분봉 재생·RSS 재수집), BREAK NODE 장애 주입, 오케스트레이터 로그. `docs/self-healing.md`.
 - **파이프라인 모니터.** `/pipeline`이 릴 수준의 실시간 모니터 — 스테이지 열, 빛 하나 = 실제 마이크로배치, 깊이 블러, 노드 상세·라이브 행.
+- **에이전트 = 오피스.** 진화 개체가 실제 MCP 데스크(차트·뉴스·수급·매크로·리스크·Exa 웹)를 빌려 보고서를 읽고 스킬로 타깃을 고친다. 임대료는 자본에서 나가고, 도구를 잘못 읽으면 굶는다. `docs/evolution.md`.
 - **통합 제어 평면.** 스캐너·오피스·진화·파이프라인 신호가 각자 장부를 덮어쓰던 것을 끝냈다. 엔진은 제안만 내고, 중재기가 가중 × 확신도로 하나의 목표를 만들어 제약을 지나 오토파일럿/승인으로 집행하며, 매일 실현 수익으로 엔진 가중치가 움직인다. 대시보드 홈 = Command Center. `docs/control-plane.md`.
 - **Upbit 캔들 공유 저장소 + 전역 속도 제한.** 모든 일봉은 백엔드 `candle-store`(단일 비행·오래된 값 폴백) 하나에서 나오고, Upbit 호출은 초당 8회 토큰 버킷을 지난다. 브라우저는 Upbit를 직접 부르지 않고 `/crypto/candles/:market`을 쓴다 — "캔들을 못 불러오는" 오류의 원인이던 탭마다의 직접 호출·429가 사라진다.
 - **$100 자리표시 시세 제거.** Yahoo가 아직 채우지 않은 종목은 `503 QUOTE_PENDING`으로 답하고 관심종목 카드는 "시세 미수신"을 보여준다 — 가짜 숫자를 만들어 주지 않는다.

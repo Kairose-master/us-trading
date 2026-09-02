@@ -459,9 +459,27 @@ const TOOLS: ToolDef[] = [
 
 const COINS = ["BTC", "ETH", "XRP", "SOL", "DOGE"];
 
+/** Upbit KRW 마켓 전체 — 질의에 나온 어떤 코인이든 실마켓이면 잡는다 (진화 개체의 알트 유니버스). 10분 캐시, 실패 시 기본 5개 */
+let krwUniverse: { at: number; coins: Set<string> } | null = null;
+async function upbitKrwUniverse(): Promise<Set<string>> {
+  if (krwUniverse && Date.now() - krwUniverse.at < 10 * 60_000) return krwUniverse.coins;
+  try {
+    const res = await fetch("https://api.upbit.com/v1/market/all?is_details=false", { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const rows = (await res.json()) as Array<{ market: string }>;
+    const coins = new Set(rows.map((r) => r.market).filter((m) => m.startsWith("KRW-")).map((m) => m.slice(4)));
+    if (coins.size) krwUniverse = { at: Date.now(), coins };
+    return coins;
+  } catch {
+    return krwUniverse?.coins ?? new Set(COINS);
+  }
+}
+
 function extractCoins(query: string): string[] {
   const up = query.toUpperCase();
-  const found = COINS.filter((c) => new RegExp(`\\b${c}\\b`).test(up));
+  const universe = krwUniverse?.coins ?? new Set(COINS);
+  const tokens = [...new Set(up.match(/\b[A-Z0-9]{2,10}\b/g) ?? [])];
+  const found = tokens.filter((t) => universe.has(t));
   return found.length > 0 ? found : ["BTC", "ETH"];
 }
 
@@ -1097,6 +1115,7 @@ export default async function handler(req: any, res: any) {
       const params = msg.params ?? {};
       const tool = TOOLS.find((t) => t.name === params.name);
       if (!tool) return res.status(200).json(rpcError(msg.id, -32602, `unknown tool: ${params.name}`));
+      await upbitKrwUniverse();
       const query = typeof params.arguments?.query === "string" ? params.arguments.query : "";
       try {
         const text = await tool.handler(query);

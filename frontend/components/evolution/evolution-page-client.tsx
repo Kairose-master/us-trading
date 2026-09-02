@@ -130,6 +130,12 @@ export function EvolutionPageClient() {
               </ul>
             </div>
             <div>
+              <Label>desks · real MCP tools agents rent (rent paid so far {krw(status.rentPaidKrw ?? 0)})</Label>
+              <ul className="mt-1 mb-2 grid grid-cols-2 gap-x-3 text-[9.5px]">
+                {(status.desks ?? []).map((d) => (
+                  <li key={d.id} className="flex justify-between gap-2" title={`${d.tool} @ ${d.server} — ${d.skill}`}><span className="text-[#c98a8a]">{d.labelKo}</span><span className="text-[#fecaca]">{d.tenants} tenants · {(d.rentPct * 100).toFixed(2)}%/gen</span></li>
+                ))}
+              </ul>
               <Label>rules</Label>
               <p className="mt-1 text-[9.5px] leading-relaxed text-[#8a4b4b]">starve &lt; {status.rules.starveRatio * 100}% of seed · bottom {status.rules.bottomQuantile * 100}% for {status.rules.bottomStreakDeath} gens → retire · child gets {status.rules.childShare * 100}% of parent capital · mutation {status.rules.mutationBase * 100}%/gen (+ when diversity &lt; {status.rules.diversityFloor}) · merge when genome distance &lt; {status.rules.mergeDistance} or delegating ≥{status.rules.mergeDependence * 100}% to a far fitter peer · fork: elite splits capital 50/50 and pushes one gene both ways · seed {krw(status.seedKrw)}</p>
             </div>
@@ -170,6 +176,29 @@ export function EvolutionPageClient() {
                       <li key={g.key} className="flex justify-between"><span className="text-[#8a4b4b]">{g.label}</span><span className="text-[#fecaca]">{sel.genes[g.key]}</span></li>
                     ))}
                   </ul>
+                </div>
+                <div>
+                  <Label>office · desks {sel.office ? `· rent ${krw(sel.office.rentKrw)} / gen · paid ${krw(sel.rentPaidKrw ?? 0)} total` : ""}</Label>
+                  {sel.office ? (
+                    <div className="mt-1 flex flex-col gap-1 text-[9.5px]">
+                      <div className="flex flex-wrap gap-1">
+                        {sel.office.desks.map((d) => (
+                          <span key={d} className="rounded border border-[#5b2a2f] bg-[#1a0d10] px-1 py-px text-[#fca5a5]">{(status.desks.find((x) => x.id === d)?.labelKo ?? d).replace(" 데스크", "")}</span>
+                        ))}
+                        {sel.office.usesOffice && <span className="rounded border border-[#5b2a2f] bg-[#1a0d10] px-1 py-px text-[#fde68a]">위원회 결정</span>}
+                        <span className="text-[#8a4b4b]">trust {sel.genes.toolTrust.toFixed(2)}</span>
+                      </div>
+                      <ul className="max-h-24 overflow-y-auto">
+                        {sel.office.readings.map((r, i) => (
+                          <li key={i} className="flex gap-1.5"><span className={cn("shrink-0 uppercase", r.ok ? "text-[#86efac]" : "text-[#f87171]")}>{r.desk.replace("desk", "")}</span><span className="truncate text-[#c98a8a]" title={r.summary}>{r.summary}</span><span className="ml-auto shrink-0 text-[#6b4a4a]">{r.ms ? `${(r.ms / 1000).toFixed(1)}s` : ""}</span></li>
+                        ))}
+                      </ul>
+                      {sel.office.notes.length > 0 && <ul className="text-[#fde68a]">{sel.office.notes.map((n, i) => <li key={i}>→ {n}</li>)}</ul>}
+                      {sel.office.baseWeights.length > 0 && <p className="text-[#8a4b4b]">before skills: {sel.office.baseWeights.map((w) => `${w.market.replace("KRW-", "")} ${w.weightPct}%`).join(" · ")}</p>}
+                    </div>
+                  ) : (
+                    <p className="mt-1 text-[9.5px] text-[#8a4b4b]">{sel.alive ? "no desk rented — pure formula, free but blind" : "—"}</p>
+                  )}
                 </div>
                 <div>
                   <Label>current targets</Label>

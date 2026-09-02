@@ -406,6 +406,25 @@ export interface EvoGenes {
   exposureMax: number
   peerAlloc: number
   peerTopN: number
+  deskChart: number
+  deskNews: number
+  deskFlow: number
+  deskMacro: number
+  deskRisk: number
+  deskWeb: number
+  toolTrust: number
+}
+export type EvoDeskId = "deskChart" | "deskNews" | "deskFlow" | "deskMacro" | "deskRisk" | "deskWeb"
+export interface EvoDeskReading { desk: EvoDeskId | "office"; ok: boolean; summary: string; ms: number }
+export interface EvoOffice {
+  at: string
+  desks: EvoDeskId[]
+  usesOffice: boolean
+  readings: EvoDeskReading[]
+  notes: string[]
+  baseWeights: Array<{ market: string; weightPct: number }>
+  rentKrw: number
+  rentPct: number
 }
 export interface EvoAgent {
   id: string
@@ -430,8 +449,10 @@ export interface EvoAgent {
   bottomStreak: number
   children: number
   tribe: string
-  events: Array<{ gen: number; type: "born" | "mutated" | "merged" | "absorbed" | "forked" | "retired"; detail: string }>
+  events: Array<{ gen: number; type: "born" | "mutated" | "merged" | "absorbed" | "forked" | "retired" | "tooled"; detail: string }>
   forked: boolean
+  office: EvoOffice | null
+  rentPaidKrw: number
 }
 export interface EvoGeneration {
   gen: number
@@ -470,6 +491,9 @@ export interface EvoStatus {
   tribes: Array<{ tribe: string; name: string; alive: number; capitalKrw: number }>
   archetypes: Array<{ archetype: string; alive: number }>
   genes: Array<{ key: keyof EvoGenes; min: number; max: number; int: boolean; label: string }>
+  desks: Array<{ id: EvoDeskId; label: string; labelKo: string; tool: string; server: string; rentPct: number; skill: string; tenants: number }>
+  officeRentPct: number
+  rentPaidKrw: number
   rules: { starveRatio: number; bottomQuantile: number; bottomStreakDeath: number; minAgeGens: number; childShare: number; mutationBase: number; diversityFloor: number; mergeDistance: number; mergeDependence: number }
   squad: { members: Array<{ id: string; name: string; archetype: string; fitness: number; capitalKrw: number; lastWeights: Array<{ market: string; weightPct: number }> }>; targets: Array<{ market: string; weightPct: number }> }
   history: EvoGeneration[]
