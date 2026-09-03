@@ -19,6 +19,7 @@ import { cryptoUniverse } from "./crypto/universe.js";
 import { startYahooTicks } from "./data/yahoo.js";
 import { officeLoop } from "./office/loop.js";
 import { evolution } from "./evolution/population.js";
+import { benchmarkStore } from "./control/benchmark-store.js";
 import { controlPlane } from "./control/plane.js";
 
 const app = express();
@@ -71,6 +72,14 @@ controlPlane.attachSentiment(() => cryptoDesk.pipeline.tracker.bySymbol().map((x
 controlPlane.attachDrawdown(() => { const s = cryptoDesk.status(); const rows = cryptoDesk.paperEquity(5000); const peak = Math.max(s.paperStartKrw, ...rows.map((r) => r.equityKrw)); return peak > 0 ? Math.max(0, ((peak - s.equityKrw) / peak) * 100) : 0; });
 controlPlane.attachEquity(() => cryptoDesk.status().equityKrw);
 controlPlane.startScheduler();
+// 벤치마크 기준 — 장부 since와 어긋나면 그 시각의 1분봉으로 복원 (BTC 보유 · 유니버스 동일비중).
+// 유니버스는 부팅 직후 메이저 5개뿐이라 첫 갱신(change)을 기다린다. 갱신이 안 오면 3분 뒤 있는 것으로 잡는다
+{
+  let done = false;
+  const ensure = () => { if (done) return; done = true; const d = cryptoDesk.status(); if (d.paperSince) void benchmarkStore.ensure(d.paperSince, d.paperStartKrw, cryptoUniverse.markets()).catch((e) => logger.warn("[benchmark] ensure failed", { error: (e as Error).message })); };
+  cryptoUniverse.once("change", ensure);
+  setTimeout(ensure, 3 * 60_000).unref();
+}
 controlPlane.attachPrices(() => {
   const m = new Map<string, number>();
   for (const q of cryptoDesk.quotes()) m.set(q.market, q.priceKrw);

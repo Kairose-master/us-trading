@@ -114,6 +114,13 @@ export const upbit = {
     return batch.reverse();
   },
 
+  /** 특정 시각 직전 1분봉의 종가 — 벤치마크 기준 복원용. 그 분의 봉이 없으면(거래 없음) 그 앞 봉이 온다 */
+  async priceAt(market: string, iso: string): Promise<number> {
+    const to = new Date(Date.parse(iso) + 60_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const batch: UpbitCandle[] = await getJson(`/candles/minutes/1?market=${market}&count=1&to=${encodeURIComponent(to)}`);
+    return batch[0]?.trade_price ?? 0;
+  },
+
   async dayCandles(market: string, n: number): Promise<UpbitCandle[]> {
     const out: UpbitCandle[] = [];
     let to: string | null = null;

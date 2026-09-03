@@ -609,6 +609,17 @@ export interface ControlPolicy {
   convictionMin: number
 }
 export interface CouncilModeStat { mode: "quorum" | "weighted"; active: boolean; marks: number; hits: number; hitRate: number | null; cumReturnPct: number; decisions: number; targets: ControlTarget[] }
+export interface ControlBenchmark {
+  since: string
+  source: "live" | "minute-candle" | "unknown"
+  hours: number
+  portfolioPct: number
+  btcHoldPct: number | null
+  ewUniversePct: number | null
+  ewCoverage: { priced: number; basket: number }
+  alphaVsBtcPct: number | null
+  alphaVsEwPct: number | null
+}
 export interface ControlStatus {
   autopilot: boolean
   paused: boolean
@@ -622,6 +633,7 @@ export interface ControlStatus {
   managers: ControlManager[]
   engines: ControlEngine[]
   attribution: ControlAttribution
+  benchmark: ControlBenchmark | null
   councilModes: CouncilModeStat[]
   proposals: ControlProposal[]
   pending: ControlDecision | null

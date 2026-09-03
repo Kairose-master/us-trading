@@ -380,6 +380,27 @@ export function CommandCenter() {
           <span>제안 유효 {s.policy.proposalTtlH}h</span>
           <span>마지막 집행 {s.lastExecutedAt ? ago(s.lastExecutedAt) : "없음"}</span>
         </div>
+        {(() => {
+          const b = s.benchmark
+          const f = (x: number | null) => (x === null ? "—" : `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`)
+          const tone = (x: number | null) => (x === null ? "text-muted-foreground" : x >= 0 ? "text-emerald-300" : "text-rose-300")
+          return (
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2 font-mono text-[11px] tnum" title={b ? `기준 ${new Date(b.since).toLocaleString("ko-KR")} · 기준가 출처 ${b.source === "live" ? "초기화 순간 실시세" : b.source === "minute-candle" ? "부팅 시 1분봉 복원" : "없음"} · 동일비중 바스켓 ${b.ewCoverage.priced}/${b.ewCoverage.basket}종목` : "다음 5분 마크에 계산"}>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">벤치마크 · 초기화 이후{b ? ` ${b.hours.toFixed(1)}h` : ""}</span>
+              {b ? (
+                <>
+                  <span>장부 <b className={tone(b.portfolioPct)}>{f(b.portfolioPct)}</b></span>
+                  <span>BTC 보유 <b className={tone(b.btcHoldPct)}>{f(b.btcHoldPct)}</b></span>
+                  <span>유니버스 동일비중 <b className={tone(b.ewUniversePct)}>{f(b.ewUniversePct)}</b> <span className="text-muted-foreground">({b.ewCoverage.priced}종목)</span></span>
+                  <span>초과 vs BTC <b className={tone(b.alphaVsBtcPct)}>{f(b.alphaVsBtcPct)}</b></span>
+                  <span>초과 vs 동일비중 <b className={tone(b.alphaVsEwPct)}>{f(b.alphaVsEwPct)}</b></span>
+                </>
+              ) : (
+                <span className="text-muted-foreground">기준 대기 — 다음 마크에 계산</span>
+              )}
+            </div>
+          )
+        })()}
         {s.attribution && (
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2 font-mono text-[11px] tnum">
             <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">귀속 · {s.attribution.intervalMin}분 마크</span>

@@ -4,9 +4,12 @@ import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
 import { cryptoDesk } from "../crypto/desk.js";
+import { cryptoUniverse } from "../crypto/universe.js";
 import { upbit } from "../crypto/upbit.js";
 import { riskManager } from "../risk/riskManager.js";
 import { MANAGERS, convene, type CouncilMode, type CouncilResult, type SentimentRead } from "./council.js";
+import { benchmarkStore } from "./benchmark-store.js";
+import { capTurnover } from "./rebalance.js";
 
 /**
  * 제어 평면 — 대시보드의 엔진들(스캐너·오피스·진화·파이프라인 신호)이 각자 장부를 덮어쓰던
@@ -150,6 +153,7 @@ class ControlPlane extends EventEmitter {
       managers: MANAGERS.map((m) => { const e = ENGINES.some((x) => x.id === m.id) ? this.st.engines[m.id as EngineId] : null; return { ...m, enabled: e ? e.enabled : true, weight: e ? +e.weight.toFixed(4) : null, lastProposal: e?.lastProposal ?? null, cumReturnPct: e ? +e.cumReturnPct.toFixed(2) : null }; }),
       engines: ENGINES.map((e) => { const s = this.st.engines[e.id]; return { ...e, enabled: s.enabled, weight: +s.weight.toFixed(4), share: s.enabled ? +(s.weight / wsum).toFixed(3) : 0, lastProposal: s.lastProposal, proposals: s.proposals, cumReturnPct: +s.cumReturnPct.toFixed(2), days: s.returns.length, marks: s.marks, hits: s.hits, hitRate: s.marks ? +(s.hits / s.marks).toFixed(3) : null, avgIntervalPct: s.returns.length ? +((s.returns.reduce((a, x) => a + x, 0) / s.returns.length) * 100).toFixed(4) : null, lastMarkAt: s.lastMarkAt }; }),
       attribution: this.attribution(),
+      benchmark: benchmarkStore.current(),
       councilModes: (["quorum", "weighted"] as CouncilMode[]).map((m) => { const x = this.st.modeStats[m]; return { mode: m, active: m === this.st.policy.councilMode, marks: x.marks, hits: x.hits, hitRate: x.marks ? +(x.hits / x.marks).toFixed(3) : null, cumReturnPct: +x.cumReturnPct.toFixed(3), decisions: x.decisions, targets: x.targets }; }),
       proposals: this.activeProposals(),
       pending: this.st.pending,
@@ -203,20 +207,8 @@ class ControlPlane extends EventEmitter {
     this.st.modeStats[otherMode].targets = shadowCouncil.targets; this.st.modeStats[otherMode].decisions++;
     let targets = council.targets;
     const constraints = [...council.constraints];
-    // 최대 회전: 목표가 현재와 너무 다르면 그 방향으로 maxTurnoverPct만큼만 움직인다 (부분 리밸런스)
-    {
-      const cur = new Map(holdings.map((h) => [h.market, h.weightPct]));
-      let want = 0;
-      for (const m of new Set([...cur.keys(), ...targets.map((t) => t.market)])) want += Math.abs((targets.find((t) => t.market === m)?.weightPct ?? 0) - (cur.get(m) ?? 0));
-      want /= 2;
-      if (want > pol.maxTurnoverPct && want > 0) {
-        const k = pol.maxTurnoverPct / want;
-        const blended = new Map<string, number>();
-        for (const m of new Set([...cur.keys(), ...targets.map((t) => t.market)])) { const c = cur.get(m) ?? 0, t = targets.find((x) => x.market === m)?.weightPct ?? 0; blended.set(m, +(c + k * (t - c)).toFixed(2)); }
-        targets = [...blended].map(([market, weightPct]) => ({ market, weightPct })).filter((t) => t.weightPct >= 0.5);
-        constraints.push(`risk: turnover ${want.toFixed(1)}% → capped ${pol.maxTurnoverPct}% (moved ${(k * 100).toFixed(0)}% of the way toward the council target)`);
-      }
-    }
+    // 최대 회전: 목표가 현재와 너무 다르면 그 방향으로 maxTurnoverPct만큼만 움직인다 (부분 리밸런스, 순수 함수 — rebalance.ts)
+    { const cap = capTurnover(holdings, targets, pol.maxTurnoverPct); targets = cap.targets; if (cap.note) constraints.push(cap.note); }
     const gross = targets.reduce((a, t) => a + t.weightPct, 0);
     const rationale = [...council.summary, ...council.tally.map((t) => `${t.market.replace("KRW-", "")}: ${t.outcome}${t.outcome === "ADOPTED" ? ` ${t.weightPct}%` : ""} — ${t.why}`)];
     if (riskManager.killSwitchActive) constraints.push("KILL SWITCH active — decision blocked");
@@ -288,6 +280,14 @@ class ControlPlane extends EventEmitter {
     if (this.st.pending) { const d = this.st.pending; d.status = "skipped"; d.rationale.push("paper ledger reset — decision discarded"); this.st.pending = null; this.push(d); }
     this.st.lastExecutedAt = null;
     this.st.policy = { ...DEFAULT_POLICY };
+    // 벤치마크 기준 = 초기화 순간의 실시세 (BTC 보유 · 유니버스 동일비중)
+    {
+      const desk = cryptoDesk.status();
+      const markets = [...new Set(["KRW-BTC", ...cryptoUniverse.markets()])];
+      void this.pricesFor(markets.map((market) => ({ market, weightPct: 0 })))
+        .then((px) => benchmarkStore.rebaseLive(desk.paperSince ?? new Date().toISOString(), desk.paperStartKrw, cryptoUniverse.markets(), Object.fromEntries(px)))
+        .catch((e) => logger.warn("[benchmark] rebase after reset failed", { error: (e as Error).message }));
+    }
     logger.warn("[control] ledger reset acknowledged — policy back to defaults", this.st.policy);
     this.save(); this.emitState();
     // 빈 장부를 협의회가 곧바로 다시 채운다 — 다음 제안이 올 때까지 현금으로 기다릴 이유가 없다
@@ -400,6 +400,15 @@ class ControlPlane extends EventEmitter {
         }
         x.lastMarkPrices = cur;
       }
+    }
+    // 벤치마크 — BTC 보유 · 기준 시점 유니버스 동일비중 vs 장부
+    {
+      const need = benchmarkStore.markets().filter((m) => !(prices.get(m)! > 0));
+      const more = need.length ? await this.pricesFor(need.map((market) => ({ market, weightPct: 0 }))) : prices;
+      const all: Record<string, number> = {};
+      for (const [m, px] of prices) if (px > 0) all[m] = px;
+      for (const [m, px] of more) if (px > 0) all[m] = px;
+      benchmarkStore.mark(all, this.equityOf());
     }
     // 집행된 결정의 실현 결과 — 가장 최근 집행부터 지금까지의 장부 에쿼티
     const eq = this.equityOf();

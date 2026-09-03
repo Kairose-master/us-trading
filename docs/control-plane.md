@@ -140,6 +140,36 @@
   변화율과 마크 수. `GET /control`의 `attribution.decisions`가 결정 타율(마감된 결정 중
   양의 비율), 결정당 평균, 합계, 진행 중 결정을 낸다. 홈의 "귀속 · 5분 마크" 줄이 그것이다.
 
+## 벤치마크 — 우리 결정이 뭔가를 더했나 (2026-09-03)
+
+이 줄이 없으면 +2%가 잘한 건지, 시장이 +5%인데 못한 건지 알 수 없다. 장부 초기화
+시점을 기준으로 셋을 나란히 둔다 (`lib`: `backend/src/control/benchmark.ts` 순수 함수,
+보관·복원은 `benchmark-store.ts`, 매 5분 마크마다 실시세로 재계산, `GET /control`의
+`benchmark`, 홈의 "벤치마크 · 초기화 이후" 줄):
+
+| 줄 | 뜻 |
+|---|---|
+| 장부 | 실제 페이퍼 에쿼티 (비용 포함) |
+| BTC 보유 | 같은 시점에 BTC를 사서 들고만 있었다면 |
+| 유니버스 동일비중 | 같은 시점의 투자 유니버스를 동일비중으로 사서 들고만 있었다면 — **기준 시점 바스켓 고정** (이후 유니버스가 바뀌어도 바스켓은 그대로: lookahead 없음) |
+| 초과 vs BTC / vs 동일비중 | 장부 − 벤치마크. 이게 0 근처거나 음수면 협의회·진화·오피스는 비용만 낸 것이다 |
+
+기준가 출처는 둘이다. 초기화(`POST /crypto/paper/reset`) 직후엔 그 순간의 실시세
+(`source: live`). 부팅 시 벤치마크 파일의 since가 장부의 since와 다르면 — 파일이 없거나
+예전 장부 것이면 — 장부 since 시각의 Upbit 1분봉으로 복원한다(`source: minute-candle`).
+복원 시 바스켓은 부팅 시점의 유니버스라 그 한 번은 약간의 lookahead가 있다; 홈 줄의
+툴팁에 출처가 적힌다. 현재가가 없는 종목(상장폐지·이탈)은 바스켓 평균에서 빠지고,
+커버리지가 절반 아래면 동일비중 숫자를 내지 않는다.
+
+## 테스트 (2026-09-03)
+
+`backend`에 vitest가 들어갔다: `npm test` (`npm run check` = typecheck + test).
+`.github/workflows/ci.yml`이 push·PR마다 백엔드 typecheck·test와 프론트 typecheck를
+돈다. 지금 덮는 것은 순수 함수뿐이다 — 협의회(`council.test.ts`: 정족수·신호 단독 금지·
+반대 수정·이력·거부권·드로다운·정책 한도·비례제 콜드스타트 동치·고standing 단독 매수·
+convictionMin), 벤치마크(`benchmark.test.ts`), 회전 상한(`rebalance.test.ts` — plane에서
+순수 함수로 빼냈다), `asBool`. 데스크 체결·상태 마이그레이션·진화 평가는 아직 없다.
+
 ## 이력(hysteresis) — 정족수는 들어올 때만
 
 2026-09-02 밤 장부가 매시간 SOL·ETH·BTC를 사고팔았다. 원인은 정족수 경계였다:

@@ -2,7 +2,7 @@ import "dotenv/config";
 import { z } from "zod";
 
 /** 불리언 env — "true"/"1"/"yes"/"on"(대소문자 무관)을 참으로. Railway 대시보드에 1로 넣어도 켜진다 */
-const asBool = (v: string) => /^(true|1|yes|on)$/i.test(v.trim());
+export const asBool = (v: string) => /^(true|1|yes|on)$/i.test(v.trim());
 
 const Env = z.object({
   KIS_APP_KEY: z.string().default(""),
