@@ -8,6 +8,8 @@ import { handsel, type HandselConnector } from "./handsel-client.js";
 import { buildDecision, delegationHeadline, renderConversation, DEFAULT_GATE, type DecisionRecord } from "./decision.js";
 import { OFFICE_ROSTER, OFFICE_STEP_COUNT, OFFICE_TEMPLATE_ID, roleForStep } from "./roster.js";
 import { deliberateLocally } from "./local-office.js";
+import { buildOfficeCandidates, OFFICE_CANDIDATES_MAX } from "./candidates.js";
+import { MAJORS } from "../crypto/universe.js";
 
 /**
  * 오피스 결정 루프 — "모델들이 대화하고, 자율 결정하고, 그 결정이 매매가 된다."
@@ -140,12 +142,15 @@ class OfficeLoop {
   /** 스캐너 유니버스 → 오피스 스코프 문자열. 후보가 없으면 null (오피스를 안 부른다) */
   async buildScope(): Promise<{ scope: string; markets: string[] } | null> {
     const scan = await scannerServer.scan();
-    const picks = scan.portfolio.targets.map((t) => t.market);
-    const pool = picks.length >= 3 ? picks : scan.scores.filter((s) => s.pBull >= 0.5).slice(0, 5).map((s) => s.market);
+    // 후보 = 메이저 + 보유분 + 60일 위험조정 상위 (20일 +40% 이상 과열 제외). 스캐너 상위 5개(=20일 모멘텀 1등들)를 그대로 넘기던 것을 끝냈다
+    const held = controlPlane.status().holdings.map((h) => h.market);
+    const cand = buildOfficeCandidates({ scores: scan.scores, majors: MAJORS, held, max: OFFICE_CANDIDATES_MAX });
+    const pool = cand.markets;
     if (pool.length < 2) return null;
+    logger.info("[office] candidates", { markets: pool.map((m) => m.slice(4)), notes: cand.notes });
     const coins = pool.map((m) => m.replace("KRW-", "")).join(", ");
     const scope =
-      `${pool.join(", ")} — Upbit crypto basket (${coins}). ` +
+      `${pool.join(", ")} — Upbit crypto basket (${coins}). Candidates are the majors, current holdings and the top names by 60-day risk-adjusted return; names up more than ${40}% in 20 days are excluded as overheated. "No positions" (all weights 0) is a valid decision. ` +
       `The FINAL deliverable (Investment committee decision) MUST end with a fenced json block exactly like ` +
       "```json\n{\"targets\":[{\"market\":\"KRW-XXX\",\"weightPct\":0}],\"cashPct\":0}\n```" +
       ` — one entry per basket market with target weight percent (0 if excluded), weights sum ≤ 100, per-market cap ${DEFAULT_GATE.maxWeightPct}%. This block is machine-read by the trading desk (paper ledger).`;
@@ -353,13 +358,14 @@ class OfficeLoop {
         run.phase = "rejected";
         logger.info("오피스 결정 거부 — 실행 안 함", { id: run.id, reasons: decision.reasons });
       } else {
-        // 장부 직접 회전 대신 제어 평면 제안 — 확신도 = 통과 단계 비율 (전부 통과했으니 1에 가깝다)
+        // 장부 직접 회전 대신 제어 평면 제안 — 확신도는 위원장이 퀀트 우위(t값)에서 유도한 값. 없으면(구 Handsel 산출물) 통과 단계 비율
         const passed = decision.steps.filter((x) => x.status === "Completed").length;
+        const confidence = decision.confidence ?? (decision.steps.length ? passed / decision.steps.length : 0);
         const { decision: dc } = await controlPlane.propose({
           engine: "office",
           targets: decision.targets,
-          confidence: decision.steps.length ? passed / decision.steps.length : 0,
-          evidence: `${run.id} (${run.mode ?? "handsel"}) · ${passed}/${decision.steps.length} ${run.mode === "local" ? "locally accepted" : "graded"} steps passed · source ${decision.source}`,
+          confidence,
+          evidence: `${run.id} (${run.mode ?? "handsel"}) · ${passed}/${decision.steps.length} ${run.mode === "local" ? "locally accepted" : "graded"} steps passed · confidence ${confidence.toFixed(2)}${decision.confidence === null ? " (step ratio)" : " (quant edge)"} · source ${decision.source}`,
           ref: run.id,
         });
         const ex = dc?.execution;

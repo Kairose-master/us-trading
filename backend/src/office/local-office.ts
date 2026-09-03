@@ -4,6 +4,8 @@ import { mcpCall } from "../evolution/capabilities.js";
 import { parseChart, parseFlow, parseMacro, parseNews, parseRisk } from "../evolution/capabilities.js";
 import { OFFICE_ROSTER, type OfficeRole, type OfficeRoleId } from "./roster.js";
 import { DEFAULT_GATE } from "./decision.js";
+import { HOT_MOM20_PCT, OVERHEAT_MOM20_PCT } from "./candidates.js";
+import { officeConfidence, parseChartMomentum, parseQuantEdge, pumpHeadlineShare } from "./conviction.js";
 
 /**
  * 로컬 오피스 협의 — Handsel 에스크로 없이 같은 9역할 플로어를 백엔드 안에서 돌린다.
@@ -40,6 +42,18 @@ async function tool(role: OfficeRole, query: string): Promise<{ text: string; ms
   return { text, ms: Date.now() - t0, retried };
 }
 
+/** 워커 보고서 도구는 호출당 5코인까지 본다 — 후보가 그보다 많으면 5개씩 나눠 부르고 섹션을 이어 붙인다 (순차: Upbit 속도 제한) */
+const TOOL_COINS_PER_CALL = 5;
+async function toolOverCoins(role: OfficeRole, coins: string[]): Promise<{ text: string; ms: number }> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < coins.length; i += TOOL_COINS_PER_CALL) chunks.push(coins.slice(i, i + TOOL_COINS_PER_CALL));
+  const texts: string[] = []; let ms = 0;
+  for (const c of chunks) { const r = await tool(role, c.join(" ")); ms += r.ms; texts.push(r.text); }
+  // 두 번째 청크부터는 보고서 머리글(# …)을 떼고 섹션만 이어 붙인다
+  const text = texts.map((t, i) => (i === 0 ? t : t.replace(/^[^\n]*\n/, ""))).join("\n");
+  return { text, ms };
+}
+
 /** 보고서에 실데이터 섹션이 있는가 — 기계적 수락 조건 */
 function hasSections(text: string, markets: string[]): string[] {
   return markets.filter((m) => new RegExp(`^## ${m}\\b(?!.*no data)`, "m").test(text) && !new RegExp(`^## ${m} — no data`, "m").test(text));
@@ -59,7 +73,6 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   const steps: LocalStep[] = [];
   const sections: string[] = [];
   const coins = markets.map(sym);
-  const q = coins.join(" ");
   let toolCalls = 0;
   let rounds = 0;
   const role = (id: OfficeRoleId) => OFFICE_ROSTER.find((r) => r.id === id)!;
@@ -73,7 +86,7 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   await Promise.all(analysts.map(async (id) => {
     const r = role(id); start(r);
     try {
-      const { text, ms } = await tool(r, id === "macro-analyst" ? "crypto basket risk read" : q); toolCalls++;
+      const { text, ms } = id === "macro-analyst" ? await tool(r, "crypto basket risk read") : await toolOverCoins(r, coins); toolCalls += id === "macro-analyst" ? 1 : Math.ceil(coins.length / TOOL_COINS_PER_CALL);
       reports[id] = text;
       const ok = id === "macro-analyst" ? /read: (risk-on|risk-off|mixed)/.test(text) : hasSections(text, markets).length > 0;
       mark(r, ok ? "Completed" : "❌", ms, ok ? (id === "macro-analyst" ? parseMacro(text) : `${hasSections(text, markets).length}/${markets.length} markets reported`) : "no real-data section — not accepted");
@@ -90,7 +103,9 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   const quant = role("quant-modeler"); start(quant);
   let quantText = "";
   let quantMs = 0;
-  try { const r = await tool(quant, q); toolCalls++; quantText = r.text; quantMs = r.ms; } catch (e) { quantText = `(tool failed: ${(e as Error).message})`; }
+  try { const r = await toolOverCoins(quant, coins); toolCalls += Math.ceil(coins.length / TOOL_COINS_PER_CALL); quantText = r.text; quantMs = r.ms; } catch (e) { quantText = `(tool failed: ${(e as Error).message})`; }
+  const edges = parseQuantEdge(quantText);
+  const momentum = parseChartMomentum(reports["chart-analyst"] ?? "");
   const sigma = new Map<string, number>();
   const kellyHalf = new Map<string, number>();
   for (const sec of quantText.split(/\n(?=## )/)) {
@@ -103,11 +118,21 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
     const c = chart.find((x) => x.market === mkt), n = news.find((x) => x.market === mkt), f = flow.find((x) => x.market === mkt);
     let score = 0; const why: string[] = [];
     if (c) { if (c.above === true) { score += 1; why.push("above MA20"); } else if (c.above === false) { score -= 1; why.push("below MA20"); } if (c.regime && /약세/.test(c.regime) && (c.pBear ?? 0) > (c.pBull ?? 0)) { score -= 1; why.push(`regime ${c.regime}`); } else if (c.regime) why.push(`regime ${c.regime}`); }
-    if (n) { score += Math.max(-1, Math.min(1, n.score * 2)); why.push(`news ${n.label} ${n.score >= 0 ? "+" : ""}${n.score}`); }
+    const mo = momentum.find((x) => x.market === mkt);
+    const overheated = (mo?.mom20Pct ?? 0) >= OVERHEAT_MOM20_PCT, hot = !overheated && (mo?.mom20Pct ?? 0) >= HOT_MOM20_PCT;
+    if (overheated) { score -= 1; why.push(`overheated 20d +${mo!.mom20Pct}% ≥ ${OVERHEAT_MOM20_PCT}% → exit/avoid`); }
+    else if (hot) why.push(`hot 20d +${mo!.mom20Pct}% → weight halved`);
+    if (n) {
+      // 이미 일어난 급등을 묘사하는 헤드라인("surges", "jumps", "rally")은 강세 근거가 아니라 후행 보도다 — hot/과열 코인에선 뉴스 기여를 0으로
+      const pump = pumpHeadlineShare(reports["news-analyst"] ?? "", mkt);
+      if ((hot || overheated) && n.label === "BULLISH" && pump.share >= 0.5) why.push(`news ${n.label} +${n.score} discounted — ${pump.pump}/${pump.headlines} headlines describe the pump that already happened`);
+      else { score += Math.max(-1, Math.min(1, n.score * 2)); why.push(`news ${n.label} ${n.score >= 0 ? "+" : ""}${n.score}`); }
+    }
     if (f) { const tilt = (f.imbalance ?? 0) * 0.5 + ((f.buyShare ?? 0.5) - 0.5); score += Math.max(-0.5, Math.min(0.5, tilt)); why.push(`flow imb ${f.imbalance === null ? "?" : (f.imbalance * 100).toFixed(0) + "%"} buy ${f.buyShare === null ? "?" : (f.buyShare * 100).toFixed(0) + "%"}`); }
-    return { market: mkt, score: +score.toFixed(3), sigma: sigma.get(mkt) ?? null, kelly: kellyHalf.get(mkt) ?? null, why: why.join(", ") };
+    return { market: mkt, score: +score.toFixed(3), sigma: sigma.get(mkt) ?? null, kelly: kellyHalf.get(mkt) ?? null, hot, overheated, why: why.join(", ") };
   });
-  const picks = scored.filter((s) => s.score > 0 && s.sigma !== null && s.sigma > 0);
+  // 과열(20일 ≥ +40%)은 점수와 무관하게 후보에서 뺀다 — "나가기/회피"가 −1점으로 다른 데스크의 +에 묻히면 안 된다
+  const picks = scored.filter((s) => s.score > 0 && s.sigma !== null && s.sigma > 0 && !s.overheated);
   const inv = picks.map((p) => 1 / p.sigma!); const invSum = inv.reduce((a, b) => a + b, 0) || 1;
   let exposure = macro === "risk-off" ? 0.5 : macro === "mixed" ? 0.75 : macro === "risk-on" ? 0.9 : 0.6;
   const draft: Draft = { version: 1, targets: [], grossPct: 0, notes: [`macro ${macro} → exposure budget ${(exposure * 100).toFixed(0)}%`] };
@@ -115,6 +140,7 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
     let w = (inv[i] / invSum) * exposure * 100;
     // Kelly½ = 노출 상한. 양수면 그대로, 0 이하(200일 μ̂가 음수)면 "통계적 우위 없음" → 5% 소형 포지션까지만
     if (p.kelly !== null) w = Math.min(w, p.kelly > 0 ? p.kelly * 100 : 5);
+    if (p.hot) w *= 0.5;
     w = Math.min(w, DEFAULT_GATE.maxWeightPct);
     if (w >= 1) draft.targets.push({ market: p.market, weightPct: +w.toFixed(1), why: `${p.why}; σ ${p.sigma}%/d, kelly½ ${p.kelly ?? "n/a"}${p.kelly !== null && p.kelly <= 0 ? " (no statistical edge → capped 5%)" : ""}` });
   });
@@ -129,7 +155,7 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   let riskText = "", riskMs = 0, riskVerdict: "APPROVE" | "REVISE" | "NONE" = "NONE";
   const riskLog: string[] = [];
   for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
-    const basket = draft.targets.map((t) => sym(t.market));
+    const basket = [...draft.targets].sort((a, b) => b.weightPct - a.weightPct).slice(0, TOOL_COINS_PER_CALL).map((t) => sym(t.market));
     if (basket.length < 2) { riskVerdict = "APPROVE"; riskLog.push(`round ${round}: ${basket.length} position(s) — correlation review not applicable, APPROVE`); break; }
     try { const r = await tool(risk, basket.join(" ")); toolCalls++; riskText = r.text; riskMs += r.ms; } catch (e) { riskText = `(tool failed: ${(e as Error).message})`; break; }
     const { avgCorr } = parseRisk(riskText);
@@ -160,9 +186,15 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   // ── 4) 리밸런스 플래너 — 퀀트(최종본) + 리스크 + 자기 도구(워커의 블렌디드 알파) ────
   const planner = role("rebalance-planner"); start(planner);
   let planText = "", planMs = 0;
-  try { const r = await tool(planner, q); toolCalls++; planText = r.text; planMs = r.ms; } catch (e) { planText = `(tool failed: ${(e as Error).message})`; }
+  try { const r = await toolOverCoins(planner, coins); toolCalls += Math.ceil(coins.length / TOOL_COINS_PER_CALL); planText = r.text; planMs = r.ms; } catch (e) { planText = `(tool failed: ${(e as Error).message})`; }
   const workerTargets = new Map<string, number>();
   for (const m of planText.matchAll(/^\s*(KRW-[A-Z0-9]+): target ([\d.]+)%/gm)) workerTargets.set(m[1], Number(m[2]));
+  // 워커의 블렌디드 알파는 (1) 데스크들이 승인한 시장(모델 뷰 점수 > 0, 과열 아님)에만 쓰고 — 데스크가 거른 시장을 워커가 되살리면 안 된다 —
+  // (2) 청크마다 100%를 배분하므로 합이 100%를 넘으면 100%로 다시 정규화한다 (후보 8개 → 두 청크가 각각 100%를 주던 것: 총노출 127% 사고)
+  const approved = new Set(picks.map((x) => x.market));
+  const workerNotes: string[] = [];
+  for (const m of [...workerTargets.keys()]) if (!approved.has(m)) { workerNotes.push(`${sym(m)} dropped from worker alpha — desks did not approve it (${scored.find((x) => x.market === m)?.why ?? "not scoped"})`); workerTargets.delete(m); }
+  { const sum = [...workerTargets.values()].reduce((a, b) => a + b, 0); if (sum > 100) { for (const [m, w] of workerTargets) workerTargets.set(m, +((w * 100) / sum).toFixed(1)); workerNotes.push(`worker alpha renormalised ${sum.toFixed(0)}% → 100% (${Math.ceil(coins.length / TOOL_COINS_PER_CALL)} chunks)`); } }
   // 50/50 혼합: 퀀트 데스크의 모델 뷰 + 워커의 블렌디드 알파. 둘 다 실데이터에서 나온 숫자
   const plan = new Map<string, number>();
   for (const t of draft.targets) plan.set(t.market, t.weightPct * 0.5);
@@ -170,7 +202,7 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   let planRows = [...plan].filter(([, w]) => w >= 1).map(([market, w]) => ({ market, weightPct: +Math.min(DEFAULT_GATE.maxWeightPct, w).toFixed(1) })).sort((a, b) => b.weightPct - a.weightPct).slice(0, DEFAULT_GATE.maxPositions);
   const table = (rows: typeof planRows) => [`| # | market | action | target |`, `|---|---|---|---|`, ...rows.map((r, i) => `| ${i + 1} | ${r.market} | BUY to target | ${r.weightPct}% |`), `| ${rows.length + 1} | cash | hold | ${(100 - rows.reduce((a, r) => a + r.weightPct, 0)).toFixed(1)}% |`].join("\n");
   const planOk = planRows.length > 0 || (draft.targets.length === 0 && workerTargets.size === 0);
-  let planSection = `${head(planner)}\n\n${planText}\n\n### Rebalance proposal v1 (50% quant desk v${draft.version} + 50% worker blended alpha, cap ${DEFAULT_GATE.maxWeightPct}%, max ${DEFAULT_GATE.maxPositions})\n${table(planRows)}`;
+  let planSection = `${head(planner)}\n\n${planText}\n\n### Rebalance proposal v1 (50% quant desk v${draft.version} + 50% worker blended alpha over desk-approved markets only, cap ${DEFAULT_GATE.maxWeightPct}%, max ${DEFAULT_GATE.maxPositions})\n${workerNotes.map((n) => `  ${n}`).join("\n")}${workerNotes.length ? "\n" : ""}${table(planRows)}`;
   mark(planner, planOk ? "Completed" : "❌", planMs, planOk ? `${planRows.length} positions, gross ${planRows.reduce((a, r) => a + r.weightPct, 0).toFixed(1)}%` : "no targets from either source");
 
   // ── 5) 레드팀 — 플래너 검토 (백테스트로 반박, REVISE 라운드) ──────────────────────
@@ -208,16 +240,20 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   const final = planRows.map((r) => ({ market: r.market, weightPct: r.weightPct }));
   const gross = +final.reduce((a, t) => a + t.weightPct, 0).toFixed(1);
   const failedSteps = steps.filter((s) => s.status !== "Completed").map((s) => s.name);
+  const flagged = riskLog.some((l) => /rounds exhausted/.test(l)) || redLog.some((l) => /rounds exhausted/.test(l));
+  const conv = officeConfidence({ positions: final, edges, flagged });
   const chairLines = [
     `Committee read: ${markets.length} markets scoped; chart/news/flow/macro desks ${analysts.filter((id) => steps.find((s) => s.role === id)?.status === "Completed").length}/4 accepted; quant draft v${draft.version}; risk verdict ${riskVerdict}; red-team verdict ${redVerdict}; ${rounds} revision round(s).`,
     failedSteps.length ? `Steps not accepted: ${failedSteps.join(", ")} — decision still recorded, but the gate (loop.ts) will not execute it.` : `All ${steps.length} steps accepted.`,
-    `Decision: ${final.length ? final.map((t) => `${sym(t.market)} ${t.weightPct}%`).join(", ") : "no positions"} · gross ${gross}% · cash ${(100 - gross).toFixed(1)}%.`,
+    `Decision: ${final.length ? final.map((t) => `${sym(t.market)} ${t.weightPct}%`).join(", ") : "no positions (cash — a valid decision)"} · gross ${gross}% · cash ${(100 - gross).toFixed(1)}%.`,
+    `Confidence ${conv.confidence} — from the quant desk's measured edge (t = μ̂/σ̂·√n), not from how many steps passed:`,
+    ...conv.basis.map((b) => `  ${b}`),
     "",
     "```json",
-    JSON.stringify({ targets: markets.map((m) => ({ market: m, weightPct: final.find((t) => t.market === m)?.weightPct ?? 0 })), cashPct: +(100 - gross).toFixed(1) }),
+    JSON.stringify({ targets: markets.map((m) => ({ market: m, weightPct: final.find((t) => t.market === m)?.weightPct ?? 0 })), cashPct: +(100 - gross).toFixed(1), confidence: conv.confidence }),
     "```",
   ];
-  mark(chair, "Completed", 0, `${final.length} positions, gross ${gross}%`);
+  mark(chair, "Completed", 0, `${final.length} positions, gross ${gross}%, confidence ${conv.confidence}`);
   sections.push(`${head(chair)}\n\n${chairLines.join("\n")}`);
 
   const accepted = steps.filter((s) => s.status === "Completed").length;

@@ -22,6 +22,8 @@ export interface DecisionRecord {
   source: "json-block" | "table" | "lines";
   targets: DecisionTarget[];
   cashPct: number;
+  /** 위원장이 JSON에 적은 확신도 (퀀트 우위에서 유도) — 없으면 null, loop.ts가 단계 통과율로 대체 */
+  confidence: number | null;
   /** 단계별 판정 (delegation_status 텍스트에서 추출) */
   steps: Array<{ name: string; status: string }>;
   allPassed: boolean;
@@ -83,19 +85,19 @@ export function roleExcerpts(output: string): Array<{ role: string; excerpt: str
 }
 
 /** 산출물에서 타깃 비중을 뽑는다 — JSON 블록 > 주문표 > 문장 순으로 시도 */
-export function extractTargets(output: string): { source: DecisionRecord["source"]; targets: DecisionTarget[]; cashPct: number } | null {
+export function extractTargets(output: string): { source: DecisionRecord["source"]; targets: DecisionTarget[]; cashPct: number; confidence?: number } | null {
   // 1) ```json { "targets": [...], "cashPct": n } ```
   const blocks = [...output.matchAll(/```json\s*([\s\S]*?)```/g)].map((m) => m[1]);
   for (const b of blocks.reverse()) {
     try {
-      const j = JSON.parse(b) as { targets?: Array<{ market?: string; weightPct?: number }>; cashPct?: number };
+      const j = JSON.parse(b) as { targets?: Array<{ market?: string; weightPct?: number }>; cashPct?: number; confidence?: number };
       if (Array.isArray(j.targets)) {
         const targets = j.targets
           .filter((t) => typeof t.market === "string" && typeof t.weightPct === "number")
           .map((t) => ({ market: String(t.market).toUpperCase(), weightPct: +Number(t.weightPct).toFixed(1) }));
         if (targets.length) {
           const alloc = targets.reduce((a, t) => a + t.weightPct, 0);
-          return { source: "json-block", targets, cashPct: typeof j.cashPct === "number" ? j.cashPct : +(100 - alloc).toFixed(1) };
+          return { source: "json-block", targets, cashPct: typeof j.cashPct === "number" ? j.cashPct : +(100 - alloc).toFixed(1), ...(typeof j.confidence === "number" && j.confidence >= 0 && j.confidence <= 1 ? { confidence: j.confidence } : {}) };
         }
       }
     } catch {
@@ -157,7 +159,9 @@ export function buildDecision(p: {
     if (over.length) reasons.push(`코인당 상한 ${gate.maxWeightPct}% 초과: ${over.map((o) => `${o.market} ${o.weightPct}%`).join(", ")}`);
     const alloc = targets.reduce((a, t) => a + t.weightPct, 0);
     if (alloc > 100.5) reasons.push(`비중 합 ${alloc.toFixed(1)}% > 100%`);
-    if (targets.length > gate.maxPositions) reasons.push(`포지션 수 ${targets.length} > ${gate.maxPositions}`);
+    // 비중 0은 "후보였지만 안 산다"는 답이지 포지션이 아니다 — 위원장 JSON은 후보 전부를 적고 제외한 것에 0을 쓴다
+    const held = targets.filter((t) => t.weightPct > 0);
+    if (held.length > gate.maxPositions) reasons.push(`포지션 수 ${held.length} > ${gate.maxPositions}`);
   }
 
   return {
@@ -166,6 +170,7 @@ export function buildDecision(p: {
     source: ext?.source ?? "lines",
     targets,
     cashPct,
+    confidence: ext?.confidence ?? null,
     steps,
     allPassed,
     executable: allPassed && ext !== null && reasons.length === 0,
