@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { Radar, Radio, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getContracts, getScanner, getScannerBacktest, getScannerSpa, getUniverse, isBackendNotConfigured, TIMELOCK_IMPACT_KO } from "@/lib/api"
+import { getContracts, getScanner, getScannerBacktest, getScannerSpa, getTimelockVerify, getUniverse, isBackendNotConfigured, TIMELOCK_IMPACT_KO } from "@/lib/api"
 
 /**
  * 알트코인 스캐너 — 백엔드 스캔(/api/crypto/scanner)을 보여준다. 업비트 KRW 거래대금
@@ -34,6 +34,7 @@ export function ScannerPageClient() {
   const { data: uni } = useSWR("crypto-universe", getUniverse, { refreshInterval: 60_000 })
   const { data: spa } = useSWR("altcoin-scan-spa", getScannerSpa, { revalidateOnFocus: false, refreshInterval: 6 * 60 * 60_000 })
   const { data: contracts } = useSWR("crypto-contracts", () => getContracts(), { revalidateOnFocus: false, refreshInterval: 12 * 60 * 60_000 })
+  const { data: verify } = useSWR("crypto-timelock-verify", getTimelockVerify, { revalidateOnFocus: false, refreshInterval: 24 * 60 * 60_000 })
   const [busy, setBusy] = useState(false)
   const portfolio = data?.portfolio ?? null
 
@@ -224,6 +225,62 @@ export function ScannerPageClient() {
             <p className="text-muted-foreground">
               셀렉터가 있다 = <b>진입점이 있다</b>. "소유자가 무한 발행한다"가 아니다 — 상한·권한은 소스와 정책이 정하고, 이 스캔은 그것까지 보지 않는다. 자체 체인 코인(BTC·ETH·SOL·DOGE·ONG)은 EVM 컨트랙트가 없어 분석 대상이 아니다.
             </p>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+          <h2 className="text-sm font-semibold">임박한 악재 예정 회피가 도움 되는가 — 사건 스터디 (룩어헤드 없음)</h2>
+          {verify && (
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+              {verify.historySpanDays}일 이력 · owner가 타임락인 종목 {verify.timelockedSymbols.length}개
+            </span>
+          )}
+        </div>
+        {!verify ? (
+          <div className="p-4 text-xs text-muted-foreground">검정 대기 중…</div>
+        ) : (
+          <div className="flex flex-col gap-2 p-4 text-xs">
+            <p className="text-muted-foreground">
+              오피스 리스크 총괄은 이미 로직 교체·공급 변경·전송 제한이 임박하면 비중을 깎는다(×0.5~0.75). 여기는 그 규칙이 근거가 있는지 사후에 잰다 — 오늘의 owner 분류를 과거 가격에 되돌려 적용하지 않는다.
+              쓰는 사실은 "그 블록 시각에 그 사건이 났다"는 것 하나뿐이고, target·calldata·eta는 그 순간 이미 온체인에 공개돼 있었다. 공표 시점부터 eta까지 보유했으면 BTC 보유 대비 어땠는지를 잰다.
+            </p>
+            {verify.timelockedSymbols.length === 0 ? (
+              <p className="text-muted-foreground">{verify.note}</p>
+            ) : (
+              <>
+                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 font-mono tnum">
+                  <span>
+                    사건 <b>{verify.pooled.n}</b>건
+                    {verify.pooled.n > 0 && (
+                      <>
+                        {" · "}평균 스프레드{" "}
+                        <b className={(verify.pooled.meanSpreadPct ?? 0) < 0 ? "text-emerald-300" : "text-rose-300"}>
+                          {verify.pooled.meanSpreadPct === null ? "—" : `${verify.pooled.meanSpreadPct >= 0 ? "+" : ""}${verify.pooled.meanSpreadPct.toFixed(2)}%p`}
+                        </b>
+                        {" · "}p = {verify.pooled.bootstrapP?.toFixed(3) ?? "—"}
+                      </>
+                    )}
+                  </span>
+                  <span className={verify.pooled.reliable ? "text-emerald-300" : "text-amber-300"}>
+                    {verify.pooled.reliable ? "결론 낼 표본" : `표본 부족 (권장 최소 ${verify.pooled.minReliableN}건)`}
+                  </span>
+                </div>
+                <p className="text-muted-foreground">{verify.pooled.note}</p>
+                <div className="flex flex-col gap-1 rounded-md border border-border/70 bg-muted/20 p-2">
+                  {verify.perToken.map((t) => (
+                    <span key={t.symbol} className="font-mono text-[10px] text-muted-foreground">
+                      <b className="text-foreground">{t.symbol}</b> 악재 사건 {t.adverseFound}건
+                      {t.priced.length > 0 && (
+                        <> · {t.priced.map((p) => `${p.etaIso.slice(0, 10)} ${p.spreadPct >= 0 ? "+" : ""}${p.spreadPct.toFixed(2)}%p`).join(", ")}</>
+                      )}
+                      {t.skipped.length > 0 && <span className="text-amber-300"> · 건너뜀 {t.skipped.length}건</span>}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
       </Card>

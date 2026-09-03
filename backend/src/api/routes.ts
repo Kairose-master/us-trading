@@ -15,6 +15,7 @@ import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { contractDesk } from "../onchain/contract-desk.js";
+import { verifyDesk } from "../onchain/timelock-verify.js";
 import { cryptoUniverse } from "../crypto/universe.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
@@ -485,6 +486,11 @@ router.get("/crypto/contracts", async (req, res) => {
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
 // 데이터 스누핑 검정 — "유니버스 최고가 BTC 보유를 이긴 게 실력인가 30번 본 결과인가"
+// 임박한 악재 예정 회피가 실제로 도움 되는지 — 룩어헤드 없는 사건 스터디 (docs/onchain-contracts.md)
+router.get("/crypto/timelock-verify", async (req, res) => {
+  try { res.json(await verifyDesk.report(req.query.force === "1")); }
+  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
 router.get("/crypto/scanner/spa", async (req, res) => {
   try {
     const r = await scannerServer.spa(req.query.force === "1");

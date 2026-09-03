@@ -756,6 +756,14 @@ export interface ScannerSpa {
 export async function getScannerSpa(): Promise<ScannerSpa> {
   return req("crypto/scanner/spa")
 }
+/** 임박한 악재 예정 회피가 실제로 도움 되는지 — 사건 스터디 (룩어헤드 없음) */
+export interface PricedTimelockEvent { market: string; key: string; impact: string; announceIso: string; etaIso: string; tokenReturnPct: number; benchReturnPct: number; spreadPct: number; days: number }
+export interface EventStudyResult { n: number; meanSpreadPct: number | null; medianSpreadPct: number | null; bootstrapP: number | null; bootstrapIters: number; minReliableN: number; reliable: boolean; note: string }
+export interface TokenEventReport { symbol: string; timelockAddress: string; window: { fromBlock: number; toBlock: number }; adverseFound: number; priced: PricedTimelockEvent[]; skipped: Array<{ key: string; why: string }> }
+export interface TimelockVerifyReport { ts: string; historySpanDays: number; timelockedSymbols: string[]; perToken: TokenEventReport[]; pooled: EventStudyResult; note: string }
+export async function getTimelockVerify(): Promise<TimelockVerifyReport> {
+  return req("crypto/timelock-verify")
+}
 /** 컨트랙트 분석 — 배포된 바이트코드가 보유자에게 무엇을 할 수 있는지 (크립토의 "공시") */
 export interface ContractFinding { sel: string; signature: string; severity: "high" | "medium" | "info"; meaning: string; where: "proxy" | "implementation" }
 export interface ContractProfile {
