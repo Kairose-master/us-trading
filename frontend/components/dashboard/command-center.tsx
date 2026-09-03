@@ -185,9 +185,10 @@ function EngineRow({ e, onChange }: { e: ControlEngine; onChange: (patch: { enab
         </button>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">{e.description}</p>
-      <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-[11px] tnum">
+      <div className="mt-2 grid grid-cols-4 gap-2 font-mono text-[11px] tnum">
         <div><span className="text-muted-foreground">지분 </span>{(e.share * 100).toFixed(0)}%</div>
-        <div><span className="text-muted-foreground">누적 </span><span className={e.cumReturnPct > 0 ? "text-emerald-300" : e.cumReturnPct < 0 ? "text-rose-300" : ""}>{e.cumReturnPct >= 0 ? "+" : ""}{e.cumReturnPct.toFixed(2)}%</span><span className="text-muted-foreground"> /{e.days}d</span></div>
+        <div><span className="text-muted-foreground">누적 </span><span className={e.cumReturnPct > 0 ? "text-emerald-300" : e.cumReturnPct < 0 ? "text-rose-300" : ""}>{e.cumReturnPct >= 0 ? "+" : ""}{e.cumReturnPct.toFixed(2)}%</span></div>
+        <div title="5분 마크 중 양의 구간 비율"><span className="text-muted-foreground">타율 </span>{e.hitRate === null ? "—" : `${(e.hitRate * 100).toFixed(0)}%`}<span className="text-muted-foreground"> /{e.marks ?? 0}</span></div>
         <div><span className="text-muted-foreground">제안 </span>{e.proposals}회</div>
       </div>
       <div className="mt-2 flex items-center gap-2">
@@ -227,7 +228,7 @@ function DecisionCard({ d, pending, onApprove, onReject, busy }: { d: ControlDec
           <span key={t.market} className="rounded border border-border px-1.5 py-0.5 font-mono text-[11px] tnum">{sym(t.market)} {t.weightPct.toFixed(1)}%</span>
         ))}
         <span className="rounded border border-dashed border-border px-1.5 py-0.5 font-mono text-[11px] tnum text-muted-foreground">현금 {d.cashPct.toFixed(1)}%</span>
-        <span className="ml-auto font-mono text-[11px] tnum text-muted-foreground">회전율 {d.turnoverPct.toFixed(1)}%{d.execution ? ` · 주문 ${d.execution.orders}건` : ""}{d.execution?.error ? ` · ${d.execution.error}` : ""}</span>
+        <span className="ml-auto font-mono text-[11px] tnum text-muted-foreground">회전율 {d.turnoverPct.toFixed(1)}%{d.execution ? ` · 주문 ${d.execution.orders}건` : ""}{d.execution?.error ? ` · ${d.execution.error}` : ""}{d.outcome ? <span className={cn("ml-1", d.outcome.pct > 0 ? "text-emerald-300" : d.outcome.pct < 0 ? "text-rose-300" : "")}> · 결과 {d.outcome.pct >= 0 ? "+" : ""}{d.outcome.pct.toFixed(2)}%{d.outcome.closedAt ? "" : " (진행)"}</span> : null}</span>
       </div>
       <button type="button" onClick={() => setOpen((o) => !o)} className="mt-2 text-[11px] text-muted-foreground underline-offset-2 hover:underline">
         {open ? "근거 접기" : `근거 ${d.rationale.length}줄 · 제약 ${d.constraints.length}건`}
@@ -372,6 +373,15 @@ export function CommandCenter() {
           <span>제안 유효 {s.policy.proposalTtlH}h</span>
           <span>마지막 집행 {s.lastExecutedAt ? ago(s.lastExecutedAt) : "없음"}</span>
         </div>
+        {s.attribution && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2 font-mono text-[11px] tnum">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">귀속 · {s.attribution.intervalMin}분 마크</span>
+            <span>결정 타율 <b className={s.attribution.decisions.hitRate !== null && s.attribution.decisions.hitRate >= 0.5 ? "text-emerald-300" : "text-rose-300"}>{s.attribution.decisions.hitRate === null ? "—" : `${(s.attribution.decisions.hitRate * 100).toFixed(0)}%`}</b> <span className="text-muted-foreground">({s.attribution.decisions.wins}/{s.attribution.decisions.closed} 마감)</span></span>
+            <span>결정당 평균 <b className={(s.attribution.decisions.avgPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}>{s.attribution.decisions.avgPct === null ? "—" : `${s.attribution.decisions.avgPct >= 0 ? "+" : ""}${s.attribution.decisions.avgPct.toFixed(2)}%`}</b></span>
+            <span>합계 {s.attribution.decisions.sumPct === null ? "—" : `${s.attribution.decisions.sumPct >= 0 ? "+" : ""}${s.attribution.decisions.sumPct.toFixed(2)}%`}</span>
+            {s.attribution.decisions.open && <span className="text-muted-foreground">진행 중 {s.attribution.decisions.open.pct >= 0 ? "+" : ""}{s.attribution.decisions.open.pct.toFixed(2)}% · {s.attribution.decisions.open.marks}마크</span>}
+          </div>
+        )}
       </Card>
 
       {s.pending && (

@@ -19,7 +19,6 @@ import { startYahooTicks } from "./data/yahoo.js";
 import { officeLoop } from "./office/loop.js";
 import { evolution } from "./evolution/population.js";
 import { controlPlane } from "./control/plane.js";
-import { getDayCandles } from "./crypto/candle-store.js";
 
 const app = express();
 app.use(cors({ origin: config.corsOrigins, credentials: false }));
@@ -68,37 +67,14 @@ evolution.startAutoLoop();
 // 제어 평면: 가격은 크립토 데스크 티커(보유분 폴백 포함), 귀속은 하루 한 번 일봉으로
 controlPlane.attachSentiment(() => cryptoDesk.pipeline.tracker.bySymbol().map((x) => ({ market: x.symbol.startsWith("KRW-") ? x.symbol : `KRW-${x.symbol}`, score: x.score, label: x.label, mentions: x.mentions, driver: x.topDriver })));
 controlPlane.attachDrawdown(() => { const s = cryptoDesk.status(); const rows = cryptoDesk.paperEquity(5000); const peak = Math.max(s.paperStartKrw, ...rows.map((r) => r.equityKrw)); return peak > 0 ? Math.max(0, ((peak - s.equityKrw) / peak) * 100) : 0; });
+controlPlane.attachEquity(() => cryptoDesk.status().equityKrw);
 controlPlane.startScheduler();
 controlPlane.attachPrices(() => {
   const m = new Map<string, number>();
   for (const q of cryptoDesk.quotes()) m.set(q.market, q.priceKrw);
   return m;
 });
-const markControl = async () => {
-  try {
-    const btc = await getDayCandles("KRW-BTC", 3);
-    const date = btc[btc.length - 1]?.t;
-    if (!date) return;
-    const cache = new Map<string, Awaited<ReturnType<typeof getDayCandles>>>();
-    controlPlane.markDay(date, (targets) => {
-      let r = 0;
-      for (const t of targets) {
-        const cs = cache.get(t.market);
-        if (!cs || cs.length < 2) return null;
-        r += (t.weightPct / 100) * (cs[cs.length - 1].c / cs[cs.length - 2].c - 1);
-      }
-      return r;
-    });
-  } catch (e) {
-    logger.warn("제어 평면 귀속 실패", { error: (e as Error).message });
-  }
-};
-// 귀속 전에 관련 마켓 캔들을 미리 채운다 (제안 타깃의 마켓)
-setInterval(() => {
-  const markets = new Set<string>(["KRW-BTC"]);
-  for (const e of controlPlane.status().engines) for (const t of e.lastProposal?.targets ?? []) markets.add(t.market);
-  void Promise.all([...markets].map((m) => getDayCandles(m, 3).catch(() => null))).then(() => markControl());
-}, 60 * 60_000).unref();
+// 엔진 귀속은 이제 제어 평면 스케줄러가 틱(5분)마다 실시세로 한다 — plane.markTick(). 일봉 단위 귀속(markDay)은 쓰지 않는다.
 
 // ===== 기동 =====
 if (config.MOCK_DATA) {

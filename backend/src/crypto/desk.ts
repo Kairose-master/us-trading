@@ -33,7 +33,7 @@ const PAPER_SLIP_PCT = 0.05; // 시장가 슬리피지 가정
 // 영속화 — 재시작해도 페이퍼 실적이 이어져야 "라이브 기록"이 된다
 const STATE_FILE = join(process.cwd(), "data", "crypto-paper.json");
 const EQUITY_FILE = join(process.cwd(), "data", "crypto-paper-equity.jsonl");
-const EQUITY_SNAPSHOT_MS = 60 * 60_000; // 1시간마다 에쿼티 스냅샷
+const EQUITY_SNAPSHOT_MS = 5 * 60_000; // 5분 — 시간 단위로는 판단이 성기다 // 1시간마다 에쿼티 스냅샷
 
 export interface CryptoRiskLimits {
   maxOrderKrw: number;
@@ -491,9 +491,10 @@ class CryptoDesk extends EventEmitter {
       cashKrw: Math.round(this.paperCashKrw),
       positions: [...this.paperPositions.entries()].map(([symbol, p]) => {
         const cur = this.lastTickers.get(`KRW-${symbol}`)?.trade_price ?? this.altPrices.get(`KRW-${symbol}`) ?? 0;
-        return { symbol, qty: p.qty, avgKrw: Math.round(p.avgKrw), curKrw: cur };
+        // 평단은 반올림하지 않는다 — ₩0.005짜리 코인의 평단을 0으로 만들어 손익률이 깨졌다 (BONK avg 0)
+        return { symbol, qty: p.qty, avgKrw: +p.avgKrw.toPrecision(6), curKrw: cur };
       }),
-      orders: this.orders.slice(0, 20),
+      orders: this.orders.slice(0, 100),
       lastError: this.lastError,
     };
   }

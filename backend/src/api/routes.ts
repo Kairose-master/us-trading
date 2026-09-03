@@ -291,6 +291,11 @@ router.get("/crypto/status", (_req, res) => {
   res.json(cryptoDesk.status());
 });
 
+router.get("/crypto/orders", (req, res) => {
+  const limit = Math.min(1000, Number(req.query.limit ?? 200));
+  res.json(cryptoDesk.status().orders.slice(0, limit));
+});
+
 router.get("/crypto/quotes", (_req, res) => {
   res.json(cryptoDesk.quotes());
 });

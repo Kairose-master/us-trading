@@ -552,6 +552,7 @@ export interface ControlDecision {
   turnoverPct: number
   execution: { ts: string; orders: number; skipped: string[]; error?: string } | null
   by: "autopilot" | "operator" | null
+  outcome?: { fromEquityKrw: number; toEquityKrw: number; pct: number; marks: number; closedAt: string | null }
   council?: {
     rounds: Array<{ round: number; title: string; positions: Array<{ manager: ControlManagerId; market: string; stance: "SUPPORT" | "OPPOSE" | "ABSTAIN" | "VETO"; weightPct: number | null; reason: string }>; notes: string[] }>
     tally: Array<{ market: string; supporters: ControlManagerId[]; opposers: ControlManagerId[]; vetoed: boolean; outcome: "ADOPTED" | "REJECTED" | "WITHDRAWN"; weightPct: number; why: string }>
@@ -583,6 +584,15 @@ export interface ControlEngine {
   proposals: number
   cumReturnPct: number
   days: number
+  marks: number
+  hits: number
+  hitRate: number | null
+  avgIntervalPct: number | null
+  lastMarkAt: string | null
+}
+export interface ControlAttribution {
+  intervalMin: number
+  decisions: { executed: number; closed: number; wins: number; hitRate: number | null; avgPct: number | null; sumPct: number | null; open: { id: string; ts: string; pct: number; marks: number } | null }
 }
 export interface ControlPolicy {
   maxWeightPct: number
@@ -606,6 +616,7 @@ export interface ControlStatus {
   policy: ControlPolicy
   managers: ControlManager[]
   engines: ControlEngine[]
+  attribution: ControlAttribution
   proposals: ControlProposal[]
   pending: ControlDecision | null
   decisions: ControlDecision[]

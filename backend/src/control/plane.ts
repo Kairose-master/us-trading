@@ -51,15 +51,24 @@ export interface Decision {
   by: "autopilot" | "operator" | null;
   /** 협의록 — 매니저들의 입장·수정·표결. 구 결정에는 없다 */
   council?: Pick<CouncilResult, "rounds" | "tally" | "summary" | "quorumMet">;
+  /** 집행된 결정의 실현 결과 — 다음 집행까지 장부 에쿼티 변화 (5분 마크) */
+  outcome?: { fromEquityKrw: number; toEquityKrw: number; pct: number; marks: number; closedAt: string | null };
 }
 export interface EngineState {
   id: EngineId;
   enabled: boolean;
   weight: number;
   lastProposal: Proposal | null;
+  /** 마크 간격(스케줄러 틱) 수익률 — 마지막 제안 타깃을 실시세로 마킹 */
   returns: number[];
   cumReturnPct: number;
   proposals: number;
+  /** 귀속 마크 수·양의 마크 수 (타율) */
+  marks: number;
+  hits: number;
+  /** 마지막 마크 시점의 타깃별 가격 — 다음 틱의 구간 수익률 계산용 */
+  lastMarkPrices: Record<string, number> | null;
+  lastMarkAt: string | null;
 }
 interface State {
   autopilot: boolean;
@@ -81,7 +90,7 @@ const FILE = join(process.cwd(), "data", "control", "state.json");
 const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, minIntervalMin: 60, proposalTtlH: 30, eta: 8 };
 
 function fresh(): State {
-  const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0 }])) as unknown as Record<EngineId, EngineState>;
+  const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0, marks: 0, hits: 0, lastMarkPrices: null, lastMarkAt: null }])) as unknown as Record<EngineId, EngineState>;
   return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY };
 }
 function readState(): State {
@@ -90,6 +99,7 @@ function readState(): State {
       const st = JSON.parse(readFileSync(FILE, "utf-8")) as State; st.policy = { ...DEFAULT_POLICY, ...st.policy }; const f = fresh(); for (const e of ENGINES) st.engines[e.id] ??= f.engines[e.id];
       // 오토파일럿은 부팅마다 env 기본값으로 — 사람 손 없이 돌아야 한다. 멈추려면 pause(지속)를 쓴다
       st.autopilot = config.CONTROL_AUTOPILOT; st.paused ??= false; st.pausedAt ??= null; st.pausedBy ??= null;
+      for (const e of ENGINES) { const x = st.engines[e.id]; x.marks ??= 0; x.hits ??= 0; x.lastMarkPrices ??= null; x.lastMarkAt ??= null; }
       return st;
     }
   } catch (e) { logger.warn("제어 평면 상태 복원 실패 — 새로 시작", { error: (e as Error).message }); }
@@ -104,6 +114,8 @@ class ControlPlane extends EventEmitter {
   attachSentiment(fn: () => SentimentRead[]) { this.sentimentOf = fn; }
   private drawdownOf: () => number = () => 0;
   attachDrawdown(fn: () => number) { this.drawdownOf = fn; }
+  private equityOf: () => number = () => 0;
+  attachEquity(fn: () => number) { this.equityOf = fn; }
 
   private save() { mkdirSync(dirname(FILE), { recursive: true }); const tmp = `${FILE}.tmp`; writeFileSync(tmp, JSON.stringify(this.st)); renameSync(tmp, FILE); }
   private emitState() { this.emit("state", this.status()); }
@@ -125,7 +137,8 @@ class ControlPlane extends EventEmitter {
       killSwitch: riskManager.killSwitchActive,
       policy: this.st.policy,
       managers: MANAGERS.map((m) => { const e = ENGINES.some((x) => x.id === m.id) ? this.st.engines[m.id as EngineId] : null; return { ...m, enabled: e ? e.enabled : true, weight: e ? +e.weight.toFixed(4) : null, lastProposal: e?.lastProposal ?? null, cumReturnPct: e ? +e.cumReturnPct.toFixed(2) : null }; }),
-      engines: ENGINES.map((e) => { const s = this.st.engines[e.id]; return { ...e, enabled: s.enabled, weight: +s.weight.toFixed(4), share: s.enabled ? +(s.weight / wsum).toFixed(3) : 0, lastProposal: s.lastProposal, proposals: s.proposals, cumReturnPct: +s.cumReturnPct.toFixed(2), days: s.returns.length }; }),
+      engines: ENGINES.map((e) => { const s = this.st.engines[e.id]; return { ...e, enabled: s.enabled, weight: +s.weight.toFixed(4), share: s.enabled ? +(s.weight / wsum).toFixed(3) : 0, lastProposal: s.lastProposal, proposals: s.proposals, cumReturnPct: +s.cumReturnPct.toFixed(2), days: s.returns.length, marks: s.marks, hits: s.hits, hitRate: s.marks ? +(s.hits / s.marks).toFixed(3) : null, avgIntervalPct: s.returns.length ? +((s.returns.reduce((a, x) => a + x, 0) / s.returns.length) * 100).toFixed(4) : null, lastMarkAt: s.lastMarkAt }; }),
+      attribution: this.attribution(),
       proposals: this.activeProposals(),
       pending: this.st.pending,
       decisions: this.st.decisions.slice(0, 30),
@@ -218,7 +231,13 @@ class ControlPlane extends EventEmitter {
     decision.execution = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped, ...(r.error ? { error: r.error } : {}) };
     decision.status = r.error ? "rejected" : "executed"; decision.by = by;
     // 제안은 집행 뒤에도 남는다 — 매니저의 마지막 입장이 TTL까지 협의회에 계속 앉아 있어야 정족수가 성립한다
-    if (!r.error) this.st.lastExecutedAt = decision.execution.ts;
+    if (!r.error) {
+      this.st.lastExecutedAt = decision.execution.ts;
+      const eq = this.equityOf();
+      const prev = this.st.decisions.find((d) => d.status === "executed" && d.outcome && !d.outcome.closedAt);
+      if (prev && eq > 0) { prev.outcome!.toEquityKrw = eq; prev.outcome!.pct = +((eq / prev.outcome!.fromEquityKrw - 1) * 100).toFixed(3); prev.outcome!.closedAt = decision.execution.ts; }
+      if (eq > 0) decision.outcome = { fromEquityKrw: eq, toEquityKrw: eq, pct: 0, marks: 0, closedAt: null };
+    }
     // 집행된 결정이 보류 중이던 것을 대체한다 — 같은 id든 재중재로 새로 만든 것이든
     if (this.st.pending && this.st.pending.id !== decision.id && !r.error) { const old = this.st.pending; old.status = "skipped"; old.rationale.push(`superseded by ${decision.id}`); this.push(old); }
     if (!r.error || this.st.pending?.id === decision.id) this.st.pending = null;
@@ -250,6 +269,7 @@ class ControlPlane extends EventEmitter {
   /** 스케줄러 — 사람 없이 돌아가게 하는 부분. 주기마다: 만료 제안 정리 → 보류 결정이 집행 가능해졌으면 새 제안들로 재중재해 집행 */
   async tick(): Promise<void> {
     this.lastTickAt = new Date().toISOString();
+    await this.markTick().catch((e) => logger.warn("[control] mark failed", { error: (e as Error).message }));
     const before = this.st.proposals.length; this.activeProposals();
     if (this.st.proposals.length !== before) { logger.info("[control] expired proposals dropped", { dropped: before - this.st.proposals.length }); this.save(); }
     if (this.st.pending && Date.parse(this.st.pending.ts) < Date.now() - this.st.policy.proposalTtlH * 3600_000) {
@@ -280,6 +300,57 @@ class ControlPlane extends EventEmitter {
     this.save(); this.emitState();
   }
   setPolicy(patch: Partial<State["policy"]>) { this.st.policy = { ...this.st.policy, ...patch }; this.save(); this.emitState(); }
+
+  /** 결정 단위 성적 — 집행된 결정마다 다음 집행까지의 장부 수익률 */
+  attribution() {
+    const closed = this.st.decisions.filter((d) => d.status === "executed" && d.outcome && d.outcome.closedAt);
+    const open = this.st.decisions.find((d) => d.status === "executed" && d.outcome && !d.outcome.closedAt) ?? null;
+    const wins = closed.filter((d) => d.outcome!.pct > 0).length;
+    const pcts = closed.map((d) => d.outcome!.pct);
+    return {
+      intervalMin: config.CONTROL_TICK_MIN,
+      decisions: { executed: this.st.decisions.filter((d) => d.status === "executed").length, closed: closed.length, wins, hitRate: closed.length ? +(wins / closed.length).toFixed(3) : null, avgPct: pcts.length ? +(pcts.reduce((a, b) => a + b, 0) / pcts.length).toFixed(3) : null, sumPct: pcts.length ? +pcts.reduce((a, b) => a + b, 0).toFixed(3) : null, open: open ? { id: open.id, ts: open.ts, pct: open.outcome!.pct, marks: open.outcome!.marks } : null },
+    };
+  }
+
+  /** 틱마다: 각 엔진의 마지막 제안 타깃을 실시세로 마킹해 구간 수익률·타율·가중치를 갱신하고, 집행된 결정의 실현 결과를 적는다 */
+  async markTick(): Promise<void> {
+    const targets = new Set<string>();
+    for (const e of ENGINES) for (const t of this.st.engines[e.id].lastProposal?.targets ?? []) targets.add(t.market);
+    const prices = await this.pricesFor([...targets].map((market) => ({ market, weightPct: 0 })));
+    const now = new Date().toISOString();
+    const rets: Array<[EngineId, number]> = [];
+    for (const e of ENGINES) {
+      const s = this.st.engines[e.id];
+      if (!s.lastProposal) continue;
+      const cur: Record<string, number> = {};
+      for (const t of s.lastProposal.targets) { const px = prices.get(t.market); if (px && px > 0) cur[t.market] = px; }
+      if (s.lastMarkPrices) {
+        let r = 0, covered = 0;
+        for (const t of s.lastProposal.targets) { const a = s.lastMarkPrices[t.market], b = cur[t.market]; if (a && b) { r += (t.weightPct / 100) * (b / a - 1); covered += t.weightPct; } }
+        if (covered > 0) {
+          s.returns.push(r); if (s.returns.length > 2000) s.returns.shift();
+          s.cumReturnPct = (s.returns.reduce((a, x) => a * (1 + x), 1) - 1) * 100;
+          s.marks++; if (r > 0) s.hits++;
+          rets.push([e.id, r]);
+        }
+      }
+      s.lastMarkPrices = cur; s.lastMarkAt = now;
+    }
+    if (rets.length) {
+      const next = rets.map(([id, r]) => [id, this.st.engines[id].weight * Math.exp(this.st.policy.eta * r)] as const);
+      const norm = next.reduce((a, [, w]) => a + w, 0) / next.length || 1;
+      for (const [id, w] of next) this.st.engines[id].weight = Math.max(0.05, Math.min(5, w / norm));
+    }
+    // 집행된 결정의 실현 결과 — 가장 최근 집행부터 지금까지의 장부 에쿼티
+    const eq = this.equityOf();
+    const last = this.st.decisions.find((d) => d.status === "executed");
+    if (last && eq > 0) {
+      last.outcome ??= { fromEquityKrw: eq, toEquityKrw: eq, pct: 0, marks: 0, closedAt: null };
+      if (!last.outcome.closedAt) { last.outcome.toEquityKrw = eq; last.outcome.pct = +((eq / last.outcome.fromEquityKrw - 1) * 100).toFixed(3); last.outcome.marks++; }
+    }
+    this.save();
+  }
 
   markDay(date: string, dayReturnOf: (targets: Target[]) => number | null) {
     if (this.st.lastMarkedDate === date) return;

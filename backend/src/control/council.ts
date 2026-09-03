@@ -133,6 +133,15 @@ export function convene(p: {
     if (vetoed) { tally.push({ market: m, supporters, opposers, vetoed, outcome: "REJECTED", weightPct: 0, why: "risk veto" }); continue; }
     if (supporters.length === 0) { tally.push({ market: m, supporters, opposers, vetoed, outcome: "WITHDRAWN", weightPct: 0, why: "no proposer left supporting" }); continue; }
     const onlySignals = supporters.length === 1 && supporters[0] === "signals";
+    const held = p.risk.holdings.find((h) => h.market === m && h.weightPct >= 1);
+    // 이력(hysteresis): 정족수는 **들어올 때**만 필요하다. 이미 보유 중인 시장은 제안 매니저 하나라도 지지하고
+    // 반대·거부가 없으면 유지한다 — 15분마다 바뀌는 신호 커버리지 때문에 SOL/ETH가 매시간 들락거리던 것을 막는다
+    if (supporters.length < QUORUM && supporters.length >= 1 && held && opposers.length === 0) {
+      const w = +Math.min(list[0].weightPct, held.weightPct * 1.25).toFixed(2);
+      adopted.push({ market: m, weightPct: w });
+      tally.push({ market: m, supporters, opposers, vetoed, outcome: "ADOPTED", weightPct: w, why: `held position kept — ${supporters[0]} still supports; exit needs zero support or an objection (quorum only to enter)` });
+      continue;
+    }
     if (supporters.length < QUORUM) {
       tally.push({ market: m, supporters, opposers, vetoed, outcome: "REJECTED", weightPct: 0, why: onlySignals ? "signals alone cannot buy — needs a second proposing manager" : `only ${supporters[0]} supports — quorum is ${QUORUM} proposing managers${sentimentSupports ? " (sentiment support does not count toward quorum)" : ""}` });
       continue;
