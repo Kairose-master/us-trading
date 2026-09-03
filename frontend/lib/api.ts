@@ -729,23 +729,29 @@ export async function getScannerBacktest(): Promise<ScannerBacktest | null> {
   return req("crypto/scanner/backtest")
 }
 /** 데이터 스누핑 검정 (Hansen SPA, arch) — "유니버스 최고가 BTC 보유를 이긴 게 실력인가 N번 본 결과인가" */
+export type SpaResult =
+  | {
+      engine: "arch"
+      version: string
+      n: number
+      models: number
+      reps: number
+      blockSize: number
+      pvalues: { lower: number | null; consistent: number | null; upper: number | null }
+      best: { name: string; meanLossDiff: number }
+      meanLossDiff: Record<string, number>
+      superiorModels: string[] | null
+    }
+  | { engine: "unavailable"; reason: string }
 export interface ScannerSpa {
   ts: string
   benchmark: string
-  result:
-    | {
-        engine: "arch"
-        version: string
-        n: number
-        models: number
-        reps: number
-        blockSize: number
-        pvalues: { lower: number | null; consistent: number | null; upper: number | null }
-        best: { name: string; meanLossDiff: number }
-        meanLossDiff: Record<string, number>
-        superiorModels: string[] | null
-      }
-    | { engine: "unavailable"; reason: string }
+  days: number
+  /** 개별 코인 보유 중 최고 vs BTC 보유 */
+  coins: SpaResult
+  /** 우리 로테이션 규칙(파라미터 격자) vs BTC 보유 */
+  strategy: SpaResult | null
+  grid: Array<{ name: string; topK: number; rebalanceDays: number; annualReturnPct: number }>
 }
 export async function getScannerSpa(): Promise<ScannerSpa> {
   return req("crypto/scanner/spa")

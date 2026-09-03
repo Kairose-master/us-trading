@@ -163,41 +163,56 @@ export function ScannerPageClient() {
 
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <h2 className="text-sm font-semibold">데이터 스누핑 검정 — 이 중 최고가 BTC 보유를 이긴 게 실력인가</h2>
-          {spa?.result.engine === "arch" && (
-            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
-              Hansen SPA · arch {spa.result.version} · {spa.result.n}일 · 후보 {spa.result.models}개 · 부트스트랩 {spa.result.reps}회 (블록 {spa.result.blockSize})
-            </span>
-          )}
+          <h2 className="text-sm font-semibold">데이터 스누핑 검정 — 고른 것이 실력인가, 많이 본 결과인가</h2>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+            Hansen SPA · Romano-Wolf StepM (arch){spa ? ` · ${spa.days}일 · 벤치마크 ${spa.benchmark.replace("KRW-", "")} 보유` : ""}
+          </span>
         </div>
         {!spa ? (
           <div className="p-4 text-xs text-muted-foreground">검정 대기 중…</div>
-        ) : spa.result.engine === "unavailable" ? (
-          <div className="p-4 text-xs text-muted-foreground">
-            검정 못 함 — <span className="font-mono">{spa.result.reason}</span>. p값을 지어내지 않는다.
-          </div>
         ) : (
-          <div className="flex flex-col gap-2 p-4 text-xs">
-            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 font-mono tnum">
-              <span>
-                p ={" "}
-                <b className={(spa.result.pvalues.consistent ?? 1) < 0.05 ? "text-emerald-300" : "text-rose-300"}>
-                  {spa.result.pvalues.consistent === null ? "—" : spa.result.pvalues.consistent.toFixed(3)}
-                </b>{" "}
-                <span className="text-muted-foreground">(lower {spa.result.pvalues.lower?.toFixed(3) ?? "—"} / upper {spa.result.pvalues.upper?.toFixed(3) ?? "—"})</span>
-              </span>
-              <span className="text-muted-foreground">벤치마크 {spa.benchmark.replace("KRW-", "")} 보유</span>
-              <span>최저손실 후보 <b>{spa.result.best.name}</b> <span className="text-muted-foreground">(평균손실차 {spa.result.best.meanLossDiff.toFixed(5)})</span></span>
-            </div>
-            <p className="text-muted-foreground">
-              {(spa.result.pvalues.consistent ?? 1) < 0.05
-                ? `귀무가설(전부 BTC 보유보다 낫지 않다)을 기각한다 — 후보 ${spa.result.models}개를 본 것을 감안해도 최고는 진짜다.`
-                : `후보 ${spa.result.models}개를 훑은 것을 감안하면, 최고 성과는 우연으로 설명된다. 이 유니버스에서 "제일 오른 코인"을 고르는 것 자체에는 우위가 없다.`}
-            </p>
-            <p className="text-muted-foreground">
-              StepM(Romano-Wolf, FWER 5%)이 인정한 우월 후보:{" "}
-              {spa.result.superiorModels === null ? <span className="font-mono">계산 실패</span> : spa.result.superiorModels.length === 0 ? <b className="text-rose-300">없음</b> : <b className="text-emerald-300 font-mono">{spa.result.superiorModels.join(", ")}</b>}
-            </p>
+          <div className="grid gap-px bg-border sm:grid-cols-2">
+            {([
+              { key: "coins", title: "개별 코인 중 최고", ask: "유니버스에서 제일 잘한 코인이 BTC 보유를 이겼는가", res: spa.coins },
+              { key: "strategy", title: "우리 로테이션 규칙", ask: "topK·주기를 우리가 고른 것을 감안해도 규칙이 BTC 보유를 이겼는가", res: spa.strategy },
+            ] as const).map((box) => (
+              <div key={box.key} className="flex flex-col gap-1.5 bg-card p-4 text-xs">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{box.title}</span>
+                  {box.res?.engine === "arch" && <span className="ml-auto font-mono text-[10px] text-muted-foreground">후보 {box.res.models} · {box.res.n}일 · {box.res.reps}회</span>}
+                </div>
+                <p className="text-muted-foreground">{box.ask}</p>
+                {!box.res ? (
+                  <p className="text-muted-foreground">계산 안 됨 — 백테스트할 만큼의 일봉이 아직 없다.</p>
+                ) : box.res.engine === "unavailable" ? (
+                  <p className="text-muted-foreground">검정 못 함 — <span className="font-mono">{box.res.reason}</span>. p값을 지어내지 않는다.</p>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono tnum">
+                      <span>
+                        p = <b className={(box.res.pvalues.consistent ?? 1) < 0.05 ? "text-emerald-300" : "text-rose-300"}>{box.res.pvalues.consistent?.toFixed(3) ?? "—"}</b>{" "}
+                        <span className="text-muted-foreground">({box.res.pvalues.lower?.toFixed(3) ?? "—"}~{box.res.pvalues.upper?.toFixed(3) ?? "—"})</span>
+                      </span>
+                      <span>최고 <b>{box.res.best.name}</b></span>
+                    </div>
+                    <p className={(box.res.pvalues.consistent ?? 1) < 0.05 ? "text-emerald-300" : "text-muted-foreground"}>
+                      {(box.res.pvalues.consistent ?? 1) < 0.05
+                        ? `후보 ${box.res.models}개를 본 것을 감안해도 최고는 진짜다.`
+                        : `후보 ${box.res.models}개를 훑은 것을 감안하면 우연으로 설명된다.`}
+                    </p>
+                    <p className="text-muted-foreground">
+                      StepM(FWER 5%) 우월 후보:{" "}
+                      {box.res.superiorModels === null ? "계산 실패" : box.res.superiorModels.length === 0 ? <b className="text-rose-300">없음</b> : <b className="font-mono text-emerald-300">{box.res.superiorModels.join(", ")}</b>}
+                    </p>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {spa && spa.grid.length > 0 && (
+          <div className="border-t border-border px-4 py-2 font-mono text-[10px] text-muted-foreground">
+            규칙 격자: {spa.grid.map((g) => `${g.name} ${g.annualReturnPct >= 0 ? "+" : ""}${g.annualReturnPct.toFixed(0)}%/y`).join(" · ")}
           </div>
         )}
       </Card>

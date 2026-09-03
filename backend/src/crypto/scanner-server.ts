@@ -34,6 +34,20 @@ const CONCURRENCY = 2;
 const AUTO_ROTATE_MS = 24 * 60 * 60_000;
 const SPA_TTL_MS = 6 * 60 * 60_000;
 
+/**
+ * 데이터 스누핑 리포트 — 두 질문:
+ *   coins     유니버스의 개별 코인 보유 중 최고가 BTC 보유를 이겼는가 (N개를 훑은 것을 감안해서)
+ *   strategy  **우리 로테이션 규칙**이 BTC 보유를 이겼는가 (topK·주기를 우리가 고른 것을 감안해서)
+ */
+export interface SpaReport {
+  ts: string;
+  benchmark: string;
+  days: number;
+  coins: SpaResult;
+  strategy: SpaResult | null;
+  grid: Array<{ name: string; topK: number; rebalanceDays: number; annualReturnPct: number }>;
+}
+
 export interface ScanResult {
   ts: string;
   krwMarkets: number;
@@ -71,7 +85,7 @@ function toBt(cs: Awaited<ReturnType<typeof upbit.dayCandles>>): BtCandle[] {
 class ScannerServer {
   private scanCache: { at: number; data: ScanResult } | null = null;
   private btCache: { at: number; data: RotationBacktestResult } | null = null;
-  private spaCache: { at: number; data: { ts: string; benchmark: string; result: SpaResult } } | null = null;
+  private spaCache: { at: number; data: SpaReport } | null = null;
   private seriesCache: { at: number; data: Map<string, BtCandle[]>; valueOf: Map<string, number>; krwMarkets: number } | null = null;
   private autoTimer: NodeJS.Timeout | null = null;
   private running: Promise<ScanResult> | null = null;
@@ -153,7 +167,7 @@ class ScannerServer {
    * 답하는 질문: **"유니버스 최고가 BTC를 이긴 것이 실력인가, 30번 본 결과인가."**
    * arch(SPA/StepM)가 없으면 engine:"unavailable"로 답하고 p값을 지어내지 않는다.
    */
-  async spa(force = false): Promise<{ ts: string; benchmark: string; result: SpaResult } | null> {
+  async spa(force = false): Promise<SpaReport | null> {
     if (!force && this.spaCache && Date.now() - this.spaCache.at < SPA_TTL_MS) return this.spaCache.data;
     const { series } = await this.loadSeries();
     const bench = "KRW-BTC";
@@ -170,10 +184,37 @@ class ScannerServer {
     const { dates: used, returns } = alignedReturns(closeOf, dates.filter((d) => benchDates.has(d)), [bench, ...full]);
     const models: Record<string, number[]> = {};
     for (const m of full) models[m.replace("KRW-", "")] = toLosses(returns[m]);
-    const result = await spaTest({ benchmark: toLosses(returns[bench]), models, reps: 1000 });
-    const data = { ts: new Date().toISOString(), benchmark: bench, result };
+    const coins = await spaTest({ benchmark: toLosses(returns[bench]), models, reps: 1000 });
+
+    // 두 번째 질문, 그리고 우리에게 더 아픈 질문: **우리 로테이션 규칙**이 BTC 보유를 이기는가.
+    // topK·리밸런스 주기를 우리가 골랐다는 사실 자체가 다중검정이므로, 고를 수 있었던 격자 전부를 후보로 넣는다.
+    const grid: Array<{ topK: number; rebalanceDays: number }> = [];
+    for (const topK of [3, 5, 8]) for (const rebalanceDays of [7, 14, 30]) grid.push({ topK, rebalanceDays });
+    let strategy: SpaResult | null = null;
+    let gridUsed: Array<{ name: string; topK: number; rebalanceDays: number; annualReturnPct: number }> = [];
+    {
+      const runs = grid.map((g) => ({ g, bt: rotationBacktest(series, { topK: g.topK, rebalanceDays: g.rebalanceDays }) })).filter((x) => x.bt && x.bt.equity.length > 40);
+      if (runs.length >= 2) {
+        const rets = (pick: (e: RotationBacktestResult["equity"][number]) => number, bt: RotationBacktestResult) => bt.equity.slice(1).map((e, i) => pick(e) / pick(bt.equity[i]) - 1);
+        const len = Math.min(...runs.map((r) => r.bt!.equity.length)) - 1;
+        const benchRets = rets((e) => e.benchmarkBtc, runs[0].bt!).slice(-len);
+        const sModels: Record<string, number[]> = {};
+        for (const r of runs) {
+          const name = `top${r.g.topK}/${r.g.rebalanceDays}d`;
+          sModels[name] = toLosses(rets((e) => e.strategy, r.bt!).slice(-len));
+          gridUsed.push({ name, topK: r.g.topK, rebalanceDays: r.g.rebalanceDays, annualReturnPct: r.bt!.metrics.annualReturnPct });
+        }
+        strategy = await spaTest({ benchmark: toLosses(benchRets), models: sModels, reps: 1000 });
+      }
+    }
+
+    const data: SpaReport = { ts: new Date().toISOString(), benchmark: bench, days: used.length, coins, strategy, grid: gridUsed };
     this.spaCache = { at: Date.now(), data };
-    logger.info("[scanner] SPA", { engine: result.engine, models: full.length, days: used.length, p: result.engine === "arch" ? result.pvalues.consistent : null });
+    logger.info("[scanner] SPA", {
+      days: used.length,
+      coins: { engine: coins.engine, n: full.length, p: coins.engine === "arch" ? coins.pvalues.consistent : null },
+      strategy: { engine: strategy?.engine ?? "none", n: gridUsed.length, p: strategy?.engine === "arch" ? strategy.pvalues.consistent : null },
+    });
     return data;
   }
 
