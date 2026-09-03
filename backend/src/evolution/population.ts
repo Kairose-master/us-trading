@@ -286,7 +286,7 @@ class Evolution extends EventEmitter {
       const examRange = { from: fExam.trainEnd, to: Math.min(fExam.trainEnd + EXAM_DAYS, fExam.dates.length - 1) };
       const examFrom = fExam.dates[examRange.from], examTo = fExam.dates[examRange.to];
       this.st.lastExamStart = win.start;
-      this.log("info", `GEN ${gen} — ${reason} · exam ${examFrom}~${examTo} (${examRange.to - examRange.from} unseen days, window ${win.start}/${win.choices} choices, HMM fit before ${examFrom}) · ${fExam.markets.length} markets · live targets from ${f.dates[f.trainEnd]}~${f.dates[f.dates.length - 1]}`);
+      this.log("info", `GEN ${gen} — ${reason} · exam ${examFrom}~${examTo} (${examRange.to - examRange.from} unseen days, window start day ${win.start} of ${win.choices} possible starts, HMM fit before ${examFrom}) · ${fExam.markets.length} markets · live targets from ${f.dates[f.trainEnd]}~${f.dates[f.dates.length - 1]}`);
 
       if (this.st.agents.filter((a) => a.alive).length === 0) {
         for (let i = 0; i < POP_MIN; i++) this.st.agents.push(this.newAgent(randomVector(), gen, [], SEED_KRW));
