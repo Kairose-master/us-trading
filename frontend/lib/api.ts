@@ -775,11 +775,42 @@ export interface ContractProfile {
   reasons: string[]
   caveats: string[]
 }
+/** 타임락 eta 캘린더 — 온체인에 공표된 "예정" (가격이 아니라 일정) */
+export type TimelockStatus = "pending" | "executable" | "executed" | "cancelled" | "expired" | "unknown-eta"
+export interface TimelockEntry {
+  family: "compound" | "oz"
+  key: string
+  index: number | null
+  target: string
+  valueWei: string
+  intent: string
+  selector: string | null
+  calldataBytes: number
+  etaSec: number | null
+  delaySec: number | null
+  blockNumber: number
+  txHash: string
+  status: TimelockStatus
+  hoursUntil: number | null
+  etaIso: string | null
+}
+export type OwnerKind = "none" | "renounced" | "eoa" | "contract" | "timelock"
+export interface TimelockReport {
+  symbol: string
+  chain: string
+  ts: string
+  owner: { address: string | null; kind: OwnerKind; note: string; multiplier: number }
+  timelock: { address: string; family: "compound" | "oz" | "unknown"; delaySec: number | null; scheduledSeen: number; window: { fromBlock: number; toBlock: number } } | null
+  calendar: TimelockEntry[]
+  live: number
+  error: string | null
+}
 export interface ContractReport {
   symbol: string
   ts: string
   resolution: { symbol: string; status: "ok" | "native" | "ambiguous" | "unknown"; chain?: string; address?: string; coingeckoId?: string; note: string }
   profile: ContractProfile | null
+  timelock: TimelockReport | null
   error: string | null
 }
 export async function getContracts(symbols?: string[]): Promise<{ ts: string; reports: ContractReport[] }> {

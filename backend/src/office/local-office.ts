@@ -164,20 +164,25 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
     for (const r of reports) {
       const p = r.profile;
       if (!p) { contractLines.push(`${r.symbol}: ${r.resolution.status} — ${(r.error ?? r.resolution.note).slice(0, 110)}`); continue; }
-      const k = exposureMultiplier(p.severity);
+      // 컨트랙트 심각도 × owner 종류. 타임락이면 예고가 있으니 벌점이 없고, EOA면 예고 없이 즉시 가능하니 더 깎는다
+      const om = r.timelock?.owner.multiplier ?? 1;
+      const k = +(exposureMultiplier(p.severity) * om).toFixed(3);
       const flags = p.findings.filter((f) => f.severity !== "info").map((f) => f.signature).join(", ") || "특권 진입점 없음";
-      contractLines.push(`${r.symbol}: ${p.severity}${k < 1 ? ` → 비중 ×${k}` : ""} · ${p.chain} ${p.address.slice(0, 10)}… · ${p.proxy.isProxy ? "업그레이드 가능 프록시 · " : ""}${flags}`);
+      const ownerBit = r.timelock ? ` · owner ${r.timelock.owner.kind}${om < 1 ? ` ×${om}` : ""}${r.timelock.timelock?.delaySec ? ` (지연 ${(r.timelock.timelock.delaySec / 86400).toFixed(1)}일)` : ""}` : "";
+      const live = r.timelock?.calendar.filter((c) => c.status === "pending" || c.status === "executable") ?? [];
+      contractLines.push(`${r.symbol}: ${p.severity}${k < 1 ? ` → 비중 ×${k}` : ""} · ${p.chain} ${p.address.slice(0, 10)}… · ${p.proxy.isProxy ? "업그레이드 가능 프록시 · " : ""}${flags}${ownerBit}${live.length ? ` · 큐에 든 실행 ${live.length}건 (가장 이른 eta ${live[0].etaIso ?? "미확인"})` : ""}`);
+      for (const c of live.slice(0, 3)) contractLines.push(`    └ ${c.status} eta ${c.etaIso ?? "미확인"} → ${c.target.slice(0, 12)}… ${c.intent}`);
       if (k < 1) {
         const t = draft.targets.find((x) => sym(x.market) === r.symbol);
         if (t) { t.weightPct = +(t.weightPct * k).toFixed(1); t.why += `; contract ${p.severity} → ×${k}`; }
       }
     }
-    const cut = reports.filter((r) => r.profile && exposureMultiplier(r.profile.severity) < 1).length;
+    const cut = reports.filter((r) => r.profile && exposureMultiplier(r.profile.severity) * (r.timelock?.owner.multiplier ?? 1) < 1).length;
     if (cut > 0) {
       draft.version++;
       draft.targets = draft.targets.filter((t) => t.weightPct >= 1);
       draft.grossPct = +draft.targets.reduce((a, t) => a + t.weightPct, 0).toFixed(1);
-      draft.notes.push(`v${draft.version}: contract review — ${cut} position(s) cut for on-chain privilege (mint/upgrade/pause), gross ${draft.grossPct}%`);
+      draft.notes.push(`v${draft.version}: contract review — ${cut} position(s) cut for on-chain privilege (mint/upgrade/pause) and owner kind (EOA·미확인 컨트랙트), gross ${draft.grossPct}%`);
       quantSection += `\n\n### Revision v${draft.version} (after on-chain contract review)\n${fmtDraft(draft)}`;
     }
   }

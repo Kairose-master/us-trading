@@ -469,6 +469,13 @@ router.get("/crypto/contract/:symbol", async (req, res) => {
   try { res.json(await contractDesk.report(String(req.params.symbol), req.query.force === "1")); }
   catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
+router.get("/crypto/timelock/:symbol", async (req, res) => {
+  try {
+    const r = await contractDesk.report(String(req.params.symbol), req.query.force === "1");
+    if (!r.profile) return res.status(503).json({ error: "NO_CONTRACT", resolution: r.resolution });
+    res.json(r.timelock ?? { error: "타임락 조회 실패" });
+  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
 router.get("/crypto/contracts", async (req, res) => {
   try {
     const syms = typeof req.query.symbols === "string" && req.query.symbols.length

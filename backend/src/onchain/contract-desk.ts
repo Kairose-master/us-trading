@@ -5,6 +5,7 @@ import { analyzeContract, type ContractProfile } from "./contract-risk.js";
 import { contractRegistry, type Resolution } from "./registry.js";
 import { decodeAddress, decodeUint, decodeUint8, ethCall, getCode, getStorageAt } from "./rpc.js";
 import { EIP1967, READ } from "./selectors.js";
+import { timelockDesk, type TimelockReport } from "./timelock-desk.js";
 
 /**
  * 컨트랙트 데스크 — 심볼 하나를 온체인에서 읽어 위험 프로필로 만든다.
@@ -21,6 +22,8 @@ export interface ContractReport {
   ts: string;
   resolution: Resolution;
   profile: ContractProfile | null;
+  /** owner가 타임락인가 + 큐에 든 실행의 eta 캘린더 — 가격이 아닌 **예정** */
+  timelock: TimelockReport | null;
   /** 읽지 못한 이유 (resolution이 ok가 아니거나 RPC 실패) */
   error: string | null;
 }
@@ -53,7 +56,7 @@ class ContractDesk {
     const ts = new Date().toISOString();
     const resolution = await contractRegistry.resolve(symbol);
     if (resolution.status !== "ok" || !resolution.address || !resolution.chain) {
-      return { symbol, ts, resolution, profile: null, error: resolution.note };
+      return { symbol, ts, resolution, profile: null, timelock: null, error: resolution.note };
     }
     const { chain, address } = resolution;
     try {
@@ -76,9 +79,13 @@ class ContractDesk {
         implCodeHex,
       });
       logger.info("[onchain] contract profile", { symbol, chain, severity: profile.severity, proxy: profile.proxy.isProxy, findings: profile.findings.length });
-      return { symbol, ts, resolution, profile, error: null };
+      // owner가 타임락이면 특권 행사에 공표된 지연이 붙는다 — 그 사실과 큐에 든 eta를 같이 싣는다
+      const timelock = await timelockDesk
+        .report({ symbol, chain, owner: profile.owner, ownerIsZero: profile.ownerIsZero, proxyAdmin: profile.proxy.implementation })
+        .catch((e) => { logger.warn("[onchain] timelock report failed", { symbol, error: (e as Error).message.slice(0, 120) }); return null; });
+      return { symbol, ts, resolution, profile, timelock, error: null };
     } catch (e) {
-      return { symbol, ts, resolution, profile: null, error: `온체인 읽기 실패: ${(e as Error).message.slice(0, 160)}` };
+      return { symbol, ts, resolution, profile: null, timelock: null, error: `온체인 읽기 실패: ${(e as Error).message.slice(0, 160)}` };
     }
   }
 

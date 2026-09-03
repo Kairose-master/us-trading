@@ -165,7 +165,7 @@ export function ScannerPageClient() {
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
           <h2 className="text-sm font-semibold">온체인 컨트랙트 — 가격이 아닌 근거</h2>
-          <span className="ml-auto font-mono text-[10px] text-muted-foreground">배포된 바이트코드의 PUSH4 셀렉터 · 키 없는 공개 RPC · 리스크 총괄이 비중에 반영</span>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">배포된 바이트코드의 PUSH4 셀렉터 + owner 종류(⏳타임락·EOA) + 큐에 든 eta · 키 없는 공개 RPC · 리스크 총괄이 비중에 반영</span>
         </div>
         {!contracts ? (
           <div className="p-4 text-xs text-muted-foreground">컨트랙트 조회 중…</div>
@@ -182,6 +182,9 @@ export function ScannerPageClient() {
                     <b>{r.symbol}</b>
                     <span className="opacity-70">{sev === "native" ? "자체체인" : sev === "ambiguous" ? "티커중복" : sev === "unknown" ? "미확인" : sev}</span>
                     {r.profile?.proxy.isProxy && <span className="opacity-70">proxy</span>}
+                    {r.timelock?.owner.kind === "timelock" && <span className="opacity-70">⏳{r.timelock.timelock?.delaySec ? `${(r.timelock.timelock.delaySec / 86400).toFixed(0)}d` : ""}</span>}
+                    {r.timelock?.owner.kind === "eoa" && <span className="opacity-70">EOA</span>}
+                    {(r.timelock?.live ?? 0) > 0 && <span className="opacity-70">큐{r.timelock!.live}</span>}
                   </span>
                 )
               })}
@@ -195,6 +198,23 @@ export function ScannerPageClient() {
                       {r.symbol}: {r.profile!.findings.filter((f) => f.severity !== "info").map((f) => `${f.signature}@${f.where}`).join(" · ")}
                     </span>
                   ))}
+              </div>
+            )}
+            {contracts.reports.some((r) => (r.timelock?.live ?? 0) > 0) && (
+              <div className="flex flex-col gap-1 rounded-md border border-border/70 bg-muted/20 p-2">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">타임락 eta — 온체인에 공표된 예정</span>
+                {contracts.reports
+                  .filter((r) => (r.timelock?.live ?? 0) > 0)
+                  .flatMap((r) =>
+                    r
+                      .timelock!.calendar.filter((c) => c.status === "pending" || c.status === "executable")
+                      .slice(0, 3)
+                      .map((c) => (
+                        <span key={`${r.symbol}-${c.key}-${c.index ?? 0}`} className="font-mono text-[10px] text-muted-foreground">
+                          <b className="text-foreground">{r.symbol}</b> {c.status === "executable" ? "지금 실행 가능" : `${c.hoursUntil !== null ? `${c.hoursUntil.toFixed(0)}h 후` : "eta 미확인"}`} · {c.etaIso?.slice(0, 16) ?? "?"} · {c.target.slice(0, 10)}… · {c.intent}
+                        </span>
+                      )),
+                  )}
               </div>
             )}
             <p className="text-muted-foreground">

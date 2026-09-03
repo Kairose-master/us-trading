@@ -79,6 +79,86 @@ KRW-BTC는 랩드 BTC가 아니라 비트코인이므로, 동명 랩드 토큰 4
 - **`GET /crypto/contract/:symbol`**, **`GET /crypto/contracts`** (유니버스 전체, 7일 캐시).
 - **투자 유니버스 페이지** — 심볼별 배지와 걸린 셀렉터 목록.
 
+## 타임락 `eta` 캘린더 (2026-09-03)
+
+릴의 "회사가 하반기에 발표 예정이라고 **문장으로** 써놨다"에 가장 가까운 크립토 자료가 이것이다.
+거버넌스 타임락은 실행할 트랜잭션을 **미래 시각(eta)과 함께 큐에 넣고 이벤트로 공표한다.**
+가격이 아니라 **예정**이고, 온체인 1차 자료다.
+
+### 두 가문
+
+| 가문 | 이벤트 | eta를 어디서 얻나 |
+|---|---|---|
+| Compound | `QueueTransaction(bytes32 indexed txHash, address indexed target, uint value, string signature, bytes data, uint eta)` | 이벤트에 직접 있다. **`signature`가 사람이 읽는 문장**이다 (`_setPendingImplementation(address)`). 비면 calldata 셀렉터를 쓴다 |
+| OpenZeppelin | `CallScheduled(bytes32 indexed id, uint256 indexed index, address target, uint256 value, bytes data, bytes32 predecessor, uint256 delay)` | 이벤트엔 `delay`만 있다 → `getTimestamp(id)`가 eta를 직접 주고 완료 여부까지 알려준다 (0 미등록 · **1은 완료 표시이지 1970년이 아니다** · 그 외 eta) |
+
+topic0는 keccak256으로 유도하고 **실물 로그로 검증**했다: ENS TimelockController의 `CallScheduled`
+2건(지연 172800초 = 정확히 2.0일), Compound식 타임락의 `QueueTransaction` 46건. 테스트는 그 실제
+로그를 그대로 붙여 디코더를 고정한다 — 형식을 잘못 이해했으면 테스트에서 깨진다.
+
+만료 규칙도 가문마다 다르고, 뭉개지 않는다: **OZ는 만료가 없다**(실행·취소될 때까지 계속
+실행 가능), Compound식은 `GRACE_PERIOD`(기본 14일)를 지나면 죽는다.
+
+### 레지스트리를 손으로 관리하지 않는다
+
+타임락 주소 목록을 유지보수하는 대신 **찾아낸다**: 토큰의 `owner()`(그리고 프록시 관리자)가
+후보이고, 그 주소에서 타임락 이벤트가 실제로 나오는지 + `getMinDelay()`/`delay()`가 답하는지로
+판별한다. 안 나오면 "타임락 아님"이라고 적을 뿐 추측하지 않는다.
+
+### owner 종류 — 바이트코드 스캔이 못 하던 판별
+
+컨트랙트 프로필은 원래 *"멀티시그·타임락인지는 이 스캔으로 알 수 없다"*고 적어 뒀다. 이제 안다.
+
+| 종류 | 뜻 | 노출 배수 |
+|---|---|---|
+| `timelock` | 특권 행사에 **공표된 지연**이 붙는다 | ×1 (벌점 없음) |
+| `contract` | 컨트랙트지만 타임락 이벤트가 없다 — 멀티시그인지 커스텀인지 구분 못 함 | ×0.85 |
+| `eoa` | 코드가 없다 = 개인키. **예고 없이 즉시** 특권을 쓸 수 있다 | ×0.7 |
+| `renounced` · `none` | 소유권 포기 · owner() 없음 | ×1 |
+
+최종 배수 = 컨트랙트 심각도 배수 × owner 배수. 리스크 총괄이 그걸 비중에 곱한다.
+
+### 실측 (2026-09-03)
+
+```
+ENS   owner = OZ 타임락, 지연 2.0일, 28일간 예약 2건 (둘 다 executed)
+ENA   owner = OZ 타임락, 지연 1.0일, 28일간 예약 39건 · 살아있는 것 31건
+T     high(mint)이지만 owner가 OZ 타임락(지연 2.0일) → ×0.5   (owner 벌점 없음)
+SOPH  medium × owner가 171B 미확인 컨트랙트(×0.85)      → ×0.637 (복합 감점)
+ANKR  clean · owner() 없음
+FLOCK high(mint) · owner() 없음                          → ×0.5
+BTC·ETH·XRP·SOL  native — 해당 없음
+```
+
+**같은 `mint` 진입점이 T에서는 덜 위험하고 SOPH에서는 더 위험하다** — T는 2일 예고가 붙고
+SOPH의 owner는 정체를 모르기 때문이다. 가격으로는 절대 나오지 않는 구분이다.
+
+### 어디에 물렸나
+
+- 오피스 리스크 총괄의 컨트랙트 리뷰 줄에 owner 종류·지연·**큐에 든 실행의 eta**가 붙는다.
+- `GET /crypto/timelock/:symbol`, 그리고 `GET /crypto/contracts`의 각 항목에 `timelock` 필드.
+- 투자 유니버스 페이지: 심볼 배지에 ⏳지연·EOA·큐 건수, 그리고 살아있는 eta 목록.
+
+### 코드
+
+| 파일 | 무엇 | 순수? |
+|---|---|---|
+| `backend/src/onchain/timelock.ts` | topic·셀렉터 상수, 두 가문 디코더, 캘린더 조립, owner 분류 | **순수, 테스트 14개 (실물 로그로 고정)** |
+| `backend/src/onchain/timelock-desk.ts` | 타임락 발견 · 로그 조회 · `getTimestamp`/`queuedTransactions`로 상태 확인 | I/O |
+| `backend/src/onchain/rpc.ts` | `getLogs` 추가 — 엔드포인트마다 범위 제한이 달라 20만→10만→1만으로 줄여가며 시도 | I/O |
+
+`eth_getLogs` 공개 엔드포인트 실측: publicnode는 archive 조회 자체를 거부(유료 토큰 요구),
+flashbots 10만 블록, drpc 무료 1만, blastapi **10 블록**, tenderly public **20만 OK** →
+로그는 tenderly부터 시도한다.
+
+### 아직 안 한 것
+
+- **언락·베스팅 일정.** 베스팅 컨트랙트 주소를 일반적으로 찾으려면 인덱서가 필요하다.
+- **`intent`의 사람 말 번역.** OZ는 calldata 셀렉터만 나와서 `0x973821a6`처럼 보인다.
+  4byte 디렉터리를 붙이면 읽히지만 외부 의존이 하나 더 늘어난다.
+- **우위 측정.** 이건 리스크 필터이지 알파가 아니다. "eta가 임박한 종목을 피하면 BTC 보유를
+  이기는가"는 SPA로 재야 하고, 아직 안 했다.
+
 ## 코드
 
 | 파일 | 무엇 | 순수? |
