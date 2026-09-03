@@ -14,6 +14,7 @@ import { executeOrder } from "../trade/execute.js";
 import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
+import { contractDesk } from "../onchain/contract-desk.js";
 import { cryptoUniverse } from "../crypto/universe.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
@@ -463,6 +464,19 @@ router.post("/crypto/paper/reset", (req, res) => {
 });
 
 router.get("/crypto/universe", (_req, res) => { res.json(cryptoUniverse.status()); });
+// 컨트랙트 분석 — 크립토의 "공시". 배포된 바이트코드가 보유자에게 무엇을 할 수 있는지 말한다
+router.get("/crypto/contract/:symbol", async (req, res) => {
+  try { res.json(await contractDesk.report(String(req.params.symbol), req.query.force === "1")); }
+  catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
+router.get("/crypto/contracts", async (req, res) => {
+  try {
+    const syms = typeof req.query.symbols === "string" && req.query.symbols.length
+      ? req.query.symbols.split(",").map((x) => x.trim()).filter(Boolean).slice(0, 40)
+      : cryptoUniverse.symbols();
+    res.json({ ts: new Date().toISOString(), reports: await contractDesk.reports(syms) });
+  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
 // 데이터 스누핑 검정 — "유니버스 최고가 BTC 보유를 이긴 게 실력인가 30번 본 결과인가"
 router.get("/crypto/scanner/spa", async (req, res) => {
   try {

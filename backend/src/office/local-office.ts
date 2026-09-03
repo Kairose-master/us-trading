@@ -6,6 +6,8 @@ import { OFFICE_ROSTER, type OfficeRole, type OfficeRoleId } from "./roster.js";
 import { DEFAULT_GATE } from "./decision.js";
 import { HOT_MOM20_PCT, OVERHEAT_MOM20_PCT } from "./candidates.js";
 import { officeConfidence, parseChartMomentum, parseQuantEdge, pumpHeadlineShare } from "./conviction.js";
+import { contractDesk } from "../onchain/contract-desk.js";
+import { exposureMultiplier } from "../onchain/contract-risk.js";
 
 /**
  * 로컬 오피스 협의 — Handsel 에스크로 없이 같은 9역할 플로어를 백엔드 안에서 돌린다.
@@ -154,6 +156,32 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   const risk = role("risk-officer"); start(risk);
   let riskText = "", riskMs = 0, riskVerdict: "APPROVE" | "REVISE" | "NONE" = "NONE";
   const riskLog: string[] = [];
+  // 가격이 아닌 근거 하나 — 배포된 컨트랙트가 보유자에게 무엇을 할 수 있는가.
+  // 상관·VaR은 둘 다 가격이다. 발행 진입점·업그레이드 프록시·전송 정지는 가격이 말해주지 않는다.
+  const contractLines: string[] = [];
+  if (draft.targets.length) {
+    const reports = await contractDesk.reports(draft.targets.map((t) => sym(t.market)));
+    for (const r of reports) {
+      const p = r.profile;
+      if (!p) { contractLines.push(`${r.symbol}: ${r.resolution.status} — ${(r.error ?? r.resolution.note).slice(0, 110)}`); continue; }
+      const k = exposureMultiplier(p.severity);
+      const flags = p.findings.filter((f) => f.severity !== "info").map((f) => f.signature).join(", ") || "특권 진입점 없음";
+      contractLines.push(`${r.symbol}: ${p.severity}${k < 1 ? ` → 비중 ×${k}` : ""} · ${p.chain} ${p.address.slice(0, 10)}… · ${p.proxy.isProxy ? "업그레이드 가능 프록시 · " : ""}${flags}`);
+      if (k < 1) {
+        const t = draft.targets.find((x) => sym(x.market) === r.symbol);
+        if (t) { t.weightPct = +(t.weightPct * k).toFixed(1); t.why += `; contract ${p.severity} → ×${k}`; }
+      }
+    }
+    const cut = reports.filter((r) => r.profile && exposureMultiplier(r.profile.severity) < 1).length;
+    if (cut > 0) {
+      draft.version++;
+      draft.targets = draft.targets.filter((t) => t.weightPct >= 1);
+      draft.grossPct = +draft.targets.reduce((a, t) => a + t.weightPct, 0).toFixed(1);
+      draft.notes.push(`v${draft.version}: contract review — ${cut} position(s) cut for on-chain privilege (mint/upgrade/pause), gross ${draft.grossPct}%`);
+      quantSection += `\n\n### Revision v${draft.version} (after on-chain contract review)\n${fmtDraft(draft)}`;
+    }
+  }
+  if (contractLines.length) riskLog.push(`contract review (deployed bytecode): ${contractLines.length} market(s) read`);
   for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
     const basket = [...draft.targets].sort((a, b) => b.weightPct - a.weightPct).slice(0, TOOL_COINS_PER_CALL).map((t) => sym(t.market));
     if (basket.length < 2) { riskVerdict = "APPROVE"; riskLog.push(`round ${round}: ${basket.length} position(s) — correlation review not applicable, APPROVE`); break; }
@@ -181,7 +209,7 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   if (riskVerdict === "REVISE") riskLog.push(`review rounds exhausted (${MAX_REVIEW_ROUNDS}) — last revision stands, flagged`);
   mark(risk, riskVerdict === "NONE" ? "❌" : "Completed", riskMs, riskLog[riskLog.length - 1] ?? "no verdict");
   sections.push(quantSection);
-  sections.push(`${head(risk)}\n\n${riskText}\n\n### Verdict: ${riskVerdict === "NONE" ? "NO VERDICT" : riskVerdict}\n${riskLog.map((l) => `  ${l}`).join("\n")}`);
+  sections.push(`${head(risk)}\n\n${riskText}${contractLines.length ? `\n\n### On-chain contract review (배포된 바이트코드 — 가격이 아닌 근거)\n${contractLines.map((l) => `  ${l}`).join("\n")}` : ""}\n\n### Verdict: ${riskVerdict === "NONE" ? "NO VERDICT" : riskVerdict}\n${riskLog.map((l) => `  ${l}`).join("\n")}`);
 
   // ── 4) 리밸런스 플래너 — 퀀트(최종본) + 리스크 + 자기 도구(워커의 블렌디드 알파) ────
   const planner = role("rebalance-planner"); start(planner);

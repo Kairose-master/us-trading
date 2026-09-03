@@ -756,6 +756,35 @@ export interface ScannerSpa {
 export async function getScannerSpa(): Promise<ScannerSpa> {
   return req("crypto/scanner/spa")
 }
+/** 컨트랙트 분석 — 배포된 바이트코드가 보유자에게 무엇을 할 수 있는지 (크립토의 "공시") */
+export interface ContractFinding { sel: string; signature: string; severity: "high" | "medium" | "info"; meaning: string; where: "proxy" | "implementation" }
+export interface ContractProfile {
+  symbol: string
+  chain: string
+  address: string
+  deployed: boolean
+  codeBytes: number
+  erc20: boolean
+  proxy: { isProxy: boolean; pattern: "eip1967" | "selector" | "none"; implementation: string | null; implCodeBytes: number | null }
+  owner: string | null
+  ownerIsZero: boolean
+  totalSupply: string | null
+  decimals: number | null
+  findings: ContractFinding[]
+  severity: "high" | "medium" | "info" | "clean"
+  reasons: string[]
+  caveats: string[]
+}
+export interface ContractReport {
+  symbol: string
+  ts: string
+  resolution: { symbol: string; status: "ok" | "native" | "ambiguous" | "unknown"; chain?: string; address?: string; coingeckoId?: string; note: string }
+  profile: ContractProfile | null
+  error: string | null
+}
+export async function getContracts(symbols?: string[]): Promise<{ ts: string; reports: ContractReport[] }> {
+  return req(`crypto/contracts${symbols?.length ? `?symbols=${symbols.join(",")}` : ""}`)
+}
 export interface CryptoUniverse { markets: string[]; majors: string[]; refreshedAt: string | null; refreshMs: number }
 export async function getUniverse(): Promise<CryptoUniverse> {
   return req("crypto/universe")

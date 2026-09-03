@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { Radar, Radio, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getScanner, getScannerBacktest, getScannerSpa, getUniverse, isBackendNotConfigured } from "@/lib/api"
+import { getContracts, getScanner, getScannerBacktest, getScannerSpa, getUniverse, isBackendNotConfigured } from "@/lib/api"
 
 /**
  * 알트코인 스캐너 — 백엔드 스캔(/api/crypto/scanner)을 보여준다. 업비트 KRW 거래대금
@@ -33,6 +33,7 @@ export function ScannerPageClient() {
   const { data: bt, error: btError } = useSWR("altcoin-scan-bt", getScannerBacktest, { revalidateOnFocus: false, refreshInterval: 60 * 60_000 })
   const { data: uni } = useSWR("crypto-universe", getUniverse, { refreshInterval: 60_000 })
   const { data: spa } = useSWR("altcoin-scan-spa", getScannerSpa, { revalidateOnFocus: false, refreshInterval: 6 * 60 * 60_000 })
+  const { data: contracts } = useSWR("crypto-contracts", () => getContracts(), { revalidateOnFocus: false, refreshInterval: 12 * 60 * 60_000 })
   const [busy, setBusy] = useState(false)
   const portfolio = data?.portfolio ?? null
 
@@ -160,6 +161,48 @@ export function ScannerPageClient() {
           </div>
         </Card>
       </div>
+
+      <Card>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+          <h2 className="text-sm font-semibold">온체인 컨트랙트 — 가격이 아닌 근거</h2>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">배포된 바이트코드의 PUSH4 셀렉터 · 키 없는 공개 RPC · 리스크 총괄이 비중에 반영</span>
+        </div>
+        {!contracts ? (
+          <div className="p-4 text-xs text-muted-foreground">컨트랙트 조회 중…</div>
+        ) : (
+          <div className="flex flex-col gap-2 p-4 text-xs">
+            <div className="flex flex-wrap gap-1.5">
+              {contracts.reports.map((r) => {
+                const sev = r.profile?.severity ?? (r.resolution.status === "native" ? "native" : r.resolution.status)
+                const tone =
+                  sev === "high" ? "bg-rose-500/15 text-rose-300" : sev === "medium" ? "bg-amber-500/15 text-amber-300" : sev === "clean" ? "bg-emerald-500/15 text-emerald-300" : "bg-muted/40 text-muted-foreground"
+                const flags = r.profile?.findings.filter((f) => f.severity !== "info").map((f) => f.signature).join(", ")
+                return (
+                  <span key={r.symbol} className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-mono text-[11px] ${tone}`} title={r.profile ? `${r.profile.chain} ${r.profile.address}\n${r.profile.reasons.join("\n")}` : r.resolution.note}>
+                    <b>{r.symbol}</b>
+                    <span className="opacity-70">{sev === "native" ? "자체체인" : sev === "ambiguous" ? "티커중복" : sev === "unknown" ? "미확인" : sev}</span>
+                    {r.profile?.proxy.isProxy && <span className="opacity-70">proxy</span>}
+                  </span>
+                )
+              })}
+            </div>
+            {contracts.reports.some((r) => r.profile && r.profile.severity !== "clean" && r.profile.findings.some((f) => f.severity !== "info")) && (
+              <div className="flex flex-col gap-0.5 font-mono text-[10px] text-muted-foreground">
+                {contracts.reports
+                  .filter((r) => r.profile && r.profile.findings.some((f) => f.severity !== "info"))
+                  .map((r) => (
+                    <span key={r.symbol}>
+                      {r.symbol}: {r.profile!.findings.filter((f) => f.severity !== "info").map((f) => `${f.signature}@${f.where}`).join(" · ")}
+                    </span>
+                  ))}
+              </div>
+            )}
+            <p className="text-muted-foreground">
+              셀렉터가 있다 = <b>진입점이 있다</b>. "소유자가 무한 발행한다"가 아니다 — 상한·권한은 소스와 정책이 정하고, 이 스캔은 그것까지 보지 않는다. 자체 체인 코인(BTC·ETH·SOL·DOGE·ONG)은 EVM 컨트랙트가 없어 분석 대상이 아니다.
+            </p>
+          </div>
+        )}
+      </Card>
 
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
