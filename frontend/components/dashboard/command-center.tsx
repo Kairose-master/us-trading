@@ -14,6 +14,7 @@ import {
   pauseControl,
   rejectDecision,
   resumeControl,
+  setControlPolicy,
   setAutopilot,
   setEngine,
   type ControlDecision,
@@ -47,6 +48,7 @@ const ENGINE_COLOR: Record<ControlEngine["id"], string> = {
   signals: "#34d399",
 }
 const MANAGER_COLOR: Record<string, string> = { ...ENGINE_COLOR, sentiment: "#f472b6", risk: "#fbbf24" }
+const MODE_KO: Record<"quorum" | "weighted", string> = { quorum: "정족수제", weighted: "비례제" }
 const STANCE_CLASS: Record<string, string> = { SUPPORT: "text-emerald-300", OPPOSE: "text-rose-300", ABSTAIN: "text-zinc-500", VETO: "text-rose-400 font-bold" }
 const STATUS_KO: Record<ControlDecision["status"], string> = {
   pending: "승인 대기",
@@ -238,7 +240,8 @@ function DecisionCard({ d, pending, onApprove, onReject, busy, auto }: { d: Cont
       </button>
       {open && d.council && (
         <div className="mt-2 rounded-md border border-border/70 bg-muted/20 p-2">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">협의록 · {d.council.quorumMet ? "정족수 충족" : "정족수 미달 — 현금"}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">협의록 · {d.council.quorumMet ? "채택 있음" : "채택 없음 — 보유 유지"}</p>
+          {d.shadow && <p className="mt-0.5 font-mono text-[10px] text-muted-foreground" title={d.shadow.summary.join(" / ")}>그림자 · {MODE_KO[d.shadow.mode]}였다면: {d.shadow.targets.length ? d.shadow.targets.map((t) => `${sym(t.market)} ${t.weightPct}%`).join(" · ") : "채택 없음"} · 현금 {d.shadow.cashPct}%</p>}
           <div className="mt-1 flex flex-wrap gap-1">
             {d.council.tally.map((t) => (
               <span key={t.market} className={cn("rounded border px-1.5 py-0.5 font-mono text-[10px]", t.outcome === "ADOPTED" ? "border-emerald-400/50 text-emerald-300" : t.outcome === "REJECTED" ? "border-rose-400/50 text-rose-300" : "border-border text-muted-foreground")} title={t.why}>
@@ -384,6 +387,22 @@ export function CommandCenter() {
             <span>결정당 평균 <b className={(s.attribution.decisions.avgPct ?? 0) >= 0 ? "text-emerald-300" : "text-rose-300"}>{s.attribution.decisions.avgPct === null ? "—" : `${s.attribution.decisions.avgPct >= 0 ? "+" : ""}${s.attribution.decisions.avgPct.toFixed(2)}%`}</b></span>
             <span>합계 {s.attribution.decisions.sumPct === null ? "—" : `${s.attribution.decisions.sumPct >= 0 ? "+" : ""}${s.attribution.decisions.sumPct.toFixed(2)}%`}</span>
             {s.attribution.decisions.open && <span className="text-muted-foreground">진행 중 {s.attribution.decisions.open.pct >= 0 ? "+" : ""}{s.attribution.decisions.open.pct.toFixed(2)}% · {s.attribution.decisions.open.marks}마크</span>}
+          </div>
+        )}
+        {s.councilModes && (
+          <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2 font-mono text-[11px] tnum">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">의결 방식 · 같은 제안을 두 방식으로 매 틱 채점</span>
+            <div className="inline-flex overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="의결 방식">
+              {s.councilModes.map((m) => (
+                <button key={m.mode} type="button" role="radio" aria-checked={m.active} disabled={busy || m.active} onClick={() => void run(() => setControlPolicy({ councilMode: m.mode }), `${MODE_KO[m.mode]}로 전환 — 즉시 재중재`)} className={cn("px-2.5 py-1 font-semibold", m.active ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>{MODE_KO[m.mode]}</button>
+              ))}
+            </div>
+            {s.councilModes.map((m) => (
+              <span key={m.mode} className={m.active ? "" : "text-muted-foreground"}>
+                {MODE_KO[m.mode]}{m.active ? "(실집행)" : "(그림자)"} 누적 <b className={m.cumReturnPct > 0 ? "text-emerald-300" : m.cumReturnPct < 0 ? "text-rose-300" : ""}>{m.cumReturnPct >= 0 ? "+" : ""}{m.cumReturnPct.toFixed(2)}%</b> · 타율 {m.hitRate === null ? "—" : `${(m.hitRate * 100).toFixed(0)}%`}/{m.marks} · 결정 {m.decisions} · {m.targets.length}종목
+              </span>
+            ))}
+            <span className="text-muted-foreground">비례제 문턱 {s.policy.convictionMin}</span>
           </div>
         )}
       </Card>

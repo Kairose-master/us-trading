@@ -32,7 +32,9 @@ export interface ManagerStanding { id: ManagerId; name: string; nameKo: string; 
 
 export interface Position { manager: ManagerId; market: string; stance: Stance; weightPct: number | null; reason: string }
 export interface CouncilRound { round: number; title: string; positions: Position[]; notes: string[] }
+export type CouncilMode = "quorum" | "weighted";
 export interface CouncilResult {
+  mode: CouncilMode;
   targets: Target[];
   cashPct: number;
   rounds: CouncilRound[];
@@ -58,12 +60,24 @@ const DRAWDOWN_HALF_PCT = 8; // 페이퍼 드로다운이 이 이상이면 리�
 const DRAWDOWN_VETO_PCT = 15; // 이 이상이면 신규 매수 전면 거부 (현금)
 const sym = (m: string) => m.replace("KRW-", "");
 
+/**
+ * 두 의결 방식:
+ *   quorum   — 서로 다른 제안 매니저 2명 이상이 지지해야 채택 (이력: 보유 중이면 1명으로 유지).
+ *   weighted — 비례제. 지지자들의 standing 지분 × 확신도 합(conviction)이 convictionMin 이상이면 채택.
+ *              standing이 높은 매니저는 혼자서도 살 수 있고, 낮은 매니저는 동료가 필요하다 — 귀속으로
+ *              standing이 움직이니 자율성도 성적을 따라간다. 신호 총괄 단독 매수 금지는 두 방식 공통.
+ */
 export function convene(p: {
   proposals: CouncilProposal[];
   standing: ManagerStanding[];
   sentiment: SentimentRead[];
   risk: RiskContext;
+  mode?: CouncilMode;
+  /** weighted 모드의 채택 문턱 (전체 standing 대비 지지 conviction 비율, 기본 0.34) */
+  convictionMin?: number;
 }): CouncilResult {
+  const mode: CouncilMode = p.mode ?? "quorum";
+  const convictionMin = p.convictionMin ?? 0.34;
   const rounds: CouncilRound[] = [];
   const constraints: string[] = [];
   const standingOf = (id: ManagerId) => p.standing.find((s) => s.id === id);
@@ -133,6 +147,27 @@ export function convene(p: {
     if (supporters.length === 0) { tally.push({ market: m, supporters, opposers, vetoed, outcome: "WITHDRAWN", weightPct: 0, why: "no proposer left supporting" }); continue; }
     const onlySignals = supporters.length === 1 && supporters[0] === "signals";
     const held = p.risk.holdings.find((h) => h.market === m && h.weightPct >= 1);
+    if (mode === "weighted") {
+      // 비례제: conviction = Σ 지지자 standing 지분 × (0.5 + 0.5·확신도). 전체 standing 대비 비율이 문턱을 넘으면 채택
+      // 분모는 "켜진 제안 매니저 전원"의 standing — 제안을 안 낸 매니저의 침묵도 conviction을 깎는다.
+      // (지금 제안한 매니저들만 분모로 잡으면 오피스 제안이 만료된 사이 진화 하나가 장부를 다 굴린다)
+      const enabledProposers = p.standing.filter((s) => PROPOSERS.includes(s.id) && s.enabled !== false);
+      const totalStanding = (enabledProposers.length ? enabledProposers : active.map((x) => standingOf(x.manager)!).filter(Boolean)).reduce((a, s) => a + (s.weight ?? 1), 0) || 1;
+      const conviction = list.reduce((a, x) => { const pr = active.find((q) => q.manager === x.manager); return a + ((standingOf(x.manager)?.weight ?? 1) / totalStanding) * (0.5 + 0.5 * (pr?.confidence ?? 0.5)); }, 0);
+      const sentimentSupports = r1.some((x) => x.market === m && x.manager === "sentiment" && x.stance === "SUPPORT");
+      if (onlySignals) { tally.push({ market: m, supporters, opposers, vetoed, outcome: "REJECTED", weightPct: 0, why: `signals alone cannot buy (conviction ${conviction.toFixed(2)})` }); continue; }
+      const keepHeld = held && supporters.length >= 1 && opposers.length === 0;
+      if (conviction < convictionMin && !keepHeld) { tally.push({ market: m, supporters, opposers, vetoed, outcome: "REJECTED", weightPct: 0, why: `conviction ${conviction.toFixed(2)} < ${convictionMin} (${supporters.join("+")})` }); continue; }
+      const wsum = list.reduce((a, x) => a + (standingOf(x.manager)?.weight ?? 1), 0) || 1;
+      let w = list.reduce((a, x) => a + x.weightPct * (standingOf(x.manager)?.weight ?? 1), 0) / wsum;
+      w *= Math.min(1, 0.5 + conviction); // conviction이 낮으면 비중도 비례해서 작게
+      if (sentimentSupports) w *= 1.1;
+      if (conviction < convictionMin && keepHeld) w = Math.min(w, held!.weightPct * 1.25);
+      w = +w.toFixed(2);
+      adopted.push({ market: m, weightPct: w });
+      tally.push({ market: m, supporters, opposers, vetoed, outcome: "ADOPTED", weightPct: w, why: `${conviction < convictionMin ? "held position kept — " : ""}conviction ${conviction.toFixed(2)}${conviction >= convictionMin ? ` ≥ ${convictionMin}` : ""} (${supporters.join("+")})${sentimentSupports ? ", sentiment concurs" : ""}${opposers.length ? `; over ${opposers.join("+")} objection` : ""}` });
+      continue;
+    }
     // 이력(hysteresis): 정족수는 **들어올 때**만 필요하다. 이미 보유 중인 시장은 제안 매니저 하나라도 지지하고
     // 반대·거부가 없으면 유지한다 — 15분마다 바뀌는 신호 커버리지 때문에 SOL/ETH가 매시간 들락거리던 것을 막는다
     if (supporters.length < QUORUM && supporters.length >= 1 && held && opposers.length === 0) {
@@ -170,8 +205,8 @@ export function convene(p: {
 
   const quorumMet = tally.some((t) => t.outcome === "ADOPTED");
   const summary = [
-    `${active.length} proposing manager(s) brought ${markets.length} market(s); ${tally.filter((t) => t.outcome === "ADOPTED").length} adopted, ${tally.filter((t) => t.outcome === "REJECTED").length} rejected, ${tally.filter((t) => t.outcome === "WITHDRAWN").length} withdrawn`,
+    `[${mode === "quorum" ? "정족수제" : "비례제"}] ${active.length} proposing manager(s) brought ${markets.length} market(s); ${tally.filter((t) => t.outcome === "ADOPTED").length} adopted, ${tally.filter((t) => t.outcome === "REJECTED").length} rejected, ${tally.filter((t) => t.outcome === "WITHDRAWN").length} withdrawn`,
     ...(quorumMet ? [] : markets.length ? ["no market reached quorum — the council holds cash"] : ["nothing proposed — cash"]),
   ];
-  return { targets, cashPct: +(100 - gross).toFixed(2), rounds, tally, summary, constraints, quorumMet };
+  return { mode, targets, cashPct: +(100 - gross).toFixed(2), rounds, tally, summary, constraints, quorumMet };
 }

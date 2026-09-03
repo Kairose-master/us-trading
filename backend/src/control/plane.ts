@@ -6,7 +6,7 @@ import { logger } from "../core/logger.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { upbit } from "../crypto/upbit.js";
 import { riskManager } from "../risk/riskManager.js";
-import { MANAGERS, convene, type CouncilResult, type SentimentRead } from "./council.js";
+import { MANAGERS, convene, type CouncilMode, type CouncilResult, type SentimentRead } from "./council.js";
 
 /**
  * 제어 평면 — 대시보드의 엔진들(스캐너·오피스·진화·파이프라인 신호)이 각자 장부를 덮어쓰던
@@ -50,6 +50,8 @@ export interface Decision {
   by: "autopilot" | "operator" | null;
   /** 협의록 — 매니저들의 입장·수정·표결. 구 결정에는 없다 */
   council?: Pick<CouncilResult, "rounds" | "tally" | "summary" | "quorumMet">;
+  /** 다른 의결 방식이 같은 제안으로 냈을 결정 — 비교용, 집행되지 않는다 */
+  shadow?: { mode: CouncilMode; targets: Target[]; cashPct: number; summary: string[] };
   /** 집행된 결정의 실현 결과 — 다음 집행까지 장부 에쿼티 변화 (5분 마크) */
   outcome?: { fromEquityKrw: number; toEquityKrw: number; pct: number; marks: number; closedAt: string | null };
 }
@@ -81,17 +83,20 @@ interface State {
   pending: Decision | null;
   lastExecutedAt: string | null;
   lastMarkedDate: string | null;
-  policy: { maxWeightPct: number; maxPositions: number; cashFloorPct: number; grossMaxPct: number; minTurnoverPct: number; maxTurnoverPct: number; minIntervalMin: number; proposalTtlH: number; eta: number };
+  policy: { maxWeightPct: number; maxPositions: number; cashFloorPct: number; grossMaxPct: number; minTurnoverPct: number; maxTurnoverPct: number; minIntervalMin: number; proposalTtlH: number; eta: number; councilMode: CouncilMode; convictionMin: number };
+  /** 의결 방식별 그림자 성적 — 두 방식이 같은 제안 위에서 각각 냈을 포트폴리오를 틱마다 실시세로 마킹 */
+  modeStats: Record<CouncilMode, { targets: Target[]; lastMarkPrices: Record<string, number> | null; returns: number[]; marks: number; hits: number; cumReturnPct: number; decisions: number }>;
 }
 
 const FILE = join(process.cwd(), "data", "control", "state.json");
 // 집행 간격 60분·최소 회전 8% — 15분마다 오는 신호 제안까지 전부 집행하면 장부가 잔거래로 오염된다 (2026-09-02 실제로 그랬다)
 // 한 번의 집행이 장부의 25% 넘게 갈아엎지 못한다 — 진화 스쿼드가 바뀌면 56%가 한 시간에 회전했다(2026-09-03 01:20). 목표까지는 여러 집행에 걸쳐 조금씩 간다
-const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, maxTurnoverPct: 25, minIntervalMin: 60, proposalTtlH: 30, eta: 8 };
+const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, maxTurnoverPct: 25, minIntervalMin: 60, proposalTtlH: 30, eta: 8, councilMode: "quorum", convictionMin: 0.34 };
+const freshModeStat = () => ({ targets: [] as Target[], lastMarkPrices: null as Record<string, number> | null, returns: [] as number[], marks: 0, hits: 0, cumReturnPct: 0, decisions: 0 });
 
 function fresh(): State {
   const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0, marks: 0, hits: 0, lastMarkPrices: null, lastMarkAt: null }])) as unknown as Record<EngineId, EngineState>;
-  return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY };
+  return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY, modeStats: { quorum: freshModeStat(), weighted: freshModeStat() } };
 }
 function readState(): State {
   try {
@@ -101,6 +106,7 @@ function readState(): State {
       st.autopilot = config.CONTROL_AUTOPILOT; st.paused ??= false; st.pausedAt ??= null; st.pausedBy ??= null;
       for (const e of ENGINES) { const x = st.engines[e.id]; x.marks ??= 0; x.hits ??= 0; x.lastMarkPrices ??= null; x.lastMarkAt ??= null; }
       // 스캐너는 엔진에서 빠졌다 — 남은 상태·제안은 버린다 (유니버스 층으로 옮겨감)
+      st.modeStats ??= { quorum: freshModeStat(), weighted: freshModeStat() };
       const known = new Set<string>(ENGINES.map((e) => e.id));
       for (const k of Object.keys(st.engines)) if (!known.has(k)) delete (st.engines as Record<string, unknown>)[k];
       st.proposals = st.proposals.filter((p) => known.has(p.engine));
@@ -144,6 +150,7 @@ class ControlPlane extends EventEmitter {
       managers: MANAGERS.map((m) => { const e = ENGINES.some((x) => x.id === m.id) ? this.st.engines[m.id as EngineId] : null; return { ...m, enabled: e ? e.enabled : true, weight: e ? +e.weight.toFixed(4) : null, lastProposal: e?.lastProposal ?? null, cumReturnPct: e ? +e.cumReturnPct.toFixed(2) : null }; }),
       engines: ENGINES.map((e) => { const s = this.st.engines[e.id]; return { ...e, enabled: s.enabled, weight: +s.weight.toFixed(4), share: s.enabled ? +(s.weight / wsum).toFixed(3) : 0, lastProposal: s.lastProposal, proposals: s.proposals, cumReturnPct: +s.cumReturnPct.toFixed(2), days: s.returns.length, marks: s.marks, hits: s.hits, hitRate: s.marks ? +(s.hits / s.marks).toFixed(3) : null, avgIntervalPct: s.returns.length ? +((s.returns.reduce((a, x) => a + x, 0) / s.returns.length) * 100).toFixed(4) : null, lastMarkAt: s.lastMarkAt }; }),
       attribution: this.attribution(),
+      councilModes: (["quorum", "weighted"] as CouncilMode[]).map((m) => { const x = this.st.modeStats[m]; return { mode: m, active: m === this.st.policy.councilMode, marks: x.marks, hits: x.hits, hitRate: x.marks ? +(x.hits / x.marks).toFixed(3) : null, cumReturnPct: +x.cumReturnPct.toFixed(3), decisions: x.decisions, targets: x.targets }; }),
       proposals: this.activeProposals(),
       pending: this.st.pending,
       decisions: this.st.decisions.slice(0, 30),
@@ -181,12 +188,19 @@ class ControlPlane extends EventEmitter {
     const contribs = props.map((p) => ({ engine: p.engine, weight: this.st.engines[p.engine].weight, confidence: p.confidence, proposalId: p.id, targets: p.targets }));
     // 협의회 — 매니저들이 시장별로 입장을 내고 수정하고 표결한다. 가중평균은 더 이상 없다
     const holdings = this.status().holdings;
-    const council = convene({
+    const convInput = {
       proposals: props.map((p) => ({ manager: p.engine, targets: p.targets, confidence: p.confidence, evidence: p.evidence, ageMin: (Date.now() - Date.parse(p.ts)) / 60_000 })),
       standing: ENGINES.map((e) => ({ id: e.id, name: e.name, nameKo: e.nameKo, weight: this.st.engines[e.id].weight, enabled: this.st.engines[e.id].enabled })),
       sentiment: this.sentimentOf(),
       risk: { killSwitch: riskManager.killSwitchActive, drawdownPct: this.drawdownOf(), policy: { maxWeightPct: pol.maxWeightPct, maxPositions: pol.maxPositions, cashFloorPct: pol.cashFloorPct, grossMaxPct: pol.grossMaxPct }, holdings },
-    });
+      convictionMin: pol.convictionMin,
+    };
+    const council = convene({ ...convInput, mode: pol.councilMode });
+    const otherMode: CouncilMode = pol.councilMode === "quorum" ? "weighted" : "quorum";
+    const shadowCouncil = convene({ ...convInput, mode: otherMode });
+    // 두 방식의 포트폴리오를 각각 그림자 마킹한다 — 집행과 무관하게 "그 방식이면 어땠나"의 실시세 성적
+    this.st.modeStats[pol.councilMode].targets = council.targets; this.st.modeStats[pol.councilMode].decisions++;
+    this.st.modeStats[otherMode].targets = shadowCouncil.targets; this.st.modeStats[otherMode].decisions++;
     let targets = council.targets;
     const constraints = [...council.constraints];
     // 최대 회전: 목표가 현재와 너무 다르면 그 방향으로 maxTurnoverPct만큼만 움직인다 (부분 리밸런스)
@@ -215,6 +229,7 @@ class ControlPlane extends EventEmitter {
       contributions: contribs.map(({ engine, weight, confidence, proposalId, targets: tg }) => ({ engine, weight: +weight.toFixed(4), confidence, proposalId, targets: tg })),
       rationale, constraints, turnoverPct: +turnover.toFixed(2), execution: null, by: null,
       council: { rounds: council.rounds, tally: council.tally, summary: council.summary, quorumMet: council.quorumMet },
+      shadow: { mode: otherMode, targets: shadowCouncil.targets, cashPct: shadowCouncil.cashPct, summary: shadowCouncil.summary },
     };
     // 정족수 미달은 "아무것도 하지 않는다"이지 "다 판다"가 아니다. 현금으로 가는 건 리스크 총괄의 거부권뿐이다
     const vetoed = council.tally.some((t) => t.vetoed);
@@ -318,7 +333,14 @@ class ControlPlane extends EventEmitter {
     if (patch.weight !== undefined) e.weight = Math.max(0.05, Math.min(5, patch.weight));
     this.save(); this.emitState();
   }
-  setPolicy(patch: Partial<State["policy"]>) { this.st.policy = { ...this.st.policy, ...patch }; this.save(); this.emitState(); }
+  setPolicy(patch: Partial<State["policy"]>) {
+    const next = { ...this.st.policy, ...patch };
+    if (next.councilMode !== "quorum" && next.councilMode !== "weighted") next.councilMode = this.st.policy.councilMode;
+    next.convictionMin = Math.max(0.1, Math.min(0.9, Number(next.convictionMin) || this.st.policy.convictionMin));
+    const modeChanged = next.councilMode !== this.st.policy.councilMode;
+    this.st.policy = next; this.save(); this.emitState();
+    if (modeChanged) { logger.info("[control] council mode", { mode: next.councilMode }); void this.arbitrate("council mode changed").catch(() => undefined); }
+  }
 
   /** 결정 단위 성적 — 집행된 결정마다 다음 집행까지의 장부 수익률 */
   attribution() {
@@ -360,6 +382,24 @@ class ControlPlane extends EventEmitter {
       const next = rets.map(([id, r]) => [id, this.st.engines[id].weight * Math.exp(this.st.policy.eta * r)] as const);
       const norm = next.reduce((a, [, w]) => a + w, 0) / next.length || 1;
       for (const [id, w] of next) this.st.engines[id].weight = Math.max(0.05, Math.min(5, w / norm));
+    }
+    // 의결 방식별 그림자 포트폴리오 마킹 (같은 제안 → 두 방식 → 각자의 실시세 성적)
+    {
+      const need = new Set<string>();
+      for (const m of ["quorum", "weighted"] as CouncilMode[]) for (const t of this.st.modeStats[m].targets) need.add(t.market);
+      const extra = [...need].filter((m) => !(prices.get(m)! > 0));
+      const more = extra.length ? await this.pricesFor(extra.map((market) => ({ market, weightPct: 0 }))) : prices;
+      for (const m of ["quorum", "weighted"] as CouncilMode[]) {
+        const x = this.st.modeStats[m];
+        const cur: Record<string, number> = {};
+        for (const t of x.targets) { const px = prices.get(t.market) ?? more.get(t.market); if (px && px > 0) cur[t.market] = px; }
+        if (x.lastMarkPrices) {
+          let r = 0, covered = 0;
+          for (const t of x.targets) { const a = x.lastMarkPrices[t.market], b = cur[t.market]; if (a && b) { r += (t.weightPct / 100) * (b / a - 1); covered += t.weightPct; } }
+          if (covered > 0 || x.targets.length === 0) { x.returns.push(r); if (x.returns.length > 3000) x.returns.shift(); x.cumReturnPct = (x.returns.reduce((a, v) => a * (1 + v), 1) - 1) * 100; x.marks++; if (r > 0) x.hits++; }
+        }
+        x.lastMarkPrices = cur;
+      }
     }
     // 집행된 결정의 실현 결과 — 가장 최근 집행부터 지금까지의 장부 에쿼티
     const eq = this.equityOf();

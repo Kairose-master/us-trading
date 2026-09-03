@@ -553,6 +553,7 @@ export interface ControlDecision {
   execution: { ts: string; orders: number; skipped: string[]; error?: string } | null
   by: "autopilot" | "operator" | null
   outcome?: { fromEquityKrw: number; toEquityKrw: number; pct: number; marks: number; closedAt: string | null }
+  shadow?: { mode: "quorum" | "weighted"; targets: ControlTarget[]; cashPct: number; summary: string[] }
   council?: {
     rounds: Array<{ round: number; title: string; positions: Array<{ manager: ControlManagerId; market: string; stance: "SUPPORT" | "OPPOSE" | "ABSTAIN" | "VETO"; weightPct: number | null; reason: string }>; notes: string[] }>
     tally: Array<{ market: string; supporters: ControlManagerId[]; opposers: ControlManagerId[]; vetoed: boolean; outcome: "ADOPTED" | "REJECTED" | "WITHDRAWN"; weightPct: number; why: string }>
@@ -604,7 +605,10 @@ export interface ControlPolicy {
   minIntervalMin: number
   proposalTtlH: number
   eta: number
+  councilMode: "quorum" | "weighted"
+  convictionMin: number
 }
+export interface CouncilModeStat { mode: "quorum" | "weighted"; active: boolean; marks: number; hits: number; hitRate: number | null; cumReturnPct: number; decisions: number; targets: ControlTarget[] }
 export interface ControlStatus {
   autopilot: boolean
   paused: boolean
@@ -618,6 +622,7 @@ export interface ControlStatus {
   managers: ControlManager[]
   engines: ControlEngine[]
   attribution: ControlAttribution
+  councilModes: CouncilModeStat[]
   proposals: ControlProposal[]
   pending: ControlDecision | null
   decisions: ControlDecision[]
