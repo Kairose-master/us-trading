@@ -462,7 +462,7 @@ export interface EvoAgent {
 export interface EvoGeneration {
   gen: number
   at: string
-  examWindow: { from: string; to: string }
+  examWindow: { from: string; to: string } // 세대마다 다른 60일 창 (훈련 구간 밖, HMM은 창 앞까지만 적합)
   alive: number
   births: number
   deaths: number

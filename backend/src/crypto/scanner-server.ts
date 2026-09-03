@@ -25,7 +25,7 @@ import type { BtCandle } from "./backtest.js";
  */
 
 const UNIVERSE_SIZE = 30;
-const CANDLE_DAYS = 200;
+const CANDLE_DAYS = 365; // 진화 시험 창을 세대마다 다르게 뽑으려면 1년치가 필요하다 (200일이면 60일 창의 선택지가 4개 남짓)
 const SCAN_TTL_MS = 10 * 60_000;
 const BT_TTL_MS = 60 * 60_000;
 // 동시 2 — 업비트 공개 레이트리밋(초당 10회/IP)을 공유 IP 호스팅에서도 안 넘기게

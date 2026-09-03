@@ -45,12 +45,33 @@ function forwardFilter(rets: number[], states: Array<{ mu: number; sigma: number
   return out;
 }
 
-/** 시리즈 → 특징. examDays 만큼을 시험 구간으로 떼어 둔다 */
-export function buildFeatures(series: Map<string, BtCandle[]>, examDays = 60): FeatureSet {
+export const MIN_TRAIN_DAYS = 80;
+
+/**
+ * 세대마다 다른 시험지 — 훈련 최소 구간 뒤에서 examDays짜리 창의 시작을 무작위로 뽑는다.
+ * 직전 세대 창과 minGap일 이상 떨어지도록 몇 번 다시 뽑는다(같은 창의 재채점을 막는다).
+ * 순수 함수: rand는 호출자가 준다 (세대 시드로 결정적).
+ */
+export function pickExamWindow(p: { datesLen: number; examDays: number; rand: () => number; prevStart?: number | null; minTrain?: number; minGap?: number; tries?: number }): { start: number; end: number; choices: number } {
+  const minTrain = p.minTrain ?? MIN_TRAIN_DAYS, minGap = p.minGap ?? 30, tries = p.tries ?? 6;
+  const last = p.datesLen - 1; // evaluate는 dates[to]까지 필요하므로 창의 끝(exclusive)은 last 이하
+  const maxStart = last - p.examDays;
+  if (maxStart < minTrain) return { start: Math.max(0, Math.min(minTrain, maxStart)), end: last, choices: 1 };
+  const choices = maxStart - minTrain + 1;
+  let start = minTrain;
+  for (let i = 0; i < tries; i++) {
+    start = minTrain + Math.floor(p.rand() * choices);
+    if (p.prevStart == null || Math.abs(start - p.prevStart) >= minGap || choices <= minGap) break;
+  }
+  return { start, end: start + p.examDays, choices };
+}
+
+/** 시리즈 → 특징. examDays 만큼을 시험 구간으로 떼어 둔다. trainEndOverride를 주면 그 인덱스 앞까지만 훈련(HMM 적합)한다 */
+export function buildFeatures(series: Map<string, BtCandle[]>, examDays = 60, trainEndOverride?: number): FeatureSet {
   const dateSet = new Set<string>();
   for (const cs of series.values()) for (const c of cs) dateSet.add(c.t);
   const dates = [...dateSet].sort();
-  const trainEnd = Math.max(80, dates.length - examDays);
+  const trainEnd = Math.max(MIN_TRAIN_DAYS, Math.min(dates.length - 1, trainEndOverride ?? dates.length - examDays));
   const trainCut = dates[trainEnd - 1];
   const markets: MarketFeatures[] = [];
   for (const [market, cs] of series) {

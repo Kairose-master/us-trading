@@ -1,3 +1,4 @@
+import type { BtCandle } from "../crypto/backtest.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -6,7 +7,7 @@ import { logger } from "../core/logger.js";
 import { controlPlane } from "../control/plane.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel } from "../office/handsel-client.js";
-import { buildFeatures, dayReturn, evaluate, type FeatureSet } from "./evaluate.js";
+import { buildFeatures, dayReturn, evaluate, type FeatureSet, pickExamWindow } from "./evaluate.js";
 import { mutateVectors, nextGeneration } from "./ga.js";
 import { ARCHETYPES, GENE_SPECS, archetypeOf, clampGene, geneDistance, rand, randomVector, reseed, toGenes, upgradeVector, type GeneVector, type Genes } from "./genome.js";
 import { DESKS, OFFICE_RENT_PCT, applySkills, consultDesks, latestOfficeDecision, rentFor, resetDeskCache, type DeskId, type DeskReading } from "./capabilities.js";
@@ -49,8 +50,9 @@ export interface Agent {
   capitalKrw: number;
   seedKrw: number;
   peakKrw: number;
-  exam: { fitness: number; sharpe: number; totalReturnPct: number; maxDrawdownPct: number; rebalances: number; avgExposure: number } | null;
-  fitnessHistory: Array<{ gen: number; fitness: number }>;
+  exam: { fitness: number; sharpe: number; totalReturnPct: number; maxDrawdownPct: number; rebalances: number; avgExposure: number; window?: { from: string; to: string } } | null;
+  /** 세대별 적합도 — 세대마다 시험 창이 다르므로 절대값 비교가 아니라 "그 창을 본 개체들 사이의 순위"로 읽는다 */
+  fitnessHistory: Array<{ gen: number; fitness: number; window?: { from: string; to: string } }>;
   capitalHistory: Array<{ date: string; capitalKrw: number }>;
   lastWeights: Array<{ market: string; weightPct: number }>;
   peers: string[];
@@ -103,6 +105,8 @@ export interface EvoLog {
 
 interface State {
   generation: number;
+  /** 직전 세대 시험 창의 시작 인덱스 — 다음 세대가 같은 창을 다시 뽑지 않도록 */
+  lastExamStart?: number | null;
   agents: Agent[];
   history: GenerationRecord[];
   log: EvoLog[];
@@ -226,7 +230,7 @@ class Evolution extends EventEmitter {
       engine: "evolution",
       targets: sq.targets,
       confidence: Math.max(0, Math.min(1, 0.25 + avgFit / 4)),
-      evidence: `${reason} · squad ${sq.members.map((m) => `${m.name}(${m.fitness.toFixed(2)})`).join("/")} · exam ${EXAM_DAYS}d unseen`,
+      evidence: `${reason} · squad ${sq.members.map((m) => `${m.name}(${m.fitness.toFixed(2)})`).join("/")} · exam ${EXAM_DAYS}d unseen (window ${this.st.history[this.st.history.length - 1]?.examWindow.from ?? "?"}~${this.st.history[this.st.history.length - 1]?.examWindow.to ?? "?"})`,
       ref: `gen ${this.st.generation}`,
     });
     const r = decision?.execution ?? { orders: 0, skipped: [] as string[], error: decision ? `control plane: ${decision.status}` : "no decision" };
@@ -261,8 +265,10 @@ class Evolution extends EventEmitter {
     if (arch !== a.archetype) a.archetype = arch;
   }
 
+  private series: Map<string, BtCandle[]> | null = null;
   private async loadFeatures(): Promise<FeatureSet> {
     const { series } = await scannerServer.series();
+    this.series = series;
     this.features = buildFeatures(series, EXAM_DAYS);
     return this.features;
   }
@@ -274,8 +280,13 @@ class Evolution extends EventEmitter {
       const f = await this.loadFeatures();
       const gen = ++this.st.generation;
       reseed(20260902 + gen);
-      const examFrom = f.dates[f.trainEnd], examTo = f.dates[f.dates.length - 1];
-      this.log("info", `GEN ${gen} — ${reason} · exam ${examFrom}~${examTo} (${f.dates.length - f.trainEnd} unseen days) · ${f.markets.length} markets`);
+      // 시험지: 세대마다 다른 60일 창. HMM은 그 창 앞까지만 적합(창 안에 미래 정보 없음). f(최신 창)는 실전 배치 타깃·자본 마킹용
+      const win = pickExamWindow({ datesLen: f.dates.length, examDays: EXAM_DAYS, rand, prevStart: this.st.lastExamStart ?? null });
+      const fExam = buildFeatures(this.series!, EXAM_DAYS, win.start);
+      const examRange = { from: fExam.trainEnd, to: Math.min(fExam.trainEnd + EXAM_DAYS, fExam.dates.length - 1) };
+      const examFrom = fExam.dates[examRange.from], examTo = fExam.dates[examRange.to];
+      this.st.lastExamStart = win.start;
+      this.log("info", `GEN ${gen} — ${reason} · exam ${examFrom}~${examTo} (${examRange.to - examRange.from} unseen days, window ${win.start}/${win.choices} choices, HMM fit before ${examFrom}) · ${fExam.markets.length} markets · live targets from ${f.dates[f.trainEnd]}~${f.dates[f.dates.length - 1]}`);
 
       if (this.st.agents.filter((a) => a.alive).length === 0) {
         for (let i = 0; i < POP_MIN; i++) this.st.agents.push(this.newAgent(randomVector(), gen, [], SEED_KRW));
@@ -284,11 +295,12 @@ class Evolution extends EventEmitter {
       const alive = () => this.st.agents.filter((a) => a.alive);
 
       for (const a of alive()) {
-        const r = evaluate(a.genes, f);
-        a.exam = { fitness: r.fitness, sharpe: r.sharpe, totalReturnPct: r.totalReturnPct, maxDrawdownPct: r.maxDrawdownPct, rebalances: r.rebalances, avgExposure: r.avgExposure };
-        a.fitnessHistory.push({ gen, fitness: r.fitness });
+        const r = evaluate(a.genes, fExam, examRange); // 적합도: 이번 세대의 시험 창
+        const live = evaluate(a.genes, f); // 실전 타깃: 최신 데이터의 마지막 리밸런스 (시험 창의 과거 타깃을 배치하면 안 된다)
+        a.exam = { fitness: r.fitness, sharpe: r.sharpe, totalReturnPct: r.totalReturnPct, maxDrawdownPct: r.maxDrawdownPct, rebalances: r.rebalances, avgExposure: r.avgExposure, window: { from: examFrom, to: examTo } };
+        a.fitnessHistory.push({ gen, fitness: r.fitness, window: { from: examFrom, to: examTo } });
         if (a.fitnessHistory.length > 200) a.fitnessHistory.shift();
-        a.lastWeights = r.lastWeights;
+        a.lastWeights = live.lastWeights;
       }
 
       // 1b) 오피스 — 데스크를 켠 개체는 실제 MCP 보고서를 읽고 스킬로 라이브 타깃을 고친다. 임대료는 자본에서.
