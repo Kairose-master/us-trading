@@ -13,10 +13,12 @@ import { SUPPORTED_CHAINS } from "./rpc.js";
 
 const FILE = join(process.cwd(), "data", "onchain", "registry.json");
 const TTL_MS = 24 * 60 * 60_000;
+/** 레지스트리 캐시 스키마 버전 — 모양이 바뀌면 올린다 (contract-desk와 같은 함정) */
+const CACHE_VERSION = 1;
 const CG = "https://api.coingecko.com/api/v3";
 
 interface Entry { id: string; symbol: string; name: string; platforms: Record<string, string> }
-interface Cache { at: number; list: Entry[]; rank: Record<string, number> }
+interface Cache { at: number; v?: number; list: Entry[]; rank: Record<string, number> }
 
 export interface Resolution {
   symbol: string;
@@ -34,7 +36,7 @@ class Registry {
 
   private read(): Cache | null {
     if (this.cache) return this.cache;
-    try { if (existsSync(FILE)) { const c = JSON.parse(readFileSync(FILE, "utf-8")) as Cache; if (Date.now() - c.at < TTL_MS) { this.cache = c; return c; } } }
+    try { if (existsSync(FILE)) { const c = JSON.parse(readFileSync(FILE, "utf-8")) as Cache; if (c.v === CACHE_VERSION && Date.now() - c.at < TTL_MS) { this.cache = c; return c; } } }
     catch (e) { logger.warn("[onchain] registry cache read failed", { error: (e as Error).message }); }
     return null;
   }
@@ -57,7 +59,7 @@ class Registry {
           for (const r of rows) if (r.market_cap_rank) rank[r.id] = r.market_cap_rank;
         } catch (e) { logger.warn("[onchain] coingecko markets page failed", { page, error: (e as Error).message.slice(0, 120) }); }
       }
-      const c: Cache = { at: Date.now(), list, rank };
+      const c: Cache = { at: Date.now(), v: CACHE_VERSION, list, rank };
       try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(c)); } catch (e) { logger.warn("[onchain] registry cache write failed", { error: (e as Error).message }); }
       this.cache = c;
       logger.info("[onchain] registry loaded", { coins: list.length, ranked: Object.keys(rank).length });

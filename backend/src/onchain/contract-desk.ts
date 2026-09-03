@@ -16,6 +16,13 @@ import { timelockDesk, type TimelockReport } from "./timelock-desk.js";
 
 const FILE = join(process.cwd(), "data", "onchain", "profiles.json");
 const TTL_MS = 7 * 24 * 60 * 60_000;
+/**
+ * 캐시 스키마 버전. **리포트 모양이 바뀌면 올린다.**
+ * 실제로 물린 적이 있다: 타임락 필드를 추가했는데 7일 캐시에 그 필드가 없던 옛 레코드가 남아
+ * 프로덕션이 계속 `timelock: null`을 돌려줬다 (`?force=1`로만 정상). TTL은 "오래됐나"만 보고
+ * "모양이 맞나"는 안 본다.
+ */
+const CACHE_VERSION = 2;
 
 export interface ContractReport {
   symbol: string;
@@ -28,13 +35,22 @@ export interface ContractReport {
   error: string | null;
 }
 
+interface CacheEntry { at: number; v?: number; data: ContractReport }
+
 class ContractDesk {
-  private mem = new Map<string, { at: number; data: ContractReport }>();
+  private mem = new Map<string, CacheEntry>();
   private inflight = new Map<string, Promise<ContractReport>>();
 
   constructor() {
-    try { if (existsSync(FILE)) for (const [k, v] of Object.entries(JSON.parse(readFileSync(FILE, "utf-8")) as Record<string, { at: number; data: ContractReport }>)) this.mem.set(k, v); }
-    catch (e) { logger.warn("[onchain] profile cache read failed", { error: (e as Error).message }); }
+    try {
+      if (!existsSync(FILE)) return;
+      let dropped = 0;
+      for (const [k, v] of Object.entries(JSON.parse(readFileSync(FILE, "utf-8")) as Record<string, CacheEntry>)) {
+        if (v?.v === CACHE_VERSION) this.mem.set(k, v);
+        else dropped++;
+      }
+      if (dropped) logger.info("[onchain] dropped stale-shape profile cache entries", { dropped, version: CACHE_VERSION });
+    } catch (e) { logger.warn("[onchain] profile cache read failed", { error: (e as Error).message }); }
   }
   private save() {
     try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(Object.fromEntries(this.mem))); }
@@ -44,10 +60,10 @@ class ContractDesk {
   async report(symbol: string, force = false): Promise<ContractReport> {
     const key = symbol.replace(/^KRW-/, "").toUpperCase();
     const hit = this.mem.get(key);
-    if (!force && hit && Date.now() - hit.at < TTL_MS) return hit.data;
+    if (!force && hit && hit.v === CACHE_VERSION && Date.now() - hit.at < TTL_MS) return hit.data;
     const running = this.inflight.get(key);
     if (running) return running;
-    const p = this.build(key).then((data) => { this.mem.set(key, { at: Date.now(), data }); this.save(); return data; }).finally(() => this.inflight.delete(key));
+    const p = this.build(key).then((data) => { this.mem.set(key, { at: Date.now(), v: CACHE_VERSION, data }); this.save(); return data; }).finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);
     return p;
   }
