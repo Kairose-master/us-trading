@@ -14,6 +14,7 @@ import {
   type ScannerPortfolio,
 } from "./scanner.js";
 import type { BtCandle } from "./backtest.js";
+import { alignedReturns, spaTest, toLosses, type SpaResult } from "../quant/verify.js";
 
 /**
  * 스캐너 서버 측 — 유니버스 수집(레이트리밋 준수), 캐시, 데스크 로테이션 연결.
@@ -31,6 +32,7 @@ const BT_TTL_MS = 60 * 60_000;
 // 동시 2 — 업비트 공개 레이트리밋(초당 10회/IP)을 공유 IP 호스팅에서도 안 넘기게
 const CONCURRENCY = 2;
 const AUTO_ROTATE_MS = 24 * 60 * 60_000;
+const SPA_TTL_MS = 6 * 60 * 60_000;
 
 export interface ScanResult {
   ts: string;
@@ -69,6 +71,7 @@ function toBt(cs: Awaited<ReturnType<typeof upbit.dayCandles>>): BtCandle[] {
 class ScannerServer {
   private scanCache: { at: number; data: ScanResult } | null = null;
   private btCache: { at: number; data: RotationBacktestResult } | null = null;
+  private spaCache: { at: number; data: { ts: string; benchmark: string; result: SpaResult } } | null = null;
   private seriesCache: { at: number; data: Map<string, BtCandle[]>; valueOf: Map<string, number>; krwMarkets: number } | null = null;
   private autoTimer: NodeJS.Timeout | null = null;
   private running: Promise<ScanResult> | null = null;
@@ -142,6 +145,36 @@ class ScannerServer {
     } finally {
       this.running = null;
     }
+  }
+
+  /**
+   * 데이터 스누핑 검정 — scanner.ts가 이미 적어 둔 "N개 코인을 훑은 것 자체가 N번의 암묵적
+   * 검정"의 계산부. 벤치마크는 KRW-BTC 보유, 후보는 유니버스의 나머지 코인 보유.
+   * 답하는 질문: **"유니버스 최고가 BTC를 이긴 것이 실력인가, 30번 본 결과인가."**
+   * arch(SPA/StepM)가 없으면 engine:"unavailable"로 답하고 p값을 지어내지 않는다.
+   */
+  async spa(force = false): Promise<{ ts: string; benchmark: string; result: SpaResult } | null> {
+    if (!force && this.spaCache && Date.now() - this.spaCache.at < SPA_TTL_MS) return this.spaCache.data;
+    const { series } = await this.loadSeries();
+    const bench = "KRW-BTC";
+    if (!series.has(bench)) return null;
+    const dateSet = new Set<string>();
+    for (const cs of series.values()) for (const c of cs) dateSet.add(c.t);
+    const dates = [...dateSet].sort();
+    const closeOf = new Map<string, Map<string, number>>();
+    for (const [m, cs] of series) closeOf.set(m, new Map(cs.map((c) => [c.t, c.c])));
+    // 벤치마크와 같은 날짜 축을 가진 코인만 — 상장이 늦은 코인은 검정에서 빠진다 (구간을 자르는 대신)
+    const benchDates = new Set(series.get(bench)!.map((c) => c.t));
+    const full = [...series.keys()].filter((m) => m !== bench && series.get(m)!.length >= benchDates.size * 0.95);
+    if (full.length < 2) return null;
+    const { dates: used, returns } = alignedReturns(closeOf, dates.filter((d) => benchDates.has(d)), [bench, ...full]);
+    const models: Record<string, number[]> = {};
+    for (const m of full) models[m.replace("KRW-", "")] = toLosses(returns[m]);
+    const result = await spaTest({ benchmark: toLosses(returns[bench]), models, reps: 1000 });
+    const data = { ts: new Date().toISOString(), benchmark: bench, result };
+    this.spaCache = { at: Date.now(), data };
+    logger.info("[scanner] SPA", { engine: result.engine, models: full.length, days: used.length, p: result.engine === "arch" ? result.pvalues.consistent : null });
+    return data;
   }
 
   async backtest(force = false): Promise<RotationBacktestResult | null> {

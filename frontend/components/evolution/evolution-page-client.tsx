@@ -106,6 +106,11 @@ export function EvolutionPageClient() {
             <div className="grid grid-cols-2 gap-1.5">
               <Tile label="survivors" value={`${status.alive}/${status.popMax}`} sub={`${deaths} retired`} />
               <Tile label="top fitness" value={last ? last.topFitness.toFixed(2) : "—"} sub={status.champion ? status.champion.name : "no champion"} />
+              <Tile
+                label="champion DSR"
+                value={last?.championDsr ? last.championDsr.dsr.toFixed(2) : "—"}
+                sub={last?.championDsr ? (last.championDsr.significant ? `유의 · 시행 ${last.championDsr.trials}` : `운과 구분 안 됨 · 시행 ${last.championDsr.trials}`) : "시행 수로 깎은 Sharpe"}
+              />
               <Tile label="exam window" value={last ? `${last.examWindow.from.slice(5)}~${last.examWindow.to.slice(5)}` : "—"} sub="세대마다 다른 60일 · 훈련 밖" />
               <Tile label="mean fitness" value={last ? last.meanFitness.toFixed(2) : "—"} sub="sharpe − 2·mdd" />
               <Tile label="capital" value={krw(status.totalCapitalKrw)} sub={`vault ${krw(status.vaultKrw)}`} />

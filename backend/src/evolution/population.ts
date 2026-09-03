@@ -8,6 +8,7 @@ import { controlPlane } from "../control/plane.js";
 import { scannerServer } from "../crypto/scanner-server.js";
 import { handsel } from "../office/handsel-client.js";
 import { buildFeatures, dayReturn, evaluate, type FeatureSet, pickExamWindow } from "./evaluate.js";
+import { deflatedSharpe, type DeflatedSharpe } from "../quant/deflated-sharpe.js";
 import { mutateVectors, nextGeneration } from "./ga.js";
 import { ARCHETYPES, GENE_SPECS, archetypeOf, clampGene, geneDistance, rand, randomVector, reseed, toGenes, upgradeVector, type GeneVector, type Genes } from "./genome.js";
 import { DESKS, OFFICE_RENT_PCT, applySkills, consultDesks, latestOfficeDecision, rentFor, resetDeskCache, type DeskId, type DeskReading } from "./capabilities.js";
@@ -92,6 +93,8 @@ export interface GenerationRecord {
   topFitness: number;
   meanFitness: number;
   championId: string | null;
+  /** 챔피언 Sharpe를 "이 챔피언을 고르기까지 채점한 시행 수"로 깎은 값 (Bailey & López de Prado) */
+  championDsr: DeflatedSharpe | null;
   engine: string;
   vaultKrw: number;
   totalCapitalKrw: number;
@@ -194,7 +197,7 @@ class Evolution extends EventEmitter {
       totalCapitalKrw: Math.round(alive.reduce((a, x) => a + x.capitalKrw, 0)),
       seedKrw: SEED_KRW,
       examDays: EXAM_DAYS,
-      champion: champion ? { id: champion.id, name: champion.name, archetype: champion.archetype, fitness: champion.exam?.fitness ?? null } : null,
+      champion: champion ? { id: champion.id, name: champion.name, archetype: champion.archetype, fitness: champion.exam?.fitness ?? null, dsr: this.st.history[this.st.history.length - 1]?.championId === champion.id ? (this.st.history[this.st.history.length - 1]?.championDsr ?? null) : null } : null,
       diversity: this.diversity(alive),
       tribes: [...new Set(alive.map((a) => a.tribe))].map((t) => ({ tribe: t, name: this.st.agents.find((a) => a.id === t)?.name ?? t, alive: alive.filter((a) => a.tribe === t).length, capitalKrw: Math.round(alive.filter((a) => a.tribe === t).reduce((s, a) => s + a.capitalKrw, 0)) })),
       archetypes: ARCHETYPES.map((k) => ({ archetype: k, alive: alive.filter((a) => a.archetype === k).length })),
@@ -294,8 +297,10 @@ class Evolution extends EventEmitter {
       }
       const alive = () => this.st.agents.filter((a) => a.alive);
 
+      const examRets = new Map<string, number[]>(); // 개체 → 시험 창 일간 수익률 (챔피언 DSR용)
       for (const a of alive()) {
         const r = evaluate(a.genes, fExam, examRange); // 적합도: 이번 세대의 시험 창
+        examRets.set(a.id, r.dailyRets);
         const live = evaluate(a.genes, f); // 실전 타깃: 최신 데이터의 마지막 리밸런스 (시험 창의 과거 타깃을 배치하면 안 된다)
         a.exam = { fitness: r.fitness, sharpe: r.sharpe, totalReturnPct: r.totalReturnPct, maxDrawdownPct: r.maxDrawdownPct, rebalances: r.rebalances, avgExposure: r.avgExposure, window: { from: examFrom, to: examTo } };
         a.fitnessHistory.push({ gen, fitness: r.fitness, window: { from: examFrom, to: examTo } });
@@ -466,10 +471,18 @@ class Evolution extends EventEmitter {
       const finalAlive = alive();
       const fits = finalAlive.map((a) => a.exam?.fitness).filter((x): x is number => typeof x === "number");
       const champion = ranked[0] ?? null;
+      // 챔피언 Sharpe의 디플레이션 — 이 챔피언은 "여러 시행 중 최고"라서 Sharpe가 부풀려져 있다.
+      // 시행 수는 지금까지 채점한 개체 전부(죽은 것 포함), 시행 Sharpe의 분산은 이번 세대 개체들에서 잰다.
+      let championDsr: DeflatedSharpe | null = null;
+      if (champion && examRets.get(champion.id)?.length) {
+        const daily = ranked.map((a) => (a.exam?.sharpe ?? 0) / Math.sqrt(365)); // exam.sharpe는 연환산
+        championDsr = deflatedSharpe({ returns: examRets.get(champion.id)!, trials: this.st.agents.length, trialSharpes: daily });
+        this.log(championDsr.significant ? "ok" : "warn", `CHAMPION ${champion.name} — exam sharpe ${champion.exam?.sharpe ?? 0} annual · DSR ${championDsr.dsr} (${championDsr.note})${championDsr.significant ? "" : " — not distinguishable from luck at 95%"}`);
+      }
       const rec: GenerationRecord = {
         gen, at: new Date().toISOString(), examWindow: { from: examFrom, to: examTo }, alive: finalAlive.length, births, deaths, mutations, merges, forks, diversity: this.diversity(finalAlive),
         topFitness: fits.length ? Math.max(...fits) : 0, meanFitness: fits.length ? +(fits.reduce((a, b) => a + b, 0) / fits.length).toFixed(4) : 0,
-        championId: champion?.id ?? null, engine, vaultKrw: Math.round(this.st.vaultKrw), totalCapitalKrw: Math.round(finalAlive.reduce((a, x) => a + x.capitalKrw, 0)),
+        championId: champion?.id ?? null, championDsr, engine, vaultKrw: Math.round(this.st.vaultKrw), totalCapitalKrw: Math.round(finalAlive.reduce((a, x) => a + x.capitalKrw, 0)),
       };
       this.st.history.push(rec);
       if (this.st.history.length > 500) this.st.history.shift();

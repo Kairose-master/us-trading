@@ -100,6 +100,48 @@ freqtrade의 부분집합**이다.
 5. **바꾸지 않는 것**: 제어 평면, 협의회, 오피스, 진화의 에이전트 층, MCP/Handsel 연동,
    대시보드. 여기에 대응하는 라이브러리는 없다.
 
+## 증분 1 — 실제로 채택한 것 (2026-09-03)
+
+권고 2번(검증 사이드카)을 먼저 했다. 코드는 셋이다:
+
+| 파일 | 무엇 | 엔진 |
+|---|---|---|
+| `backend/quant/verify.py` | Hansen **SPA** + Romano-Wolf **StepM**. stdin/stdout JSON | `arch` 8.0.0 |
+| `backend/src/quant/verify.ts` | 브리지. 없으면 `engine:"unavailable"` — **p값을 지어내지 않는다** | — |
+| `backend/src/quant/deflated-sharpe.ts` | **Deflated Sharpe Ratio** (Bailey & López de Prado). 닫힌 형태라 TS 순수 함수, 테스트 10개 | 우리 |
+
+**왜 하나는 파이썬이고 하나는 TS인가.** SPA는 정지 부트스트랩이 필요해서 직접 짜면 그게
+또 바퀴다 → `arch`. DSR은 닫힌 형태(정규 CDF·분위수 근사면 충분)라 사이드카를 띄울 이유가
+없다 → TS 순수 함수로 두고 단위 테스트를 붙였다. PyGAD 브리지와 같은 규칙이되 **폴백은
+없다**: "p값을 못 쟀다"와 "p값이 크다"는 다른 말이고, 섞으면 그게 가짜 데이터다.
+
+### 첫 측정 결과 — 이 시스템이 낸 가장 중요한 숫자
+
+`GET /crypto/scanner/spa`, 실 Upbit 일봉 350일, 후보 23개(유니버스에서 BTC와 날짜 축이
+같은 코인), 벤치마크 = KRW-BTC 보유, 정지 부트스트랩 1000회:
+
+```
+p-values  lower 0.788 · consistent 0.946 · upper 0.967
+StepM(FWER 5%)이 인정한 우월 후보: 없음
+최저손실 후보: USDT (평균손실차 -0.00094)
+```
+
+**23개를 훑은 것을 감안하면, 그중 최고가 BTC를 이긴 것은 우연으로 설명된다.**
+`scanner.ts`가 주석으로만 적어 두었던 "N개를 훑은 것 자체가 N번의 암묵적 검정"이
+이제 p값이다. 최저손실 후보가 스테이블코인(USDT)이라는 것도 같은 말을 한다 — 이 구간에
+BTC가 내렸고, 아무것도 안 사는 것이 대부분의 알트보다 나았다.
+
+진화 쪽은 세대마다 챔피언의 DSR을 기록한다(`GenerationRecord.championDsr`, `/evolution`의
+champion DSR 타일). 시행 수는 지금까지 채점한 개체 전부, 시행 Sharpe 분산은 그 세대
+개체들에서 잰다. `docs/evolution.md`가 적어 둔 "시험지가 한 장이면 운과 적합성을 못 가른다"의
+정량판이고, 시험 창을 세대마다 바꾼 것과 짝이다.
+
+### 남은 것
+
+- ccxt로 `upbit.ts` 교체 (권고 1번) — 아직.
+- `quant/{garch,regime,risk,stats}.ts`는 그대로 둔다. 대체가 같은 숫자를 내는지 확인하기 전에
+  지우지 않는다.
+
 ## 출처
 
 - [awesome-quant](https://github.com/wilsonfreitas/awesome-quant) — 카테고리별 색인

@@ -142,6 +142,20 @@ RETIRED EMBER-01 [TREND_RIDER] — outcompeted — bottom 20% for 3 generations 
 - **실전 타깃(`lastWeights`)은 시험 창이 아니라 최신 데이터**에서 다시 계산한다. 과거 창의
   마지막 리밸런스를 오늘 배치하면 안 되기 때문이다. 자본 마킹도 최신 캔들로 한다.
 
+## 챔피언 Sharpe는 시행 수만큼 부풀려져 있다 — DSR (2026-09-03)
+
+세대마다 개체 여럿을 채점하고 **최고를 챔피언으로 삼는다**. 시행이 많을수록 최고 Sharpe는
+실력이 아니라 운으로도 올라간다. 그래서 세대 기록에 **Deflated Sharpe Ratio**(Bailey &
+López de Prado)를 남긴다 — `GenerationRecord.championDsr`, `/evolution`의 champion DSR 타일,
+그리고 세대 로그의 `CHAMPION … DSR 0.xx` 줄.
+
+- 시행 수 = 지금까지 채점한 개체 **전부**(죽은 것 포함) — 그 탐색이 이 챔피언을 낳았다.
+- 시행 Sharpe의 분산 = 그 세대 개체들의 일간 Sharpe (`exam.sharpe`는 연환산이라 √365로 나눈다).
+- 귀무 하 기대 최대 Sharpe SR₀을 넘어야 실력이라 부른다. DSR ≥ 0.95면 유의.
+
+구현은 `backend/src/quant/deflated-sharpe.ts`(순수, 테스트 10개). 시험 창을 세대마다 바꾼 것과
+짝이다: 창을 바꾸는 것은 재채점을 막고, DSR은 "그래도 여러 번 뽑았다"를 값에서 깎는다.
+
 ## 정직성 규칙
 
 - 시험지는 항상 훈련 구간 밖. HMM 파라미터는 훈련 구간에서 고정.

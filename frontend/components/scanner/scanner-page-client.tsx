@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { Radar, Radio, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getScanner, getScannerBacktest, getUniverse, isBackendNotConfigured } from "@/lib/api"
+import { getScanner, getScannerBacktest, getScannerSpa, getUniverse, isBackendNotConfigured } from "@/lib/api"
 
 /**
  * 알트코인 스캐너 — 백엔드 스캔(/api/crypto/scanner)을 보여준다. 업비트 KRW 거래대금
@@ -32,6 +32,7 @@ export function ScannerPageClient() {
   const { data, error, isLoading, mutate } = useSWR("altcoin-scan", () => getScanner(), { revalidateOnFocus: false, refreshInterval: 10 * 60_000 })
   const { data: bt, error: btError } = useSWR("altcoin-scan-bt", getScannerBacktest, { revalidateOnFocus: false, refreshInterval: 60 * 60_000 })
   const { data: uni } = useSWR("crypto-universe", getUniverse, { refreshInterval: 60_000 })
+  const { data: spa } = useSWR("altcoin-scan-spa", getScannerSpa, { revalidateOnFocus: false, refreshInterval: 6 * 60 * 60_000 })
   const [busy, setBusy] = useState(false)
   const portfolio = data?.portfolio ?? null
 
@@ -159,6 +160,47 @@ export function ScannerPageClient() {
           </div>
         </Card>
       </div>
+
+      <Card>
+        <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+          <h2 className="text-sm font-semibold">데이터 스누핑 검정 — 이 중 최고가 BTC 보유를 이긴 게 실력인가</h2>
+          {spa?.result.engine === "arch" && (
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+              Hansen SPA · arch {spa.result.version} · {spa.result.n}일 · 후보 {spa.result.models}개 · 부트스트랩 {spa.result.reps}회 (블록 {spa.result.blockSize})
+            </span>
+          )}
+        </div>
+        {!spa ? (
+          <div className="p-4 text-xs text-muted-foreground">검정 대기 중…</div>
+        ) : spa.result.engine === "unavailable" ? (
+          <div className="p-4 text-xs text-muted-foreground">
+            검정 못 함 — <span className="font-mono">{spa.result.reason}</span>. p값을 지어내지 않는다.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2 p-4 text-xs">
+            <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 font-mono tnum">
+              <span>
+                p ={" "}
+                <b className={(spa.result.pvalues.consistent ?? 1) < 0.05 ? "text-emerald-300" : "text-rose-300"}>
+                  {spa.result.pvalues.consistent === null ? "—" : spa.result.pvalues.consistent.toFixed(3)}
+                </b>{" "}
+                <span className="text-muted-foreground">(lower {spa.result.pvalues.lower?.toFixed(3) ?? "—"} / upper {spa.result.pvalues.upper?.toFixed(3) ?? "—"})</span>
+              </span>
+              <span className="text-muted-foreground">벤치마크 {spa.benchmark.replace("KRW-", "")} 보유</span>
+              <span>최저손실 후보 <b>{spa.result.best.name}</b> <span className="text-muted-foreground">(평균손실차 {spa.result.best.meanLossDiff.toFixed(5)})</span></span>
+            </div>
+            <p className="text-muted-foreground">
+              {(spa.result.pvalues.consistent ?? 1) < 0.05
+                ? `귀무가설(전부 BTC 보유보다 낫지 않다)을 기각한다 — 후보 ${spa.result.models}개를 본 것을 감안해도 최고는 진짜다.`
+                : `후보 ${spa.result.models}개를 훑은 것을 감안하면, 최고 성과는 우연으로 설명된다. 이 유니버스에서 "제일 오른 코인"을 고르는 것 자체에는 우위가 없다.`}
+            </p>
+            <p className="text-muted-foreground">
+              StepM(Romano-Wolf, FWER 5%)이 인정한 우월 후보:{" "}
+              {spa.result.superiorModels === null ? <span className="font-mono">계산 실패</span> : spa.result.superiorModels.length === 0 ? <b className="text-rose-300">없음</b> : <b className="text-emerald-300 font-mono">{spa.result.superiorModels.join(", ")}</b>}
+            </p>
+          </div>
+        )}
+      </Card>
 
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">

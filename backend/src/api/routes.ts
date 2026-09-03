@@ -463,6 +463,14 @@ router.post("/crypto/paper/reset", (req, res) => {
 });
 
 router.get("/crypto/universe", (_req, res) => { res.json(cryptoUniverse.status()); });
+// 데이터 스누핑 검정 — "유니버스 최고가 BTC 보유를 이긴 게 실력인가 30번 본 결과인가"
+router.get("/crypto/scanner/spa", async (req, res) => {
+  try {
+    const r = await scannerServer.spa(req.query.force === "1");
+    if (!r) return res.status(503).json({ error: "SPA_NOT_READY", message: "유니버스 캔들이 아직 부족하다" });
+    res.json(r);
+  } catch (e) { res.status(500).json({ error: (e as Error).message }); }
+});
 
 // 스캐너 로테이션은 없어졌다 — 유니버스는 엔진들이 거래한다
 router.post("/crypto/scanner/rotate", requireSession, (_req, res) => {
