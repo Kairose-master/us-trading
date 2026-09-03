@@ -8,6 +8,8 @@ import { HOT_MOM20_PCT, OVERHEAT_MOM20_PCT } from "./candidates.js";
 import { officeConfidence, parseChartMomentum, parseQuantEdge, pumpHeadlineShare } from "./conviction.js";
 import { contractDesk } from "../onchain/contract-desk.js";
 import { exposureMultiplier } from "../onchain/contract-risk.js";
+import { etaMultiplier, imminentAdverse } from "../onchain/timelock.js";
+import { IMPACT_KO } from "../onchain/signatures.js";
 
 /**
  * 로컬 오피스 협의 — Handsel 에스크로 없이 같은 9역할 플로어를 백엔드 안에서 돌린다.
@@ -28,6 +30,8 @@ export interface LocalStep { role: OfficeRoleId; name: string; status: "Complete
 export interface LocalDeliberation { output: string; steps: LocalStep[]; rounds: number; headline: string; toolCalls: number }
 
 const MAX_REVIEW_ROUNDS = 2;
+/** 이 시간 안에 실행될 수 있는 불리한 예정(로직 교체·공급 변경·전송 제한)은 비중에 반영한다 */
+const ADVERSE_ETA_HOURS = 14 * 24;
 const sym = (m: string) => m.replace("KRW-", "");
 
 /** 워커 보고서가 "데이터 없음"으로 돌아오면(대개 Upbit 429 버스트) 1.5초 뒤 한 번 더 — 재시도해도 없으면 그대로 실패로 기록 */
@@ -164,25 +168,36 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
     for (const r of reports) {
       const p = r.profile;
       if (!p) { contractLines.push(`${r.symbol}: ${r.resolution.status} — ${(r.error ?? r.resolution.note).slice(0, 110)}`); continue; }
-      // 컨트랙트 심각도 × owner 종류. 타임락이면 예고가 있으니 벌점이 없고, EOA면 예고 없이 즉시 가능하니 더 깎는다
+      // 세 갈래를 곱한다:
+      //   컨트랙트 심각도 (무엇을 할 수 있나) × owner 종류 (예고가 붙나) × 임박한 악재 예정 (언제 일어나나)
+      // 마지막 항이 릴의 방법론에 해당한다 — 일정이 이미 공표됐으면 그 안에 물려 있지 않는다
       const om = r.timelock?.owner.multiplier ?? 1;
-      const k = +(exposureMultiplier(p.severity) * om).toFixed(3);
+      const live = r.timelock?.calendar.filter((c) => c.status === "pending" || c.status === "executable") ?? [];
+      const adverse = imminentAdverse(r.timelock?.calendar ?? [], ADVERSE_ETA_HOURS);
+      const em = etaMultiplier(adverse);
+      const k = +(exposureMultiplier(p.severity) * om * em).toFixed(3);
       const flags = p.findings.filter((f) => f.severity !== "info").map((f) => f.signature).join(", ") || "특권 진입점 없음";
       const ownerBit = r.timelock ? ` · owner ${r.timelock.owner.kind}${om < 1 ? ` ×${om}` : ""}${r.timelock.timelock?.delaySec ? ` (지연 ${(r.timelock.timelock.delaySec / 86400).toFixed(1)}일)` : ""}` : "";
-      const live = r.timelock?.calendar.filter((c) => c.status === "pending" || c.status === "executable") ?? [];
-      contractLines.push(`${r.symbol}: ${p.severity}${k < 1 ? ` → 비중 ×${k}` : ""} · ${p.chain} ${p.address.slice(0, 10)}… · ${p.proxy.isProxy ? "업그레이드 가능 프록시 · " : ""}${flags}${ownerBit}${live.length ? ` · 큐에 든 실행 ${live.length}건 (가장 이른 eta ${live[0].etaIso ?? "미확인"})` : ""}`);
-      for (const c of live.slice(0, 3)) contractLines.push(`    └ ${c.status} eta ${c.etaIso ?? "미확인"} → ${c.target.slice(0, 12)}… ${c.intent}`);
+      const unknownLive = live.filter((c) => c.impact === "unknown").length;
+      const etaBit = adverse.length
+        ? ` · 임박한 악재 예정 ${adverse.length}건 ×${em}`
+        : live.length
+          ? ` · 큐에 든 실행 ${live.length}건${unknownLive ? ` (그중 효과 미확인 ${unknownLive}건 — 비중은 깎지 않았다)` : ""}`
+          : "";
+      contractLines.push(`${r.symbol}: ${p.severity}${k < 1 ? ` → 비중 ×${k}` : ""} · ${p.chain} ${p.address.slice(0, 10)}… · ${p.proxy.isProxy ? "업그레이드 가능 프록시 · " : ""}${flags}${ownerBit}${etaBit}`);
+      for (const a of adverse.slice(0, 3)) contractLines.push(`    ⚠ ${IMPACT_KO[a.entry.impact]} ${a.entry.status === "executable" ? "지금 실행 가능" : `${a.hoursUntil?.toFixed(0)}h 후`} · eta ${a.entry.etaIso ?? "미확인"} → ${a.entry.target.slice(0, 12)}… ${a.entry.intent}`);
+      for (const c of live.filter((x) => !adverse.some((a) => a.entry.key === x.key)).slice(0, 2)) contractLines.push(`    └ ${IMPACT_KO[c.impact]} ${c.status} eta ${c.etaIso ?? "미확인"} → ${c.target.slice(0, 12)}… ${c.intent}`);
       if (k < 1) {
         const t = draft.targets.find((x) => sym(x.market) === r.symbol);
         if (t) { t.weightPct = +(t.weightPct * k).toFixed(1); t.why += `; contract ${p.severity} → ×${k}`; }
       }
     }
-    const cut = reports.filter((r) => r.profile && exposureMultiplier(r.profile.severity) * (r.timelock?.owner.multiplier ?? 1) < 1).length;
+    const cut = reports.filter((r) => r.profile && exposureMultiplier(r.profile.severity) * (r.timelock?.owner.multiplier ?? 1) * etaMultiplier(imminentAdverse(r.timelock?.calendar ?? [], ADVERSE_ETA_HOURS)) < 1).length;
     if (cut > 0) {
       draft.version++;
       draft.targets = draft.targets.filter((t) => t.weightPct >= 1);
       draft.grossPct = +draft.targets.reduce((a, t) => a + t.weightPct, 0).toFixed(1);
-      draft.notes.push(`v${draft.version}: contract review — ${cut} position(s) cut for on-chain privilege (mint/upgrade/pause) and owner kind (EOA·미확인 컨트랙트), gross ${draft.grossPct}%`);
+      draft.notes.push(`v${draft.version}: contract review — ${cut} position(s) cut for on-chain privilege (mint/upgrade/pause), owner kind (EOA·미확인 컨트랙트) and imminent adverse eta (${ADVERSE_ETA_HOURS}h 안), gross ${draft.grossPct}%`);
       quantSection += `\n\n### Revision v${draft.version} (after on-chain contract review)\n${fmtDraft(draft)}`;
     }
   }
@@ -214,7 +229,7 @@ export async function deliberateLocally(markets: string[], onStep?: (role: Offic
   if (riskVerdict === "REVISE") riskLog.push(`review rounds exhausted (${MAX_REVIEW_ROUNDS}) — last revision stands, flagged`);
   mark(risk, riskVerdict === "NONE" ? "❌" : "Completed", riskMs, riskLog[riskLog.length - 1] ?? "no verdict");
   sections.push(quantSection);
-  sections.push(`${head(risk)}\n\n${riskText}${contractLines.length ? `\n\n### On-chain contract review (배포된 바이트코드 — 가격이 아닌 근거)\n${contractLines.map((l) => `  ${l}`).join("\n")}` : ""}\n\n### Verdict: ${riskVerdict === "NONE" ? "NO VERDICT" : riskVerdict}\n${riskLog.map((l) => `  ${l}`).join("\n")}`);
+  sections.push(`${head(risk)}\n\n${riskText}${contractLines.length ? `\n\n### On-chain contract review (배포된 바이트코드 + owner 종류 + 타임락 eta — 가격이 아닌 근거)\n${contractLines.map((l) => `  ${l}`).join("\n")}` : ""}\n\n### Verdict: ${riskVerdict === "NONE" ? "NO VERDICT" : riskVerdict}\n${riskLog.map((l) => `  ${l}`).join("\n")}`);
 
   // ── 4) 리밸런스 플래너 — 퀀트(최종본) + 리스크 + 자기 도구(워커의 블렌디드 알파) ────
   const planner = role("rebalance-planner"); start(planner);

@@ -29,7 +29,11 @@ export const SELECTORS: SelectorSpec[] = [
   { sel: "8456cb59", signature: "pause()", severity: "high", meaning: "전송을 멈출 수 있는 진입점이 있다 — 팔지 못하게 될 수 있다" },
   { sel: "3659cfe6", signature: "upgradeTo(address)", severity: "high", meaning: "업그레이드 가능 — 지금 읽은 로직이 교체될 수 있다" },
   { sel: "4f1ef286", signature: "upgradeToAndCall(address,bytes)", severity: "high", meaning: "업그레이드 가능 (호출까지) — 로직이 교체될 수 있다" },
-  { sel: "e4997dc5", signature: "addBlackList(address)", severity: "high", meaning: "블랙리스트 진입점 — 특정 주소의 전송을 막을 수 있다 (USDT 방식)" },
+  // keccak256으로 다시 유도해 고쳤다: e4997dc5는 removeBlackList이고 addBlackList는 0ecb93c0다.
+  // 둘 다 블랙리스트 기구가 있다는 뜻이라 심각도는 같지만, 리스크 리포트에 틀린 함수명이 실리면 안 된다
+  { sel: "0ecb93c0", signature: "addBlackList(address)", severity: "high", meaning: "블랙리스트 진입점 — 특정 주소의 전송을 막을 수 있다 (USDT 방식)" },
+  { sel: "e4997dc5", signature: "removeBlackList(address)", severity: "high", meaning: "블랙리스트 해제 진입점 — 블랙리스트 기구가 존재한다는 뜻이다" },
+  { sel: "f3bdc228", signature: "destroyBlackFunds(address)", severity: "high", meaning: "블랙리스트된 주소의 잔액을 소각할 수 있다 (USDT 방식)" },
   { sel: "fe575a87", signature: "isBlacklisted(address)", severity: "high", meaning: "블랙리스트 기능이 있다" },
   { sel: "91d14854", signature: "hasRole(bytes32,address)", severity: "medium", meaning: "역할 기반 권한(AccessControl) — 특권이 소유자 한 명이 아니라 역할에 있다" },
   { sel: "f2fde38b", signature: "transferOwnership(address)", severity: "medium", meaning: "소유권을 넘길 수 있다" },

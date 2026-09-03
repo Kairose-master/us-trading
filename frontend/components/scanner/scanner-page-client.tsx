@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { Radar, Radio, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getContracts, getScanner, getScannerBacktest, getScannerSpa, getUniverse, isBackendNotConfigured } from "@/lib/api"
+import { getContracts, getScanner, getScannerBacktest, getScannerSpa, getUniverse, isBackendNotConfigured, TIMELOCK_IMPACT_KO } from "@/lib/api"
 
 /**
  * 알트코인 스캐너 — 백엔드 스캔(/api/crypto/scanner)을 보여준다. 업비트 KRW 거래대금
@@ -202,7 +202,9 @@ export function ScannerPageClient() {
             )}
             {contracts.reports.some((r) => (r.timelock?.live ?? 0) > 0) && (
               <div className="flex flex-col gap-1 rounded-md border border-border/70 bg-muted/20 p-2">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">타임락 eta — 온체인에 공표된 예정</span>
+                <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                  타임락 eta — 온체인에 공표된 예정 (셀렉터를 표에서 못 찾으면 <span className="text-amber-300">효과 미확인</span>으로 두고 비중은 깎지 않는다)
+                </span>
                 {contracts.reports
                   .filter((r) => (r.timelock?.live ?? 0) > 0)
                   .flatMap((r) =>
@@ -211,7 +213,9 @@ export function ScannerPageClient() {
                       .slice(0, 3)
                       .map((c) => (
                         <span key={`${r.symbol}-${c.key}-${c.index ?? 0}`} className="font-mono text-[10px] text-muted-foreground">
-                          <b className="text-foreground">{r.symbol}</b> {c.status === "executable" ? "지금 실행 가능" : `${c.hoursUntil !== null ? `${c.hoursUntil.toFixed(0)}h 후` : "eta 미확인"}`} · {c.etaIso?.slice(0, 16) ?? "?"} · {c.target.slice(0, 10)}… · {c.intent}
+                          <b className="text-foreground">{r.symbol}</b>{" "}
+                          <b className={c.adverse ? "text-rose-300" : c.impact === "unknown" ? "text-amber-300" : ""}>{TIMELOCK_IMPACT_KO[c.impact]}</b>{" "}
+                          {c.status === "executable" ? "지금 실행 가능" : c.hoursUntil !== null ? `${c.hoursUntil.toFixed(0)}h 후` : "eta 미확인"} · {c.etaIso?.slice(0, 16) ?? "?"} · {c.target.slice(0, 10)}… · {c.intent}
                         </span>
                       )),
                   )}

@@ -777,6 +777,18 @@ export interface ContractProfile {
 }
 /** 타임락 eta 캘린더 — 온체인에 공표된 "예정" (가격이 아니라 일정) */
 export type TimelockStatus = "pending" | "executable" | "executed" | "cancelled" | "expired" | "unknown-eta"
+export type TimelockImpact = "upgrade" | "supply" | "freeze" | "ownership" | "params" | "transfer" | "governance" | "benign" | "unknown"
+export const TIMELOCK_IMPACT_KO: Record<TimelockImpact, string> = {
+  upgrade: "로직 교체",
+  supply: "공급 변경",
+  freeze: "전송 제한",
+  ownership: "권한 이전",
+  params: "파라미터",
+  transfer: "자금 이동",
+  governance: "거버넌스 배관",
+  benign: "양성",
+  unknown: "효과 미확인",
+}
 export interface TimelockEntry {
   family: "compound" | "oz"
   key: string
@@ -784,6 +796,11 @@ export interface TimelockEntry {
   target: string
   valueWei: string
   intent: string
+  /** 셀렉터를 표에서 찾았나 — false면 intent에 hex가 그대로 있다 */
+  intentKnown: boolean
+  impact: TimelockImpact
+  /** 로직 교체·공급 변경·전송 제한 — 보유자에게 불리한 종류 */
+  adverse: boolean
   selector: string | null
   calldataBytes: number
   etaSec: number | null

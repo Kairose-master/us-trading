@@ -15,6 +15,8 @@
  * (지연 172800초 = 정확히 2.0일), Compound식 타임락에서 QueueTransaction 46건이 이 topic으로 나왔다.
  */
 
+import { impactOfSignature, isAdverse, nameOf, type Impact } from "./signatures.js";
+
 export const TIMELOCK_TOPICS = {
   compound: {
     queue: "0x76e2796dc3a81d57b0e8504b647febcbeeb5f4af818e164f11eef8131a6a763f",
@@ -56,8 +58,14 @@ export interface ScheduledCall {
   index: number | null;
   target: string;
   valueWei: string;
-  /** 사람이 읽는 의도 — Compound의 signature 문장, 없으면 calldata 셀렉터 */
+  /** 사람이 읽는 의도 — Compound의 signature 문장, 없으면 셀렉터 표에서 찾은 시그니처, 그래도 없으면 hex */
   intent: string;
+  /** 의도를 셀렉터 표에서 실제로 찾았나 — 못 찾았으면 hex를 그대로 보여주고 있다는 뜻 */
+  intentKnown: boolean;
+  /** 보유자 입장에서 무슨 종류의 예정인가 */
+  impact: Impact;
+  /** upgrade·supply·freeze — 임박하면 피하고 싶은 종류 */
+  adverse: boolean;
   selector: string | null;
   calldataBytes: number;
   /** Compound는 이벤트에 있다. OZ는 delay만 있어 getTimestamp로 채운다 */
@@ -94,14 +102,22 @@ export function decodeQueueTransaction(log: RawLog): ScheduledCall | null {
   const sig = dynamic(ws, ws[1]);
   const data = dynamic(ws, ws[2]);
   const signature = utf8(sig.hex);
+  const sel = selectorOf(data.hex);
+  const known = nameOf(sel);
+  // Compound는 이벤트가 문장을 직접 준다. 비어 있으면 셀렉터 표를 보고, 그래도 없으면 hex 그대로 남긴다
+  const intent = signature || known?.signature || (sel ? `calldata ${sel}` : "(no signature, no calldata)");
+  const impact = signature ? impactOfSignature(signature) : (known?.impact ?? "unknown");
   return {
     family: "compound",
     key: log.topics[1],
     index: null,
     target: toAddr(log.topics[2]),
     valueWei: toBig(ws[0]),
-    intent: signature || (selectorOf(data.hex) ? `calldata ${selectorOf(data.hex)}` : "(no signature, no calldata)"),
-    selector: selectorOf(data.hex),
+    intent,
+    intentKnown: Boolean(signature || known),
+    impact,
+    adverse: isAdverse(impact),
+    selector: sel,
     calldataBytes: data.len,
     etaSec: toNum(ws[3]),
     delaySec: null,
@@ -116,14 +132,21 @@ export function decodeCallScheduled(log: RawLog): ScheduledCall | null {
   const ws = words(log.data);
   if (ws.length < 5 || log.topics.length < 3) return null;
   const data = dynamic(ws, ws[2]);
+  const sel = selectorOf(data.hex);
+  const known = nameOf(sel);
+  // OZ는 calldata만 준다 — 표가 없으면 여기가 0x973821a6처럼 보인다. 모르면 "효과 미확인"이지 "양성"이 아니다
+  const impact: Impact = known?.impact ?? (data.len === 0 ? "benign" : "unknown");
   return {
     family: "oz",
     key: log.topics[1],
     index: toNum(log.topics[2].replace(/^0x/, "")),
     target: toAddr(ws[0]),
     valueWei: toBig(ws[1]),
-    intent: selectorOf(data.hex) ? `calldata ${selectorOf(data.hex)}` : "(empty calldata)",
-    selector: selectorOf(data.hex),
+    intent: known?.signature ?? (sel ? `calldata ${sel} (표에 없는 함수)` : "(empty calldata)"),
+    intentKnown: Boolean(known),
+    impact,
+    adverse: isAdverse(impact),
+    selector: sel,
     calldataBytes: data.len,
     etaSec: null,
     delaySec: toNum(ws[4]),
@@ -213,4 +236,24 @@ export function classifyOwner(p: { owner: string | null; ownerIsZero: boolean; c
 /** owner 종류 → 노출 배수. 타임락이면 벌점이 없다 (예고가 있으니) */
 export function ownerMultiplier(kind: OwnerKind): number {
   return kind === "eoa" ? 0.7 : kind === "contract" ? 0.85 : 1;
+}
+
+/**
+ * 임박한 불리한 예정 — "카탈리스트에 물려 있지 마라"의 온체인판.
+ * 릴의 방법론은 예정을 미리 아는 것이었다. 보유자에게는 그 예정이 호재가 아니라 악재일 때가 많다:
+ * 로직 교체·공급 증가·전송 제한이 N일 안에 실행 가능하면 그 종목에 물려 있을 이유가 줄어든다.
+ */
+export interface AdverseEta { entry: CalendarEntry; hoursUntil: number | null }
+export function imminentAdverse(calendar: CalendarEntry[], withinHours: number): AdverseEta[] {
+  return calendar
+    .filter((c) => c.adverse && (c.status === "executable" || (c.status === "pending" && (c.hoursUntil ?? Infinity) <= withinHours)))
+    .map((entry) => ({ entry, hoursUntil: entry.hoursUntil }))
+    .sort((a, b) => (a.hoursUntil ?? -Infinity) - (b.hoursUntil ?? -Infinity));
+}
+
+/** 임박한 악재 예정 수 → 노출 배수. 지금 실행 가능한 것이 있으면 절반 */
+export function etaMultiplier(adverse: AdverseEta[]): number {
+  if (adverse.length === 0) return 1;
+  const executable = adverse.some((a) => a.entry.status === "executable");
+  return executable ? 0.5 : 0.75;
 }

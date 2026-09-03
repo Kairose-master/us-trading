@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ALL_TOPICS, buildCalendar, classifyOwner, decodeCallScheduled, decodeQueueTransaction, decodeScheduled, keysOf, ownerMultiplier, TIMELOCK_TOPICS } from "./timelock.js";
+import { ALL_TOPICS, buildCalendar, classifyOwner, decodeCallScheduled, decodeQueueTransaction, decodeScheduled, etaMultiplier, imminentAdverse, keysOf, ownerMultiplier, TIMELOCK_TOPICS } from "./timelock.js";
 
 // 아래 두 로그는 **실제 메인넷 로그**를 그대로 붙인 것이다 (ENS TimelockController, Compound식 타임락).
 // 디코더를 합성 데이터가 아니라 실물에 고정한다 — 형식을 잘못 이해했으면 여기서 깨진다.
@@ -50,7 +50,7 @@ describe("decoding real mainnet logs", () => {
 
 describe("calendar", () => {
   const now = 1_800_000_000;
-  const call = (key: string, etaSec: number | null) => ({ family: "compound" as const, key, index: null, target: "0xt", valueWei: "0", intent: "setX(uint256)", selector: "0xaaaaaaaa", calldataBytes: 4, etaSec, delaySec: null, blockNumber: 1, txHash: "0xtx" });
+  const call = (key: string, etaSec: number | null) => ({ family: "compound" as const, key, index: null, target: "0xt", valueWei: "0", intent: "setX(uint256)", intentKnown: false, impact: "benign" as const, adverse: false, selector: "0xaaaaaaaa", calldataBytes: 4, etaSec, delaySec: null, blockNumber: 1, txHash: "0xtx" });
 
   it("classifies pending, executable, expired, executed and cancelled", () => {
     const cal = buildCalendar({
@@ -121,5 +121,57 @@ describe("owner classification — the thing the bytecode scan could not tell us
     expect(classifyOwner({ owner: null, ownerIsZero: true, codeBytes: 0, timelockEvents: 0, delaySec: null }).kind).toBe("renounced");
     expect(classifyOwner({ owner: null, ownerIsZero: false, codeBytes: 0, timelockEvents: 0, delaySec: null }).kind).toBe("none");
     expect(ownerMultiplier("renounced")).toBe(1);
+  });
+});
+
+describe("intent reads as a sentence, not hex", () => {
+  it("names an OZ calldata selector from the table and admits when it cannot", () => {
+    const known = decodeCallScheduled(ENS_SCHEDULED)!; // calldata 0xa9059cbb
+    expect(known.intent).toBe("transfer(address,uint256)");
+    expect(known.intentKnown).toBe(true);
+    expect(known.impact).toBe("transfer");
+    expect(known.adverse).toBe(false);
+  });
+  it("keeps an unknown selector visible as hex and says it is unknown", () => {
+    // data 워드를 갈아 미확인 셀렉터로 만든다
+    const ws = ENS_SCHEDULED.data.slice(2);
+    const off = Number(BigInt("0x" + ws.slice(128, 192))) / 32;
+    const head = ws.slice(0, (off + 1) * 64);
+    const fake = head + "973821a6" + "00".repeat(28) + "00".repeat(32);
+    const c = decodeCallScheduled({ ...ENS_SCHEDULED, data: "0x" + fake })!;
+    expect(c.intentKnown).toBe(false);
+    expect(c.intent).toMatch(/0x973821a6/);
+    expect(c.intent).toMatch(/표에 없는/);
+    expect(c.impact).toBe("unknown"); // 모르는 셀렉터는 양성이 아니다
+    expect(c.adverse).toBe(false); // 그렇다고 악재로 단정하지도 않는다
+  });
+});
+
+describe("imminent adverse eta — do not be holding into a logic swap", () => {
+  const now = 1_800_000_000;
+  const mk = (key: string, etaSec: number, impact: "upgrade" | "supply" | "freeze" | "transfer", status?: "pending" | "executable") => ({
+    family: "oz" as const, key, index: 0, target: "0xt", valueWei: "0", intent: "x", intentKnown: true,
+    impact, adverse: impact !== "transfer", selector: "0xdeadbeef", calldataBytes: 4, etaSec, delaySec: null, blockNumber: 1, txHash: "0xtx",
+    status: status ?? (etaSec > now ? ("pending" as const) : ("executable" as const)),
+    hoursUntil: +((etaSec - now) / 3600).toFixed(1), etaIso: new Date(etaSec * 1000).toISOString(),
+  });
+
+  it("picks adverse entries inside the window and ignores benign ones however close", () => {
+    const cal = [mk("0x1", now + 12 * 3600, "upgrade"), mk("0x2", now + 12 * 3600, "transfer"), mk("0x3", now + 40 * 24 * 3600, "supply")];
+    const hit = imminentAdverse(cal, 72);
+    expect(hit.map((h) => h.entry.key)).toEqual(["0x1"]);
+  });
+  it("always counts an already-executable adverse call, even outside the window", () => {
+    const cal = [mk("0x-ready", now - 5 * 24 * 3600, "freeze")];
+    expect(imminentAdverse(cal, 1).map((h) => h.entry.key)).toEqual(["0x-ready"]);
+  });
+  it("halves exposure when something adverse can already be executed, trims it when it is merely near", () => {
+    expect(etaMultiplier([])).toBe(1);
+    expect(etaMultiplier(imminentAdverse([mk("0x1", now + 12 * 3600, "upgrade")], 72))).toBe(0.75);
+    expect(etaMultiplier(imminentAdverse([mk("0x2", now - 3600, "upgrade")], 72))).toBe(0.5);
+  });
+  it("sorts the soonest first", () => {
+    const cal = [mk("0x-far", now + 60 * 3600, "supply"), mk("0x-soon", now + 2 * 3600, "upgrade")];
+    expect(imminentAdverse(cal, 72).map((h) => h.entry.key)).toEqual(["0x-soon", "0x-far"]);
   });
 });
