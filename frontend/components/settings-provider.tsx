@@ -11,7 +11,12 @@ interface Settings {
 const SettingsContext = createContext<Settings | null>(null)
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const [krColors, setKrColors] = useState(false)
+  // 기본은 한국식(상승 빨강·하락 파랑) — Upbit 사용자에게 미국식은 직관과 반대다. 선택은 브라우저에 남긴다
+  const [krColors, setKrColorsState] = useState(true)
+  useEffect(() => {
+    try { const v = localStorage.getItem("hs:krColors"); if (v === "true" || v === "false") setKrColorsState(v === "true") } catch { /* 저장소 없음 */ }
+  }, [])
+  const setKrColors = (v: boolean) => { setKrColorsState(v); try { localStorage.setItem("hs:krColors", String(v)) } catch { /* 저장소 없음 */ } }
 
   useEffect(() => {
     document.documentElement.dataset.krColors = krColors ? "true" : "false"

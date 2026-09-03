@@ -600,6 +600,7 @@ export interface ControlPolicy {
   cashFloorPct: number
   grossMaxPct: number
   minTurnoverPct: number
+  maxTurnoverPct: number
   minIntervalMin: number
   proposalTtlH: number
   eta: number

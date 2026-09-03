@@ -177,11 +177,15 @@ function EngineRow({ e, onChange }: { e: ControlEngine; onChange: (patch: { enab
         </div>
         <button
           type="button"
+          role="switch"
+          aria-checked={e.enabled}
+          aria-label={`${e.nameKo} 협의회 참여`}
+          title={e.enabled ? "클릭하면 협의회에서 제외한다" : "클릭하면 협의회에 다시 참여시킨다"}
           onClick={() => void onChange({ enabled: !e.enabled })}
-          className={cn("rounded-full border px-2 py-0.5 text-[11px] font-semibold", e.enabled ? "border-emerald-400/50 text-emerald-300" : "border-border text-muted-foreground")}
-          aria-pressed={e.enabled}
+          className="inline-flex items-center gap-1.5 text-[11px] font-semibold"
         >
-          {e.enabled ? "ON" : "OFF"}
+          <span className={cn("relative inline-block h-4 w-7 rounded-full transition-colors", e.enabled ? "bg-emerald-500" : "bg-muted")}><span className={cn("absolute top-0.5 size-3 rounded-full bg-background transition-all", e.enabled ? "left-3.5" : "left-0.5")} /></span>
+          <span className={e.enabled ? "text-emerald-300" : "text-muted-foreground"}>{e.enabled ? "참여" : "제외"}</span>
         </button>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">{e.description}</p>
@@ -207,7 +211,7 @@ function EngineRow({ e, onChange }: { e: ControlEngine; onChange: (patch: { enab
   )
 }
 
-function DecisionCard({ d, pending, onApprove, onReject, busy }: { d: ControlDecision; pending?: boolean; onApprove?: () => void; onReject?: () => void; busy?: boolean }) {
+function DecisionCard({ d, pending, onApprove, onReject, busy, auto }: { d: ControlDecision; pending?: boolean; onApprove?: () => void; onReject?: () => void; busy?: boolean; auto?: { nextEligibleAt: string | null; everyMin: number } | null }) {
   const [open, setOpen] = useState(Boolean(pending))
   return (
     <div className={cn("rounded-lg border p-3", pending ? "border-amber-400/60 bg-amber-400/5" : "border-border")}>
@@ -267,7 +271,13 @@ function DecisionCard({ d, pending, onApprove, onReject, busy }: { d: ControlDec
           </ul>
         </div>
       )}
-      {pending && (
+      {pending && auto && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/40 px-2.5 py-1.5 text-emerald-300"><Play className="size-3.5" aria-hidden="true" /> 자동 집행 예정 — {auto.nextEligibleAt ? (Date.parse(auto.nextEligibleAt) > Date.now() ? `${Math.max(1, Math.ceil((Date.parse(auto.nextEligibleAt) - Date.now()) / 60_000))}분 뒤 (집행 간격)` : `다음 ${auto.everyMin}분 틱에`) : `다음 ${auto.everyMin}분 틱에`} 스케줄러가 집행한다. 손댈 것 없음.</span>
+          <button type="button" disabled={busy} onClick={onApprove} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground disabled:opacity-50" title="간격을 기다리지 않고 지금 집행 (선택)">지금 집행 (선택)</button>
+        </div>
+      )}
+      {pending && !auto && (
         <div className="mt-3 flex gap-2">
           <button type="button" disabled={busy} onClick={onApprove} className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-50"><Check className="size-3.5" aria-hidden="true" /> 승인 · 페이퍼 집행</button>
           <button type="button" disabled={busy} onClick={onReject} className="inline-flex items-center gap-1 rounded-md border border-rose-400/60 px-3 py-1.5 text-xs font-semibold text-rose-300 disabled:opacity-50"><X className="size-3.5" aria-hidden="true" /> 거부</button>
@@ -335,7 +345,7 @@ export function CommandCenter() {
             <p className="text-sm text-muted-foreground">네 엔진은 제안만 낸다. 중재기가 하나의 목표로 섞고, {s.paused ? "지금은 정지 상태라 아무것도 집행하지 않는다." : s.autopilot ? `오토파일럿이 곧바로 ${s.mode === "paper" ? "페이퍼 " : ""}장부를 회전한다. 보류된 결정은 ${s.scheduler.everyMin}분 스케줄러가 집행 간격이 지나면 사람 없이 집행한다.` : "운영자가 승인해야 장부를 회전한다."}</p>
             <p className={cn("mt-1 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold", s.paused ? "border-rose-500/70 text-rose-400" : s.unattended ? "border-emerald-400/60 text-emerald-300" : "border-amber-400/60 text-amber-300")}>
               <span className={cn("size-1.5 rounded-full", s.paused ? "bg-rose-400" : s.unattended ? "bg-emerald-400 animate-pulse" : "bg-amber-300")} aria-hidden="true" />
-              {s.paused ? `정지됨 · ${s.pausedBy ?? "operator"} · ${s.pausedAt ? ago(s.pausedAt) : ""}` : s.unattended ? `사람 없이 운행 중 · 가중치 일별 자동 갱신 · 스케줄러 ${s.scheduler.lastTickAt ? ago(s.scheduler.lastTickAt) : "대기"}` : s.killSwitch ? "킬 스위치 — 집행 차단" : "승인제 — 결정마다 사람이 승인"}
+              {s.paused ? `정지됨 · ${s.pausedBy ?? "operator"} · ${s.pausedAt ? ago(s.pausedAt) : ""}` : s.unattended ? `사람 없이 운행 중 · 가중치 5분 자동 갱신 · 스케줄러 ${s.scheduler.lastTickAt ? ago(s.scheduler.lastTickAt) : "대기"}` : s.killSwitch ? "킬 스위치 — 집행 차단" : "승인제 — 결정마다 사람이 승인"}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -348,16 +358,11 @@ export function CommandCenter() {
             <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{s.mode === "paper" ? "PAPER" : s.mode.toUpperCase()}</span>
             <button type="button" disabled={busy} onClick={() => void run(() => arbitrateNow(), "중재 실행")} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs disabled:opacity-50"><Gavel className="size-3.5" aria-hidden="true" /> 지금 중재</button>
             <button type="button" disabled={busy} onClick={() => void mutate()} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs" aria-label="새로고침"><RefreshCw className="size-3.5" aria-hidden="true" /></button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void run(() => setAutopilot(!s.autopilot), s.autopilot ? "오토파일럿 OFF — 이제 결정은 승인 대기" : "오토파일럿 ON")}
-              className={cn("inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold", s.autopilot ? "bg-emerald-500 text-black" : "border border-amber-400/60 text-amber-300")}
-              aria-pressed={s.autopilot}
-            >
-              {s.autopilot ? <Play className="size-3.5" aria-hidden="true" /> : <Pause className="size-3.5" aria-hidden="true" />}
-              {s.autopilot ? "오토파일럿" : "승인제"}
-            </button>
+            <div className="inline-flex items-center overflow-hidden rounded-md border border-border text-xs" role="radiogroup" aria-label="집행 모드">
+              <span className="px-2 py-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">집행</span>
+              <button type="button" role="radio" aria-checked={s.autopilot} disabled={busy || s.autopilot} onClick={() => void run(() => setAutopilot(true), "자동 집행 — 협의회 결정을 스케줄러가 집행한다")} className={cn("inline-flex items-center gap-1 px-2.5 py-1.5 font-semibold", s.autopilot ? "bg-emerald-500 text-black" : "text-muted-foreground hover:text-foreground")}><Play className="size-3.5" aria-hidden="true" /> 자동</button>
+              <button type="button" role="radio" aria-checked={!s.autopilot} disabled={busy || !s.autopilot} onClick={() => void run(() => setAutopilot(false), "승인제 — 이번 부팅 동안 결정마다 사람이 승인 (재배포하면 자동으로 돌아감)")} className={cn("inline-flex items-center gap-1 px-2.5 py-1.5 font-semibold", !s.autopilot ? "bg-amber-400 text-black" : "text-muted-foreground hover:text-foreground")}><Pause className="size-3.5" aria-hidden="true" /> 승인</button>
+            </div>
           </div>
         </div>
         <div className="mt-3">
@@ -368,7 +373,7 @@ export function CommandCenter() {
           <span>최대 {s.policy.maxPositions}종목</span>
           <span>현금 하한 {s.policy.cashFloorPct}%</span>
           <span>총노출 ≤ {s.policy.grossMaxPct}%</span>
-          <span>최소 회전 {s.policy.minTurnoverPct}%</span>
+          <span>회전 {s.policy.minTurnoverPct}~{s.policy.maxTurnoverPct ?? "∞"}%</span>
           <span>집행 간격 ≥ {s.policy.minIntervalMin}분</span>
           <span>제안 유효 {s.policy.proposalTtlH}h</span>
           <span>마지막 집행 {s.lastExecutedAt ? ago(s.lastExecutedAt) : "없음"}</span>
@@ -385,7 +390,7 @@ export function CommandCenter() {
       </Card>
 
       {s.pending && (
-        <DecisionCard d={s.pending} pending busy={busy} onApprove={() => void run(() => approveDecision(), "승인 — 페이퍼 장부 회전")} onReject={() => void run(() => rejectDecision(), "결정 거부")} />
+        <DecisionCard d={s.pending} pending busy={busy} auto={s.autopilot && !s.paused ? { nextEligibleAt: s.scheduler.nextEligibleAt, everyMin: s.scheduler.everyMin } : null} onApprove={() => void run(() => approveDecision(), s.autopilot ? "지금 집행 — 페이퍼 장부 회전" : "승인 — 페이퍼 장부 회전")} onReject={() => void run(() => rejectDecision(), "결정 거부")} />
       )}
 
       <div className="grid gap-4 xl:grid-cols-5">
@@ -431,7 +436,7 @@ export function CommandCenter() {
           </Card>
         </div>
       </div>
-      <p className="text-[10px] text-muted-foreground">쓰기(오토파일럿·승인·가중)는 로그인 세션이 필요하다. <Link href="/login" className="underline">로그인</Link> · 페이퍼 외 실거래는 이 화면에서 켤 수 없다.</p>
+      <p className="text-[10px] text-muted-foreground">기본은 무인 운행이다 — 아무것도 누르지 않아도 협의회가 결정하고 스케줄러가 페이퍼 집행한다. 조작(정지·모드·참여·가중)만 <Link href="/login" className="underline">로그인</Link> 세션이 필요하고, 페이퍼 외 실거래는 이 화면에서 켤 수 없다.</p>
     </div>
   )
 }

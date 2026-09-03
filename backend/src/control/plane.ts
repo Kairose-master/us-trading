@@ -82,12 +82,13 @@ interface State {
   pending: Decision | null;
   lastExecutedAt: string | null;
   lastMarkedDate: string | null;
-  policy: { maxWeightPct: number; maxPositions: number; cashFloorPct: number; grossMaxPct: number; minTurnoverPct: number; minIntervalMin: number; proposalTtlH: number; eta: number };
+  policy: { maxWeightPct: number; maxPositions: number; cashFloorPct: number; grossMaxPct: number; minTurnoverPct: number; maxTurnoverPct: number; minIntervalMin: number; proposalTtlH: number; eta: number };
 }
 
 const FILE = join(process.cwd(), "data", "control", "state.json");
 // 집행 간격 60분·최소 회전 8% — 15분마다 오는 신호 제안까지 전부 집행하면 장부가 잔거래로 오염된다 (2026-09-02 실제로 그랬다)
-const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, minIntervalMin: 60, proposalTtlH: 30, eta: 8 };
+// 한 번의 집행이 장부의 25% 넘게 갈아엎지 못한다 — 진화 스쿼드가 바뀌면 56%가 한 시간에 회전했다(2026-09-03 01:20). 목표까지는 여러 집행에 걸쳐 조금씩 간다
+const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, maxTurnoverPct: 25, minIntervalMin: 60, proposalTtlH: 30, eta: 8 };
 
 function fresh(): State {
   const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0, marks: 0, hits: 0, lastMarkPrices: null, lastMarkAt: null }])) as unknown as Record<EngineId, EngineState>;
@@ -182,9 +183,23 @@ class ControlPlane extends EventEmitter {
       sentiment: this.sentimentOf(),
       risk: { killSwitch: riskManager.killSwitchActive, drawdownPct: this.drawdownOf(), policy: { maxWeightPct: pol.maxWeightPct, maxPositions: pol.maxPositions, cashFloorPct: pol.cashFloorPct, grossMaxPct: pol.grossMaxPct }, holdings },
     });
-    const targets = council.targets;
-    const gross = targets.reduce((a, t) => a + t.weightPct, 0);
+    let targets = council.targets;
     const constraints = [...council.constraints];
+    // 최대 회전: 목표가 현재와 너무 다르면 그 방향으로 maxTurnoverPct만큼만 움직인다 (부분 리밸런스)
+    {
+      const cur = new Map(holdings.map((h) => [h.market, h.weightPct]));
+      let want = 0;
+      for (const m of new Set([...cur.keys(), ...targets.map((t) => t.market)])) want += Math.abs((targets.find((t) => t.market === m)?.weightPct ?? 0) - (cur.get(m) ?? 0));
+      want /= 2;
+      if (want > pol.maxTurnoverPct && want > 0) {
+        const k = pol.maxTurnoverPct / want;
+        const blended = new Map<string, number>();
+        for (const m of new Set([...cur.keys(), ...targets.map((t) => t.market)])) { const c = cur.get(m) ?? 0, t = targets.find((x) => x.market === m)?.weightPct ?? 0; blended.set(m, +(c + k * (t - c)).toFixed(2)); }
+        targets = [...blended].map(([market, weightPct]) => ({ market, weightPct })).filter((t) => t.weightPct >= 0.5);
+        constraints.push(`risk: turnover ${want.toFixed(1)}% → capped ${pol.maxTurnoverPct}% (moved ${(k * 100).toFixed(0)}% of the way toward the council target)`);
+      }
+    }
+    const gross = targets.reduce((a, t) => a + t.weightPct, 0);
     const rationale = [...council.summary, ...council.tally.map((t) => `${t.market.replace("KRW-", "")}: ${t.outcome}${t.outcome === "ADOPTED" ? ` ${t.weightPct}%` : ""} — ${t.why}`)];
     if (riskManager.killSwitchActive) constraints.push("KILL SWITCH active — decision blocked");
     const cur = new Map(this.status().holdings.map((h) => [h.market, h.weightPct]));

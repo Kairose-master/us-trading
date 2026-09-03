@@ -92,8 +92,8 @@ export function EvolutionPageClient() {
           <span className="font-semibold tracking-wide text-[#fecaca]">EVOLUTION CAMPAIGN</span>
           <span>running: <b className="text-[#fecaca]">upbit KRW · 27-market universe</b></span>
           <div className="ml-auto flex items-center gap-2">
-            <button type="button" disabled={busy || status.running} onClick={() => act(() => evoStep(), "세대 1회 실행")} className="rounded border border-[#7f1d1d] bg-[#1a0a0c] px-2.5 py-1 text-[9px] text-[#fecaca] hover:bg-[#2a0f12] disabled:opacity-50">▶ step generation</button>
-            <button type="button" disabled={busy || status.squad.targets.length === 0} onClick={() => act(() => evoDeploy(), "스쿼드 배치 (페이퍼)")} className="rounded border border-[#7f1d1d] bg-[#7f1d1d] px-2.5 py-1 text-[9px] font-semibold text-white hover:bg-[#991b1b] disabled:opacity-50">deploy squad → paper</button>
+            <button type="button" disabled={busy || status.running} onClick={() => act(() => evoStep(), "세대 1회 실행")} className="rounded border border-[#7f1d1d] bg-[#1a0a0c] px-2.5 py-1 text-[9px] text-[#fecaca] hover:bg-[#2a0f12] disabled:opacity-50">▶ 세대 1회 (선택 · 자동 {status.intervalHours}h)</button>
+            <button type="button" disabled={busy || status.squad.targets.length === 0} onClick={() => act(() => evoDeploy(), "스쿼드 배치 (페이퍼)")} className="rounded border border-[#7f1d1d] bg-[#7f1d1d] px-2.5 py-1 text-[9px] font-semibold text-white hover:bg-[#991b1b] disabled:opacity-50">스쿼드 제안 → 협의회 (선택 · 세대마다 자동)</button>
             <span className="flex items-center gap-1"><i className="inline-block size-1.5 rounded-full bg-[#ef4444] shadow-[0_0_6px_#ef4444]" />engine {status.running ? "running" : "online"}</span>
           </div>
         </div>

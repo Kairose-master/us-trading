@@ -60,6 +60,7 @@ class CryptoDesk extends EventEmitter {
   news: NewsIngestor;
   limits: CryptoRiskLimits = { maxOrderKrw: 500_000, maxWeightPct: 30, maxPositions: 4 };
   tradeEnabled = config.CRYPTO_TRADE;
+  private signalPathNoticeShown = false;
   /** 페이퍼 장부 — 항상 유지 (실주문 모드여도 미러로 기록) */
   paperCashKrw = PAPER_START_KRW;
   paperPositions = new Map<string, { qty: number; avgKrw: number }>();
@@ -283,87 +284,10 @@ class CryptoDesk extends EventEmitter {
   private cooldown = new Map<string, number>();
 
   private async onSignal(sig: ExecutionSignal) {
-    if (!this.tradeEnabled || sig.blocked) return;
-    const market = `KRW-${sig.symbol}`;
-    const t = this.lastTickers.get(market);
-    if (!t) return;
-    const now = Date.now();
-    if (now - (this.cooldown.get(market) ?? 0) < 5 * 60_000) return;
-    this.cooldown.set(market, now);
-
-    const budget = Math.min((sig.strengthPct / 100) * this.equityKrw(), this.limits.maxOrderKrw);
-    const price = t.trade_price;
-    let volume: number;
-    if (sig.side === "sell") {
-      const pos = this.paperPositions.get(sig.symbol);
-      if (!pos) return; // 없는 코인은 팔지 않는다
-      volume = Math.min(pos.qty, budget / price);
-    } else {
-      volume = budget / price;
-      if (volume * price < 5_000) return; // Upbit 최소 주문 미만
-    }
-    volume = +volume.toFixed(8);
-
-    const realMode = config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys();
-    // 페이퍼 체결가 = 시세 ± 슬리피지, 수수료는 금액에 부과 (실거래와 같은 조건)
-    const slip = PAPER_SLIP_PCT / 100;
-    const fee = PAPER_FEE_PCT / 100;
-    const execPrice = sig.side === "buy" ? price * (1 + slip) : price * (1 - slip);
-    const grossKrw = volume * execPrice;
-    const feeKrw = grossKrw * fee;
-    const order: CryptoOrder = {
-      id: `CRYPTO-${++this.orderSeq}-${now}`,
-      market,
-      side: sig.side,
-      volume,
-      priceKrw: +execPrice.toFixed(0),
-      amountKrw: Math.round(grossKrw),
-      costKrw: Math.round(feeKrw + Math.abs(execPrice - price) * volume),
-      mode: realMode ? "real" : "paper",
-      reason: sig.reason,
-      ts: new Date().toISOString(),
-    };
-
-    if (realMode) {
-      try {
-        const out = await upbit.placeOrder(
-          sig.side === "buy"
-            ? { market, side: "bid", ord_type: "price", price: String(Math.round(volume * price)) }
-            : { market, side: "ask", ord_type: "market", volume: String(volume) },
-        );
-        order.id = out.uuid;
-      } catch (e) {
-        this.pipeline.log("auto-trade", `${market} 실주문 실패 — ${(e as Error).message}`);
-        return;
-      }
-    }
-
-    // 페이퍼 장부 갱신 (실주문이어도 미러 기록) — 슬리피지 반영 체결가 + 수수료 차감
-    const pos = this.paperPositions.get(sig.symbol);
-    if (sig.side === "buy") {
-      this.paperCashKrw -= grossKrw + feeKrw;
-      if (pos) {
-        pos.avgKrw = (pos.avgKrw * pos.qty + execPrice * volume) / (pos.qty + volume);
-        pos.qty += volume;
-      } else {
-        this.paperPositions.set(sig.symbol, { qty: volume, avgKrw: execPrice });
-      }
-    } else {
-      this.paperCashKrw += grossKrw - feeKrw;
-      if (pos) {
-        pos.qty -= volume;
-        if (pos.qty <= 1e-10) this.paperPositions.delete(sig.symbol);
-      }
-    }
-    this.orders.unshift(order);
-    if (this.orders.length > 100) this.orders.length = 100;
-    this.saveState();
-    this.snapshotEquity();
-    this.pipeline.log(
-      "auto-trade",
-      `${market} ${sig.side.toUpperCase()} ${volume} (₩${order.amountKrw.toLocaleString()}) [${order.mode}] — ${sig.reason}`,
-    );
-    this.emit("order", order);
+    // 신호는 더 이상 장부를 직접 건드리지 않는다. 파이프라인 스냅샷이 15분마다 제어 평면에
+    // "signals" 제안으로 올라가고, 협의회가 다른 제안 매니저의 동의가 있을 때만 집행한다
+    // ("시그널만 보고 매수하지 않는다"). 이 경로는 실주문 모드에서도 닫혀 있다.
+    if (!this.signalPathNoticeShown) { this.signalPathNoticeShown = true; logger.info("[desk] 신호 직접 집행 비활성 — 신호는 제어 평면 제안으로만 간다", { symbol: sig.symbol, tradeEnabled: this.tradeEnabled }); }
   }
 
   /**
