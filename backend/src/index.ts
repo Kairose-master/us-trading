@@ -15,6 +15,7 @@ import { handleMcpRequest } from "./mcp/server.js";
 import { autoTrader } from "./trade/auto-trader.js";
 import { cryptoDesk } from "./crypto/desk.js";
 import { scannerServer } from "./crypto/scanner-server.js";
+import { cryptoUniverse } from "./crypto/universe.js";
 import { startYahooTicks } from "./data/yahoo.js";
 import { officeLoop } from "./office/loop.js";
 import { evolution } from "./evolution/population.js";
@@ -62,6 +63,7 @@ autoTrader.attach();
 // 크립토 데스크 (Upbit) — 공개 API 실데이터, MOCK_DATA와 무관하게 기동
 cryptoDesk.start();
 scannerServer.startAutoLoop();
+cryptoUniverse.startAutoRefresh();
 officeLoop.startAutoLoop();
 evolution.startAutoLoop();
 // 제어 평면: 가격은 크립토 데스크 티커(보유분 폴백 포함), 귀속은 하루 한 번 일봉으로

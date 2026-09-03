@@ -251,6 +251,9 @@ export class PipelineEngine extends EventEmitter {
     for (const def of NODE_DEFS) this.nodes.set(def.id, new NodeRuntime(def));
   }
 
+  /** 유니버스가 커지면 새 심볼을 감성 추적에 추가한다 (틱은 어떤 심볼이든 받는다) */
+  track(symbol: string) { this.tracker.track(symbol); }
+
   start(trackedSymbols: string[]) {
     this.status = "active";
     this.startedAt = new Date().toISOString();

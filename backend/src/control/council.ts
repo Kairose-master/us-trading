@@ -4,7 +4,7 @@
  * 나오면 수정 라운드를 거쳐, 정족수를 채운 시장만 최종 결정에 오른다.
  *
  * 매니저:
- *   scanner   알트 스캐너 총괄 — 위험조정 모멘텀 로테이션 제안
+ *   (알트 스캐너는 엔진이 아니다 — 유니버스(투자 대상 자산)를 만드는 층이고, 그 알트를 아래 셋이 거래한다)
  *   office    증권 오피스 총괄 — 9역할 협의의 위원장 결정
  *   evolution 진화 총괄       — 본 적 없는 60일 시험을 통과한 스쿼드의 타깃
  *   signals   파이프라인 신호 총괄 — 앙상블 알파. **혼자서는 매수를 통과시킬 수 없다** (정족수에 제안 매니저 2명, 신호는 그중 하나일 뿐)
@@ -15,7 +15,7 @@
  * 이 파일은 순수 함수만 둔다 (테스트 가능). I/O는 plane.ts가 한다.
  */
 
-export type ManagerId = "scanner" | "office" | "evolution" | "signals" | "sentiment" | "risk";
+export type ManagerId = "office" | "evolution" | "signals" | "sentiment" | "risk";
 export type Stance = "SUPPORT" | "OPPOSE" | "ABSTAIN" | "VETO";
 
 export interface Target { market: string; weightPct: number }
@@ -45,7 +45,6 @@ export interface CouncilResult {
 }
 
 export const MANAGERS: Array<{ id: ManagerId; name: string; nameKo: string; proposes: boolean; description: string }> = [
-  { id: "scanner", name: "Scanner Manager", nameKo: "알트 스캐너 총괄", proposes: true, description: "HMM 강세·모멘텀/변동성 랭킹의 로테이션 타깃을 낸다" },
   { id: "office", name: "Office Manager", nameKo: "증권 오피스 총괄", proposes: true, description: "9역할 협의를 거친 위원장 결정을 가져온다" },
   { id: "evolution", name: "Evolution Manager", nameKo: "진화 총괄", proposes: true, description: "본 적 없는 60일 시험을 살아남은 스쿼드의 타깃을 낸다" },
   { id: "signals", name: "Signals Manager", nameKo: "파이프라인 신호 총괄", proposes: true, description: "앙상블 알파의 타깃. 혼자서는 매수를 통과시킬 수 없다" },
@@ -53,7 +52,7 @@ export const MANAGERS: Array<{ id: ManagerId; name: string; nameKo: string; prop
   { id: "risk", name: "Risk Manager", nameKo: "리스크 총괄", proposes: false, description: "거부권 — 킬스위치·드로다운·정책 한도" },
 ];
 
-const PROPOSERS: ManagerId[] = ["scanner", "office", "evolution", "signals"];
+const PROPOSERS: ManagerId[] = ["office", "evolution", "signals"];
 const QUORUM = 2; // 서로 다른 제안 매니저 2명 이상이 지지해야 채택
 const DRAWDOWN_HALF_PCT = 8; // 페이퍼 드로다운이 이 이상이면 리스크 총괄이 총노출 절반 요구
 const DRAWDOWN_VETO_PCT = 15; // 이 이상이면 신규 매수 전면 거부 (현금)

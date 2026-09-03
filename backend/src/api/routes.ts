@@ -14,6 +14,7 @@ import { executeOrder } from "../trade/execute.js";
 import { autoTrader } from "../trade/auto-trader.js";
 import { cryptoDesk } from "../crypto/desk.js";
 import { scannerServer } from "../crypto/scanner-server.js";
+import { cryptoUniverse } from "../crypto/universe.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
 import { supervisor, type Market as SupMarket } from "../core/supervisor.js";
@@ -461,14 +462,11 @@ router.post("/crypto/paper/reset", (req, res) => {
   res.json({ ok: true, ...r, control: { policy: controlPlane.status().policy } });
 });
 
-router.post("/crypto/scanner/rotate", requireSession, async (_req, res) => {
-  try {
-    const r = await scannerServer.rotate();
-    if (r.error) return res.status(409).json(r);
-    res.json(r);
-  } catch (e) {
-    res.status(502).json({ error: (e as Error).message });
-  }
+router.get("/crypto/universe", (_req, res) => { res.json(cryptoUniverse.status()); });
+
+// 스캐너 로테이션은 없어졌다 — 유니버스는 엔진들이 거래한다
+router.post("/crypto/scanner/rotate", requireSession, (_req, res) => {
+  res.status(410).json({ error: "알트 스캐너는 엔진이 아니다 — 유니버스(투자 대상 자산)는 오피스·진화·신호 엔진이 거래한다. 협의회 결정은 홈에서 본다" });
 });
 
 router.post("/crypto/autotrade", (req, res) => {

@@ -13,7 +13,7 @@ const NAV = [
   { href: "/pipeline", label: "파이프라인", icon: Network },
   { href: "/sentiment", label: "센티먼트", icon: MessageSquareText },
   { href: "/crypto", label: "크립토", icon: Bitcoin },
-  { href: "/scanner", label: "알트 스캐너", icon: Radar },
+  { href: "/scanner", label: "투자 유니버스", icon: Radar },
   { href: "/office", label: "증권 오피스", icon: Building2 },
   { href: "/evolution", label: "진화 캠페인", icon: Dna },
   { href: "/lab", label: "모델 랩", icon: Cpu },

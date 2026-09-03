@@ -528,7 +528,7 @@ export async function evoDeploy(): Promise<{ squad: EvoStatus["squad"]; result: 
 }
 
 // ── 통합 제어 평면 (control plane) ────────────────────────────────────────
-export type ControlEngineId = "scanner" | "office" | "evolution" | "signals"
+export type ControlEngineId = "office" | "evolution" | "signals"
 export interface ControlTarget { market: string; weightPct: number }
 export interface ControlProposal {
   id: string
@@ -696,6 +696,7 @@ export async function getScanner(force = false): Promise<ScannerResult> {
 export async function getScannerBacktest(): Promise<ScannerBacktest | null> {
   return req("crypto/scanner/backtest")
 }
-export async function rotateScanner(): Promise<{ ts: string; orders: number; skipped: string[]; error?: string }> {
-  return write("crypto/scanner/rotate", "POST", {})
+export interface CryptoUniverse { markets: string[]; majors: string[]; refreshedAt: string | null; refreshMs: number }
+export async function getUniverse(): Promise<CryptoUniverse> {
+  return req("crypto/universe")
 }

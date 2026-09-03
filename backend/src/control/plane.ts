@@ -18,9 +18,8 @@ import { MANAGERS, convene, type CouncilResult, type SentimentRead } from "./cou
  * 돈 경계는 그대로: 실행은 cryptoDesk.rotateTo(페이퍼 전용, 실주문 모드면 거부)뿐이다.
  */
 
-export type EngineId = "scanner" | "office" | "evolution" | "signals";
+export type EngineId = "office" | "evolution" | "signals";
 export const ENGINES: Array<{ id: EngineId; name: string; nameKo: string; description: string }> = [
-  { id: "scanner", name: "Alt Scanner", nameKo: "알트 스캐너", description: "HMM 강세 belief·모멘텀/변동성·GARCH 역가중 상위 K 로테이션 (24h)" },
   { id: "office", name: "Securities Floor", nameKo: "증권 오피스", description: "Handsel 9역할 협의 → 채점 통과한 위원장 결정 JSON" },
   { id: "evolution", name: "Evolution Squad", nameKo: "진화 스쿼드", description: "본 적 없는 60일 시험에서 살아남은 상위 3 개체의 타깃 혼합" },
   { id: "signals", name: "Pipeline Signals", nameKo: "파이프라인 신호", description: "정형+비정형 DAG의 앙상블 알파 → 포트폴리오 타깃" },
@@ -101,6 +100,11 @@ function readState(): State {
       // 오토파일럿은 부팅마다 env 기본값으로 — 사람 손 없이 돌아야 한다. 멈추려면 pause(지속)를 쓴다
       st.autopilot = config.CONTROL_AUTOPILOT; st.paused ??= false; st.pausedAt ??= null; st.pausedBy ??= null;
       for (const e of ENGINES) { const x = st.engines[e.id]; x.marks ??= 0; x.hits ??= 0; x.lastMarkPrices ??= null; x.lastMarkAt ??= null; }
+      // 스캐너는 엔진에서 빠졌다 — 남은 상태·제안은 버린다 (유니버스 층으로 옮겨감)
+      const known = new Set<string>(ENGINES.map((e) => e.id));
+      for (const k of Object.keys(st.engines)) if (!known.has(k)) delete (st.engines as Record<string, unknown>)[k];
+      st.proposals = st.proposals.filter((p) => known.has(p.engine));
+      if (st.pending && st.pending.contributions.some((c) => !known.has(c.engine))) st.pending = null;
       return st;
     }
   } catch (e) { logger.warn("제어 평면 상태 복원 실패 — 새로 시작", { error: (e as Error).message }); }

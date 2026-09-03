@@ -154,39 +154,13 @@ class ScannerServer {
 
   /** 최신 스캔 타깃으로 페이퍼 장부 로테이션 (페이퍼 전용 — desk가 이중으로 거부) */
   /** 스캔 → 제어 평면 제안 (실행은 제어 평면의 자동조종/승인이 정한다) */
-  async rotate(): Promise<{ ts: string; targets: ScannerPortfolio; orders: number; skipped: string[]; error?: string }> {
-    const scan = await this.scan();
-    // 장부를 직접 돌리지 않는다 — 제어 평면에 제안을 낸다. 확신도 = 유니버스 중 강세 belief 비율
-    const bull = scan.scores.filter((x) => x.pBull >= 0.5).length;
-    const confidence = scan.scores.length ? bull / scan.scores.length : 0;
-    const { decision } = await controlPlane.propose({
-      engine: "scanner",
-      targets: scan.portfolio.targets.map((t) => ({ market: t.market, weightPct: t.weightPct })),
-      confidence,
-      evidence: `universe ${scan.universe} · ${bull} in bull regime · top${scan.portfolio.targets.length} by mom/vol, inverse-GARCH weights`,
-      ref: scan.ts,
-    });
-    const r = decision?.execution ?? { orders: 0, skipped: [] as string[], error: decision ? `decision ${decision.status}` : "no decision" };
-    if (decision?.status === "executed") this.lastRotation = { ts: new Date().toISOString(), orders: r.orders, skipped: r.skipped };
-    return { ts: scan.ts, targets: scan.portfolio, orders: r.orders, skipped: r.skipped, error: decision?.status === "executed" ? undefined : r.error };
+  /** 스캐너는 더 이상 엔진이 아니다 — 유니버스(투자 대상 자산)와 그 특성을 만들 뿐, 제안·집행을 하지 않는다 */
+  async rotate(): Promise<never> {
+    throw new Error("알트 스캐너는 엔진이 아니다 — 유니버스는 모든 엔진(오피스·진화·신호)이 거래한다. 제안은 그 엔진들이 낸다");
   }
 
-  /** CRYPTO_SCANNER=true일 때: 기동 5분 후 1회, 이후 24h마다 자동 로테이션 */
-  startAutoLoop() {
-    if (!config.CRYPTO_SCANNER || this.autoTimer) return;
-    const run = async () => {
-      try {
-        const r = await this.rotate();
-        logger.info("스캐너 자동 로테이션", { orders: r.orders, skipped: r.skipped.length, error: r.error ?? null });
-      } catch (e) {
-        logger.warn("스캐너 자동 로테이션 실패 — 다음 주기 재시도", { error: (e as Error).message });
-      }
-    };
-    setTimeout(() => void run(), 5 * 60_000).unref();
-    this.autoTimer = setInterval(() => void run(), AUTO_ROTATE_MS);
-    this.autoTimer.unref();
-    logger.info("스캐너 자동 로테이션 예약 (24h 주기, 페이퍼 전용)");
-  }
+  /** 자동 로테이션은 없다. 유니버스 갱신은 crypto/universe.ts가 30분마다 한다 */
+  startAutoLoop() { /* no-op — kept for call-site compatibility */ }
 }
 
 export const scannerServer = new ScannerServer();

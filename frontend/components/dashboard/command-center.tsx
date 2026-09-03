@@ -42,7 +42,6 @@ const ago = (s: string) => {
 const sym = (m: string) => m.replace("KRW-", "")
 
 const ENGINE_COLOR: Record<ControlEngine["id"], string> = {
-  scanner: "#38bdf8",
   office: "#a78bfa",
   evolution: "#f87171",
   signals: "#34d399",
@@ -342,7 +341,7 @@ export function CommandCenter() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">command center · 통합 제어 평면</p>
-            <p className="text-sm text-muted-foreground">네 엔진은 제안만 낸다. 중재기가 하나의 목표로 섞고, {s.paused ? "지금은 정지 상태라 아무것도 집행하지 않는다." : s.autopilot ? `오토파일럿이 곧바로 ${s.mode === "paper" ? "페이퍼 " : ""}장부를 회전한다. 보류된 결정은 ${s.scheduler.everyMin}분 스케줄러가 집행 간격이 지나면 사람 없이 집행한다.` : "운영자가 승인해야 장부를 회전한다."}</p>
+            <p className="text-sm text-muted-foreground">엔진은 제안만 낸다. 알트를 포함한 유니버스 전체가 거래 대상이다. 중재기가 하나의 목표로 섞고, {s.paused ? "지금은 정지 상태라 아무것도 집행하지 않는다." : s.autopilot ? `오토파일럿이 곧바로 ${s.mode === "paper" ? "페이퍼 " : ""}장부를 회전한다. 보류된 결정은 ${s.scheduler.everyMin}분 스케줄러가 집행 간격이 지나면 사람 없이 집행한다.` : "운영자가 승인해야 장부를 회전한다."}</p>
             <p className={cn("mt-1 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold", s.paused ? "border-rose-500/70 text-rose-400" : s.unattended ? "border-emerald-400/60 text-emerald-300" : "border-amber-400/60 text-amber-300")}>
               <span className={cn("size-1.5 rounded-full", s.paused ? "bg-rose-400" : s.unattended ? "bg-emerald-400 animate-pulse" : "bg-amber-300")} aria-hidden="true" />
               {s.paused ? `정지됨 · ${s.pausedBy ?? "operator"} · ${s.pausedAt ? ago(s.pausedAt) : ""}` : s.unattended ? `사람 없이 운행 중 · 가중치 5분 자동 갱신 · 스케줄러 ${s.scheduler.lastTickAt ? ago(s.scheduler.lastTickAt) : "대기"}` : s.killSwitch ? "킬 스위치 — 집행 차단" : "승인제 — 결정마다 사람이 승인"}
@@ -397,7 +396,7 @@ export function CommandCenter() {
         <Card className="p-4 xl:col-span-2">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-bold">총괄 매니저 협의회</h2>
-            <span className="text-[10px] text-muted-foreground">제안 4 + 감성·리스크 2 · 정족수 = 제안 매니저 2명 · 신호 혼자서는 매수 불가</span>
+            <span className="text-[10px] text-muted-foreground">제안 3(오피스·진화·신호) + 감성·리스크 2 · 정족수 = 제안 매니저 2명 · 신호 혼자서는 매수 불가 · 유니버스 = 메이저 + 알트 상위 30</span>
           </div>
           <div className="space-y-2">
             {s.engines.map((e) => (

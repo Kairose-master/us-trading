@@ -21,7 +21,10 @@ import { logger } from "../core/logger.js";
  *   + CRYPTO_TRADE_ALLOW_REAL + 키 → 실제 Upbit 주문 (upbit.placeOrder가 최종 관문)
  */
 
-export const CRYPTO_MARKETS = ["KRW-BTC", "KRW-ETH", "KRW-XRP", "KRW-SOL", "KRW-DOGE"];
+import { cryptoUniverse, MAJORS } from "./universe.js";
+/** 메이저 5개 — 호환용. 실제 추적·거래 대상은 cryptoUniverse.markets() (메이저 ∪ 상위 30 ∪ 보유) */
+export const CRYPTO_MARKETS = MAJORS;
+const NEWS_SYMBOLS_MAX = 15;
 /** 뉴스 검색용 — 마켓 코드에서 통화 심볼 */
 const COIN_OF = (market: string) => market.split("-")[1];
 
@@ -202,7 +205,11 @@ class CryptoDesk extends EventEmitter {
     this.equityTimer = setInterval(() => this.snapshotEquity(), EQUITY_SNAPSHOT_MS);
     this.equityTimer.unref();
     setTimeout(() => this.snapshotEquity(), 30_000).unref(); // 기동 직후 1회
-    this.pipeline.start(CRYPTO_MARKETS.map(COIN_OF));
+    this.pipeline.start(cryptoUniverse.symbols());
+    // 유니버스가 바뀌면 파이프라인 추적·뉴스 심볼도 따라간다 — 알트도 신호 엔진의 거래 대상이다
+    cryptoUniverse.attachHeld(() => [...this.paperPositions.keys()].map((s) => `KRW-${s}`));
+    // 뉴스 RSS는 마켓 15개까지 — 27개를 다 돌리면 Google News가 503을 낸다 (2026-09-03 로컬). 나머지 알트는 시세·호가·워커 데스크로 읽는다
+    cryptoUniverse.on("change", (markets: string[]) => { for (const m of markets) this.pipeline.track(COIN_OF(m)); this.news.setSymbols(markets.slice(0, NEWS_SYMBOLS_MAX).map(COIN_OF)); });
     this.pipeline.on("signal", (sig: ExecutionSignal) => void this.onSignal(sig));
     // 파이프라인 포트폴리오 타깃 → 제어 평면 제안 (15분마다 한 번, 타깃이 있을 때만)
     let lastSignalProposal = 0;
@@ -214,7 +221,7 @@ class CryptoDesk extends EventEmitter {
       const conf = pt.reduce((a, t) => a + Math.abs(t.alpha), 0) / pt.length;
       void controlPlane.propose({ engine: "signals", targets: pt.map((t) => ({ market: `KRW-${t.symbol}`, weightPct: +t.targetWeightPct.toFixed(2) })), confidence: Math.max(0, Math.min(1, conf)), evidence: `ensemble alpha → portfolio targets for ${pt.length} symbols · mean |alpha| ${conf.toFixed(2)}`, ref: "crypto pipeline" }).catch(() => undefined);
     });
-    this.news.setSymbols(CRYPTO_MARKETS.map(COIN_OF));
+    this.news.setSymbols(cryptoUniverse.symbols().slice(0, NEWS_SYMBOLS_MAX));
     this.news.on("news", (items) => this.pipeline.onNews(items));
     this.news.start();
     // 감독자 아래로: 실패는 백오프 재시도, 회복 시 놓친 구간의 1분봉을 실제로 받아 파이프라인에 재생한다
@@ -229,7 +236,7 @@ class CryptoDesk extends EventEmitter {
       backfill: (since) => this.backfill(since),
     });
     this.timer = setInterval(() => undefined, 60_000); // start() 중복 호출 가드
-    logger.info("크립토 데스크 기동 (Upbit 공개 API — 실데이터)", { markets: CRYPTO_MARKETS });
+    logger.info("크립토 데스크 기동 (Upbit 공개 API — 실데이터)", { universe: cryptoUniverse.markets().length, majors: MAJORS });
   }
 
   /** 놓친 구간의 1분봉을 받아 종가를 틱으로 재생 — 실제 과거 데이터, 라벨은 replay */
@@ -237,7 +244,8 @@ class CryptoDesk extends EventEmitter {
     const since = Date.parse(sinceIso);
     const minutes = Math.min(200, Math.max(1, Math.ceil((Date.now() - since) / 60_000)));
     let rows = 0;
-    for (const market of CRYPTO_MARKETS) {
+    const universe = cryptoUniverse.markets();
+    for (const market of universe) {
       const candles = await upbit.minuteCandles(market, minutes);
       for (const c of candles) {
         // 캔들은 그 분의 시작 시각을 갖는다 — 장애 시작이 포함된 분봉부터 재생
@@ -246,24 +254,23 @@ class CryptoDesk extends EventEmitter {
         rows++;
       }
     }
-    return { rows, note: `${minutes} minute candles × ${CRYPTO_MARKETS.length} markets replayed as ticks (no order book — sizes 0)` };
+    return { rows, note: `${minutes} minute candles × ${universe.length} markets replayed as ticks (no order book — sizes 0)` };
   }
 
   private async poll(): Promise<{ rows: number }> {
     {
       // 기본 마켓 + 스캐너가 들고 온 알트 보유분 — 보유 중인 코인의 시세는
       // 반드시 추적해야 에쿼티가 정확하다
-      const held = [...this.paperPositions.keys()].map((s) => `KRW-${s}`);
-      const watch = [...new Set([...CRYPTO_MARKETS, ...held])];
+      // 유니버스 전체(메이저 ∪ 상위 30 ∪ 보유)의 시세와 호가 — 전부 파이프라인에 들어간다
+      const watch = cryptoUniverse.markets();
       const [tickers, books] = await Promise.all([
         upbit.tickers(watch),
-        upbit.orderbooks(CRYPTO_MARKETS),
+        upbit.orderbooks(watch),
       ]);
       this.lastError = null;
       const bookOf = new Map(books.map((b) => [b.market, b.orderbook_units[0]]));
       for (const t of tickers) {
         this.lastTickers.set(t.market, t);
-        if (!CRYPTO_MARKETS.includes(t.market)) continue; // 알트 보유분은 시세만 추적, 파이프라인엔 안 넣는다
         const top = bookOf.get(t.market);
         // 파이프라인 심볼은 통화 코드(BTC)로 — 뉴스/감성 심볼과 일치시킨다
         this.pipeline.onTick({
@@ -410,7 +417,7 @@ class CryptoDesk extends EventEmitter {
       paperSince: this.paperSince,
       paperStartKrw: PAPER_START_KRW,
       costs: { feePct: PAPER_FEE_PCT, slipPct: PAPER_SLIP_PCT },
-      markets: CRYPTO_MARKETS,
+      markets: cryptoUniverse.markets(),
       equityKrw: Math.round(this.equityKrw()),
       cashKrw: Math.round(this.paperCashKrw),
       positions: [...this.paperPositions.entries()].map(([symbol, p]) => {

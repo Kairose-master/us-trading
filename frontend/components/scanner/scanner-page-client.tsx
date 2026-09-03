@@ -4,10 +4,10 @@ import { useState } from "react"
 import useSWR from "swr"
 import { toast } from "sonner"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Radar, Radio, RefreshCw, Send } from "lucide-react"
+import { Radar, Radio, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { ApiError, getScanner, getScannerBacktest, isBackendNotConfigured, rotateScanner } from "@/lib/api"
+import { getScanner, getScannerBacktest, getUniverse, isBackendNotConfigured } from "@/lib/api"
 
 /**
  * 알트코인 스캐너 — 백엔드 스캔(/api/crypto/scanner)을 보여준다. 업비트 KRW 거래대금
@@ -31,22 +31,10 @@ const ago = (s: string) => {
 export function ScannerPageClient() {
   const { data, error, isLoading, mutate } = useSWR("altcoin-scan", () => getScanner(), { revalidateOnFocus: false, refreshInterval: 10 * 60_000 })
   const { data: bt, error: btError } = useSWR("altcoin-scan-bt", getScannerBacktest, { revalidateOnFocus: false, refreshInterval: 60 * 60_000 })
+  const { data: uni } = useSWR("crypto-universe", getUniverse, { refreshInterval: 60_000 })
   const [busy, setBusy] = useState(false)
   const portfolio = data?.portfolio ?? null
 
-  const onRotate = async () => {
-    setBusy(true)
-    try {
-      const r = await rotateScanner()
-      toast.success(`로테이션 제안 → 제어 평면 · ${r.orders}건 집행${r.skipped.length ? ` · 건너뜀 ${r.skipped.length}` : ""}`)
-      await mutate()
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) toast(`제어 평면이 결정을 보류함 — ${e.message}`)
-      else toast.error(e instanceof ApiError && e.status === 401 ? "로그인이 필요합니다 (설정 · 키 → 로그인)" : e instanceof Error ? e.message : "실패")
-    } finally {
-      setBusy(false)
-    }
-  }
   const onRescan = async () => {
     setBusy(true)
     try {
@@ -64,18 +52,15 @@ export function ScannerPageClient() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold">알트코인 스캐너</h1>
+        <div>
+          <h1 className="text-lg font-bold">투자 유니버스 — 메이저 + 알트코인</h1>
+          <p className="text-xs text-muted-foreground">스캐너는 별개의 도구가 아니다. 여기 자산 전부가 오피스·진화·신호 엔진의 거래 대상이고, 협의회가 그 위에서 결정한다. 아래 랭킹은 자산 특성(모멘텀·변동성·국면)이다.{uni ? ` 현재 유니버스 ${uni.markets.length}개 (메이저 ${uni.majors.length} + 알트 상위 + 보유), ${uni.refreshedAt ? `${ago(uni.refreshedAt)} 갱신` : "갱신 대기"}.` : ""}</p>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-chart-1/15 px-2 py-1 font-mono text-[11px] font-semibold text-chart-1">
             <Radio className="size-3" aria-hidden="true" /> UPBIT LIVE — KRW {data ? `${data.krwMarkets}개 중 거래대금 상위 ${data.universe}개` : "스캔 중"}{data ? ` · ${ago(data.ts)}` : ""}
           </span>
-          {data && (
-            <span className="rounded-md border border-border px-2 py-1 font-mono text-[11px] text-muted-foreground">
-              {data.autoRotate ? "자동 로테이션 24h" : "자동 로테이션 OFF"}{data.lastRotation ? ` · 마지막 집행 ${ago(data.lastRotation.ts)} (${data.lastRotation.orders}건)` : " · 집행 기록 없음"}
-            </span>
-          )}
           <button type="button" disabled={busy || isLoading} onClick={() => void onRescan()} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50"><RefreshCw className="size-3" aria-hidden="true" /> 재스캔</button>
-          <button type="button" disabled={busy || !portfolio} onClick={() => void onRotate()} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-semibold text-primary-foreground disabled:opacity-50" title="타깃을 제어 평면에 제안한다 — 오토파일럿이면 페이퍼 집행, 아니면 승인 대기"><Send className="size-3" aria-hidden="true" /> 지금 로테이션</button>
         </div>
       </div>
 
@@ -138,7 +123,7 @@ export function ScannerPageClient() {
 
         <Card className="h-fit">
           <div className="border-b border-border px-4 py-2.5">
-            <h2 className="text-sm font-semibold">상위 K 로테이션 타깃</h2>
+            <h2 className="text-sm font-semibold">모멘텀 팩터 상위 K (참고)</h2>
           </div>
           <div className="flex flex-col gap-3 p-4">
             {!portfolio ? (
@@ -168,7 +153,7 @@ export function ScannerPageClient() {
               <p className="font-medium text-foreground/80">방법 · 적용</p>
               <p>{portfolio?.method ?? "…"}</p>
               <p className="mt-1">
-                "지금 로테이션"은 이 타깃을 <b>제어 평면에 제안</b>한다 — 스캐너 엔진 가중 × 확신도(강세 종목 비율)로 다른 엔진과 섞인 뒤 오토파일럿이면 페이퍼 집행, 아니면 홈에서 승인. 실주문 모드에서는 거부된다.
+                이 표는 <b>제안이 아니다</b>. 스캐너 엔진은 없어졌고, 이 유니버스를 오피스·진화·신호 엔진이 각자 읽어 협의회에 제안한다. 실제 결정은 홈의 협의록에서 본다.
               </p>
             </div>
           </div>
@@ -177,7 +162,7 @@ export function ScannerPageClient() {
 
       <Card>
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-          <h2 className="text-sm font-semibold">로테이션 규칙 백테스트 — 이 랭킹이 과거에 통했는가</h2>
+          <h2 className="text-sm font-semibold">모멘텀 팩터 백테스트 (참고) — 이 랭킹이 과거에 통했는가</h2>
           {bt && (
             <span className="ml-auto font-mono text-[10px] text-muted-foreground">
               {bt.daysUsed}일 · {bt.rebalanceDays}일마다 리밸런스 · top {bt.topK} · cap {bt.capPct}% · 유니버스 {bt.universe}
