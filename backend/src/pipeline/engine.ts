@@ -1,3 +1,4 @@
+import { POLICY, validateTick, liquidityBlock, allocateRisk } from './guards.js';
 import { EventEmitter } from "node:events";
 import { performance } from "node:perf_hooks";
 import type {
@@ -31,6 +32,10 @@ import { riskManager } from "../risk/riskManager.js";
 // ===== DAG 정의 =====
 
 export const NODE_DEFS: PipelineNodeDef[] = [
+  { id: "data-quality", stage: "ingestion", name: "데이터 품질", description: "가격·호가 유효성, 소스 시각과 순서 검사. 과거 재생은 실시간 의사결정에서 제외한다.", codeHint: "validateTick(tick, now, previousEventTime)" },
+  { id: "signal-eligibility", stage: "models", name: "신호 적격성", description: "21개 유효 틱 워밍업과 120초 시세 신선도. 뉴스만으로 거래하지 않는다.", codeHint: "samples >= 21 && quoteAge <= 120s" },
+  { id: "risk-allocation", stage: "strategy", name: "위험 배분", description: "알파 × 신뢰도 / 틱 변동성 배분. 종목 상한과 총노출 90%, 남는 비중은 현금.", codeHint: "score = alpha * confidence / max(volatility, 0.05)" },
+  { id: "tradability-gate", stage: "strategy", name: "거래 가능성 관문", description: "호가 부재·50bps 초과 스프레드·리스크 거부 시 목표를 현재 비중으로 동결. 제어 평면 제안에도 반영.", codeHint: "liquidityBlock(quote) ?? context.riskCheck(target)" },
   {
     id: "tick-data",
     stage: "ingestion",
@@ -42,7 +47,7 @@ export const NODE_DEFS: PipelineNodeDef[] = [
     id: "news-stream",
     stage: "ingestion",
     name: "뉴스 스트림",
-    description: "비정형 소스 — Google News RSS 헤드라인 (키 불필요). 실패/MOCK 시 합성 헤드라인 폴백, source 필드로 구분.",
+    description: "비정형 소스 — Google News RSS 헤드라인 (키 불필요). 수집 실패 시 폴백 없음. Mock 소스는 파이프라인에서 제외.",
     codeHint: `newsIngestor.on("news", (items) => pipeline.onNews(items))`,
   },
   {
@@ -91,8 +96,8 @@ export const NODE_DEFS: PipelineNodeDef[] = [
     id: "portfolio",
     stage: "strategy",
     name: "포트폴리오 구성",
-    description: "양(+)의 앙상블 알파에 비례한 목표 비중(리스크 한도 캡) vs 현재 보유 비중의 괴리를 계산한다.",
-    codeHint: `target = alpha+ / Σalpha+ * cap`,
+    description: "적격 알파의 위험 배분과 거래 가능성 관문을 통과한 목표 비중 vs 현재 보유 비중의 괴리를 계산한다.",
+    codeHint: `targets = tradabilityGate(riskAllocation(eligibleAlphas))`,
   },
   {
     id: "execution-router",
@@ -105,15 +110,21 @@ export const NODE_DEFS: PipelineNodeDef[] = [
 ];
 
 export const EDGES: PipelineEdge[] = [
-  { from: "tick-data", to: "technical" },
-  { from: "tick-data", to: "microstructure" },
+  { from: "tick-data", to: "data-quality" },
+  { from: "data-quality", to: "technical" },
+  { from: "data-quality", to: "microstructure" },
   { from: "news-stream", to: "sentiment-score" },
   { from: "technical", to: "alpha-technical" },
   { from: "microstructure", to: "alpha-technical" },
   { from: "sentiment-score", to: "alpha-sentiment" },
   { from: "alpha-technical", to: "alpha-ensemble" },
   { from: "alpha-sentiment", to: "alpha-ensemble" },
-  { from: "alpha-ensemble", to: "portfolio" },
+  { from: "alpha-ensemble", to: "signal-eligibility" },
+  { from: "technical", to: "signal-eligibility" },
+  { from: "signal-eligibility", to: "risk-allocation" },
+  { from: "risk-allocation", to: "tradability-gate" },
+  { from: "microstructure", to: "tradability-gate" },
+  { from: "tradability-gate", to: "portfolio" },
   { from: "portfolio", to: "execution-router" },
 ];
 
@@ -146,6 +157,7 @@ class NodeRuntime {
     const t0 = performance.now();
     try {
       const out = fn();
+      this.lastError = null;
       this.record(performance.now() - t0);
       return out;
     } catch (e) {
@@ -174,6 +186,7 @@ class NodeRuntime {
 
   metrics(): NodeMetrics {
     const now = Date.now();
+    this.recentTs = this.recentTs.filter(t => t >= now - 10_000);
     return {
       status: this.lastError
         ? "error"
@@ -228,6 +241,11 @@ export class PipelineEngine extends EventEmitter {
   private ctx: PipelineContext;
 
   private prices = new Map<string, number[]>();
+  private quotes = new Map<string, PipelineTick>();
+  private quoteTimes = new Map<string, number>();
+  private eventTimes = new Map<string, number>();
+  private seenNews = new Map<string, number>();
+  private targetBlocks = new Map<string, string>();
   private lastVolume = new Map<string, number>();
   private techFeatures = new Map<string, TechnicalFeatures>();
   private microFeatures = new Map<string, MicrostructureFeatures>();
@@ -238,7 +256,10 @@ export class PipelineEngine extends EventEmitter {
   /** 1 - mean|Δalpha| 의 EMA */
   alphaStability = 1;
 
-  portfolioTargets: PortfolioTarget[] = [];
+  private latestTargets: PortfolioTarget[] = [];
+  get portfolioTargets(): PortfolioTarget[] {
+    return this.latestTargets.filter(t => Date.now() - (this.quoteTimes.get(t.symbol) ?? 0) <= POLICY.maxAgeMs);
+  }
   signals: ExecutionSignal[] = [];
   logs: PipelineLogLine[] = [];
 
@@ -269,16 +290,32 @@ export class PipelineEngine extends EventEmitter {
 
     // INGESTION: tick-data
     const ingest = this.nodes.get("tick-data")!;
-    ingest.run(() => {
-      const arr = this.prices.get(q.symbol) ?? [];
-      arr.push(q.last);
-      if (arr.length > 300) arr.shift();
-      this.prices.set(q.symbol, arr);
-    });
-    ingest.pushSample(
-      ["ts", "symbol", "last", "bid", "ask", "volume"],
-      [ts.slice(11, 19), q.symbol, q.last, q.bid, q.ask, q.volume],
-    );
+    ingest.run(() => q);
+    ingest.pushSample(["ts", "symbol", "last"], [ts.slice(11, 19), q.symbol, String(q.last)]);
+    const quality = this.nodes.get("data-quality")!;
+    const rejected = quality.run(() => validateTick(q, Date.now(), this.eventTimes.get(q.symbol)));
+    quality.pushSample(["symbol", "result", "clock"], [q.symbol, rejected ?? "PASS", q.observedAt === undefined ? "receipt" : "source"]);
+    if (rejected) {
+      if (!["HISTORICAL_REPLAY", "OUT_OF_ORDER_TICK"].includes(rejected)) {
+        this.quoteTimes.delete(q.symbol);
+        this.latestTargets = this.latestTargets.filter(t => t.symbol !== q.symbol);
+      }
+      this.log("data-quality", `${q.symbol} 차단 — ${rejected}`);
+      this.maybeEmitSnapshot();
+      return;
+    }
+    const previousQuoteAt = this.quoteTimes.get(q.symbol);
+    if (previousQuoteAt !== undefined && Date.now() - previousQuoteAt > POLICY.maxAgeMs) {
+      this.prices.delete(q.symbol);
+      this.lastVolume.delete(q.symbol);
+    }
+    this.quotes.set(q.symbol, q);
+    this.quoteTimes.set(q.symbol, q.observedAt ?? Date.now());
+    if (q.observedAt !== undefined) this.eventTimes.set(q.symbol, q.observedAt);
+    const history = this.prices.get(q.symbol) ?? [];
+    history.push(q.last);
+    if (history.length > 300) history.shift();
+    this.prices.set(q.symbol, history);
 
     // FEATURES: technical
     const techNode = this.nodes.get("technical")!;
@@ -347,6 +384,16 @@ export class PipelineEngine extends EventEmitter {
   onNews(items: NewsItem[]) {
     if (this.status !== "active") return;
     const ts = new Date().toISOString();
+    const now = Date.now();
+    for (const [key, at] of this.seenNews) if (now - at > POLICY.sentimentAgeMs) this.seenNews.delete(key);
+    items = items.filter(item => {
+      const key = `${item.symbol}:${item.id}`;
+      const age = now - Date.parse(item.publishedAt);
+      if (/^mock/i.test(item.source) || !Number.isFinite(age) || age < -5_000 || age > POLICY.sentimentAgeMs || this.seenNews.has(key)) return false;
+      this.seenNews.set(key, now);
+      return true;
+    });
+    if (!items.length) return;
 
     const streamNode = this.nodes.get("news-stream")!;
     streamNode.run(() => items.length);
@@ -409,7 +456,7 @@ export class PipelineEngine extends EventEmitter {
       const s = this.sentAlpha.get(symbol);
       if (!t && !s) return null;
       const wT = t ? t.confidence : 0;
-      const wS = s ? s.confidence : 0;
+      const wS = s && Date.parse(ts) - Date.parse(s.ts) <= POLICY.sentimentAgeMs ? s.confidence : 0;
       const denom = wT + wS;
       if (denom === 0) return null;
       const alpha = ((t?.alpha ?? 0) * wT + (s?.alpha ?? 0) * wS) / denom;
@@ -421,7 +468,7 @@ export class PipelineEngine extends EventEmitter {
         ts,
       };
     });
-    if (!blended) return;
+    if (!blended) { this.ensembleAlpha.delete(symbol); return; }
 
     // 알파 안정성: 직전값 대비 변화량
     const prev = this.prevEnsemble.get(symbol);
@@ -438,32 +485,42 @@ export class PipelineEngine extends EventEmitter {
   }
 
   private recomputePortfolio(ts: string) {
-    const pfNode = this.nodes.get("portfolio")!;
-    const targets = pfNode.run<PortfolioTarget[]>(() => {
-      const alphas = [...this.ensembleAlpha.values()];
-      const positive = alphas.filter((a) => a.alpha > 0.05);
-      const sumPos = positive.reduce((acc, a) => acc + a.alpha, 0);
-      const cap = this.ctx.maxWeightPct();
+    const now = Date.parse(ts);
+    // Reblend all symbols so expired sentiment cannot persist through unrelated ticks.
+    for (const [symbol, alpha] of this.ensembleAlpha) {
+      if (alpha.ts !== ts) this.recomputeEnsemble(symbol, ts);
+    }
+    const eligibility = this.nodes.get("signal-eligibility")!;
+    const alphas = eligibility.run(() => [...this.ensembleAlpha.values()].filter(a => {
+      const samples = this.prices.get(a.symbol)?.length ?? 0;
+      const age = now - (this.quoteTimes.get(a.symbol) ?? 0);
+      const reason = samples < POLICY.warmup ? "WARMUP" : age > POLICY.maxAgeMs ? "STALE_QUOTE" : "PASS";
+      eligibility.pushSample(["symbol", "samples", "quoteAgeMs", "result"], [a.symbol, samples, age, reason]);
+      return reason === "PASS";
+    }));
+    const alloc = this.nodes.get("risk-allocation")!;
+    const weights = alloc.run(() => allocateRisk(alphas.map(a => ({ ...a, volatilityPct: this.techFeatures.get(a.symbol)!.volatilityPct })), this.ctx.maxWeightPct()));
+    for (const a of alphas) alloc.pushSample(["symbol", "vol%", "weight%"], [a.symbol, this.techFeatures.get(a.symbol)!.volatilityPct, weights.get(a.symbol) ?? 0]);
+    const gate = this.nodes.get("tradability-gate")!;
+    this.targetBlocks.clear();
+    const checked = gate.run<PortfolioTarget[]>(() => alphas.map(a => {
       const equity = this.ctx.equity();
-
-      return alphas
-        .map((a) => {
-          const pos = this.ctx.positionOf(a.symbol);
-          const curWeight = equity > 0 && pos ? ((pos.price * pos.qty) / equity) * 100 : 0;
-          const target =
-            a.alpha > 0.05 && sumPos > 0 ? Math.min(cap, (a.alpha / sumPos) * Math.min(100, cap * positive.length)) : 0;
-          return {
-            symbol: a.symbol,
-            alpha: a.alpha,
-            targetWeightPct: +target.toFixed(1),
-            currentWeightPct: +curWeight.toFixed(1),
-            driftPct: +(target - curWeight).toFixed(1),
-            ts,
-          };
-        })
-        .sort((a, b) => b.alpha - a.alpha);
-    });
-    this.portfolioTargets = targets;
+      const pos = this.ctx.positionOf(a.symbol);
+      const current = equity > 0 && pos ? pos.price * pos.qty / equity * 100 : 0;
+      let target = weights.get(a.symbol) ?? 0;
+      const side = target > current ? "buy" : "sell";
+      const blocked = !Number.isFinite(equity) || equity <= 0 ? "INVALID_EQUITY" : liquidityBlock(this.quotes.get(a.symbol)) ?? this.ctx.riskCheck({
+        amount: Math.abs(target - current) / 100 * equity, side,
+        resultingOpenPositions: this.ctx.positionsCount() + (side === "buy" && !pos ? 1 : 0),
+        resultingSymbolWeightPct: target,
+      });
+      if (blocked) { target = current; this.targetBlocks.set(a.symbol, blocked); }
+      gate.pushSample(["symbol", "result", "target%"], [a.symbol, blocked ?? "PASS", target]);
+      return { symbol: a.symbol, alpha: a.alpha, targetWeightPct: target, currentWeightPct: current, driftPct: target - current, ts };
+    }));
+    const pfNode = this.nodes.get("portfolio")!;
+    const targets = pfNode.run(() => checked.sort((a, b) => b.alpha - a.alpha));
+    this.latestTargets = targets.filter(t => !this.targetBlocks.has(t.symbol));
     const top = targets[0];
     if (top) {
       pfNode.pushSample(
