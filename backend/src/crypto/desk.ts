@@ -250,7 +250,7 @@ class CryptoDesk extends EventEmitter {
       for (const c of candles) {
         // 캔들은 그 분의 시작 시각을 갖는다 — 장애 시작이 포함된 분봉부터 재생
         if (Date.parse(`${c.candle_date_time_utc}Z`) + 60_000 <= since) continue;
-        this.pipeline.onTick({ symbol: COIN_OF(market), last: c.trade_price, bid: c.trade_price, ask: c.trade_price, bidSize: 0, askSize: 0, volume: Math.round(c.candle_acc_trade_volume) });
+        this.pipeline.onTick({ symbol: COIN_OF(market), replay: true, observedAt: Date.parse(`${c.candle_date_time_utc}Z`), last: c.trade_price, bid: c.trade_price, ask: c.trade_price, bidSize: 0, askSize: 0, volume: Math.round(c.candle_acc_trade_volume) });
         rows++;
       }
     }
@@ -275,6 +275,7 @@ class CryptoDesk extends EventEmitter {
         // 파이프라인 심볼은 통화 코드(BTC)로 — 뉴스/감성 심볼과 일치시킨다
         this.pipeline.onTick({
           symbol: COIN_OF(t.market),
+          observedAt: t.timestamp,
           last: t.trade_price,
           bid: top?.bid_price ?? t.trade_price,
           ask: top?.ask_price ?? t.trade_price,

@@ -71,6 +71,10 @@ export interface PipelineSnapshot {
 
 /** 파이프라인이 소비하는 최소 틱 형태 — KIS Quote도, Upbit 티커도 이 모양이면 흐른다 */
 export interface PipelineTick {
+  /** Source event time in epoch milliseconds; absent means receipt-time validation only. */
+  observedAt?: number;
+  /** Historical candles must never create live proposals. */
+  replay?: boolean;
   symbol: string;
   last: number;
   bid: number;
