@@ -26,12 +26,12 @@
    |---|---|---|
    | `API_AUTH_TOKEN` | 긴 랜덤 문자열 (직접 생성) | API 인증. `dev-token` 기본값 그대로 두면 공개 API가 됨 |
    | `MOCK_DATA` | `true` | KIS 키 없이 미국주식 파트는 목으로 — 크립토는 어차피 항상 실데이터 |
-   | `CRYPTO_SCANNER` | `true` | 24h 알트 스캐너 자동 로테이션 ON (페이퍼 전용) |
+   | `CRYPTO_SCANNER` | `true` | 알트 스캐너 유니버스 자동 갱신 |
    | `CORS_ORIGINS` | `https://us-trading-dashboard.vercel.app,http://localhost:3000` | 대시보드에서 백엔드 호출 허용 |
 
    `PORT`는 Railway가 자동 주입 — 설정 불필요. `CRYPTO_TRADE`는 기본
-   `true`(페이퍼)라 생략. **실주문 스위치(`CRYPTO_TRADE_ALLOW_REAL`,
-   `AUTO_TRADE_ALLOW_REAL`)와 Upbit/KIS 키는 넣지 말 것** — 페이퍼
+   `true`(페이퍼)라 생략. **`CRYPTO_TRADE_ALLOW_REAL`은 넣지 말 것** — 실주문은
+   환경변수가 아니라 설정 페이지의 거래 모드 스위치로 켠다(아래 "실주문 켜기"). 페이퍼
    기록으로 증명이 먼저다.
 5. **Settings → Networking → Generate Domain** → 공개 URL 확보
    (예: `us-trading-backend-production.up.railway.app`).
@@ -109,6 +109,32 @@ Railway 고객과 공유될 수 있고 인바운드용이 아니다.
 허용 IP가 없어 보통 불필요. 확인은 위와 같이 `/api/system/egress?check=1`의
 `proxy` 값. 무료 티어(Fixie 월 500회)는 주문 빈도가 조금만 올라가도 소진되므로
 주문이 자주 나가는 운영에서는 Pro Static IP가 맞다. 비워두면 동작은 기존과 같다.
+
+## 실주문 켜기 (UI 스위치 — 환경변수 아님)
+
+거래 모드는 `data/crypto-mode.json`(볼륨)에 남고 **설정 페이지**에서만 바뀐다.
+`CRYPTO_TRADE_ALLOW_REAL`은 그 파일이 없을 때의 부팅 기본값일 뿐이라 Railway
+Variables에 넣지 않는다.
+
+1. 위 "허용 IP" 절대로 Static IP 3개를 Upbit 허용 IP에 등록 (키 권한: 자산조회 +
+   주문만. **출금 OFF**).
+2. Railway Variables에 `CREDENTIALS_MASTER_KEY`(`openssl rand -hex 32`)가 있어야
+   금고가 열린다. 없으면 넣고 재배포.
+3. 대시보드 → 로그인(첫 가입자가 owner) → **설정** → Upbit Open API 키를 금고에
+   저장.
+4. 설정 → **거래 모드** 카드 → "드라이런"으로 실계좌 기준 주문 계획을 먼저 본다
+   (계좌 조회가 실패하면 키·허용 IP·권한 중 하나가 틀린 것 — 오류 문구에 Upbit 응답이
+   그대로 나온다).
+5. "실주문 모드로 전환" → `REAL` 타이핑 → 켜기. 이 순간 Upbit 계좌 조회가 성공해야
+   모드가 바뀐다. 이후 제어 평면의 집행이 시장가 주문으로 나간다.
+6. 처음엔 홈에서 **오토파일럿 OFF**로 두고 보류 결정을 직접 승인하며 며칠 관찰.
+   주문당 상한은 데스크 `limits.maxOrderKrw`(기본 ₩500,000), 회전당 12건, 킬스위치
+   (`POST /api/risk/killswitch`)가 켜지면 전면 차단. 되돌리기는 같은 카드의
+   "PAPER로 돌아가기".
+
+실모드에서는 `/api/crypto/status`의 현금·포지션·에쿼티가 실계좌(60초마다 동기화)
+이고 에쿼티 커브는 `data/crypto-live-equity.jsonl`에 따로 쌓인다. 페이퍼 기록은
+건드리지 않는다. 실주문 체결은 주문 목록에 `mode:"real"`, id는 Upbit uuid.
 
 ## 새 커밋이 배포되지 않을 때 (구 빌드가 계속 살아 있음)
 

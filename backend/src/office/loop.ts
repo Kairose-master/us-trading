@@ -23,8 +23,8 @@ import { MAJORS } from "../crypto/universe.js";
  *      execution.json(체결)로 볼륨에 남기고, 페이퍼 장부를 타깃대로 회전한다
  *
  * 실돈 경계: Handsel 쪽은 HANDSEL_MCP_URL(기본 테스트넷)의 USDC, 매매 쪽은
- * 페이퍼 장부 전용(desk.rotateTo가 실주문 모드면 거부). 둘 다 명시 플래그
- * 없이는 실돈에 닿지 않는다.
+ * 데스크 거래 모드를 따른다(기본 paper, owner가 UI에서 REAL로 켜야 실계좌).
+ * 둘 다 명시적 사람 손 없이는 실돈에 닿지 않는다.
  */
 
 const ROOT = join(process.cwd(), "data", "office");

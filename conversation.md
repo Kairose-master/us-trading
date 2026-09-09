@@ -12,3 +12,7 @@ Pipeline changes on codex/pipeline-quant-guards: backend/src/pipeline/* and cryp
 ## 2026-09-09 04:24 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: 거래소 고정 IP 프록시 추가 — backend/src/core/egress.ts(신규), upbit.ts 인증 호출(accounts/orders)만 egressFetch 경유, kis client/auth axios에 axiosEgress, config에 EXCHANGE_PROXY_URL/EXCHANGE_PROXY_TARGETS, routes에 GET /api/system/egress. 비우면 동작 동일(직접 호출). 실돈 스위치 안 건드림. deps: undici, https-proxy-agent.
+
+## 2026-09-09 08:20 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: 실주문 경로 추가 + 거래 모드 UI 스위치. backend/src/crypto/live.ts(신규, Upbit 실집행: 계획→매도→재동기화→매수, uuid 체결 확인), desk.ts(mode paper/real, data/crypto-mode.json 영속, rotateTo가 async가 됨 — 호출부는 await 필요, real이면 live로), upbit.ts(placeOrder는 armReal 없이는 차단, order(uuid) 추가), routes(GET/POST /crypto/mode owner 전용 confirm:'REAL', GET /crypto/live/preview 드라이런), auth/routes requireOwner, 프론트 설정 페이지 거래 모드 카드 + 프록시 허용. CRYPTO_TRADE_ALLOW_REAL은 부팅 기본값으로만 남음 — 환경변수로 실주문 못 켬. 기본은 여전히 paper. 스캐너/오피스/진화 파일은 안 건드림.

@@ -42,12 +42,12 @@ const Env = z.object({
   UPBIT_ACCESS_KEY: z.string().default(""),
   UPBIT_SECRET_KEY: z.string().default(""),
   // 크립토 신호 → 주문 기록. 기본 ON(페이퍼) — 라이브 기록을 쌓는 게 목적이고,
-  // 실주문은 여전히 CRYPTO_TRADE_ALLOW_REAL + 키 없이는 불가능하다.
+  // 거래 모드(paper/real)는 UI 스위치가 정한다 — 아래 플래그로는 실주문을 못 켠다.
   CRYPTO_TRADE: z
     .string()
     .default("true")
     .transform(asBool),
-  // 실제 Upbit 주문까지 허용하는 명시적 이중 스위치 (키 + 이 플래그 둘 다 필요)
+  // 거래 모드 파일(data/crypto-mode.json)이 없을 때의 부팅 기본값. 실제 스위치는 UI (desk.setMode)
   CRYPTO_TRADE_ALLOW_REAL: z
     .string()
     .default("false")

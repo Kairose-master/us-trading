@@ -181,6 +181,8 @@ export async function setAutoTrade(_enabled: boolean): Promise<AutoTradeStatus> 
 export interface CryptoPaperStatus {
   tradeEnabled: boolean
   mode: "paper" | "real"
+  modeSince?: string | null
+  live?: { syncedAt: string | null; lockedKrw: number; error: string | null } | null
   paperSince: string | null
   paperStartKrw: number
   costs: { feePct: number; slipPct: number }
@@ -193,6 +195,37 @@ export interface CryptoPaperStatus {
 
 export async function getCryptoStatus(): Promise<CryptoPaperStatus> {
   return req("crypto/status")
+}
+
+// ===== 거래 모드 (paper ↔ real) — owner가 설정 화면에서 전환 =====
+export type TradingMode = "paper" | "real"
+export interface TradingModeStatus {
+  mode: TradingMode
+  since: string | null
+  by: string | null
+  hasKeys: boolean
+  killSwitch: boolean
+  tradeEnabled: boolean
+  live: { syncedAt: string | null; cashKrw?: number; lockedKrw?: number; positions?: number; equityKrw?: number; startKrw?: number | null; since?: string | null; error: string | null }
+  limits: { maxOrderKrw: number }
+}
+export async function getTradingMode(): Promise<TradingModeStatus> {
+  return req("crypto/mode")
+}
+export async function setTradingMode(mode: TradingMode): Promise<TradingModeStatus> {
+  return write("crypto/mode", "POST", mode === "real" ? { mode, confirm: "REAL" } : { mode })
+}
+export interface LivePreview {
+  decision: { id: string; ts: string; status: string; targets: Array<{ market: string; weightPct: number }> } | null
+  orders: Array<{ market: string; side: "buy" | "sell"; amountKrw: number; volume: number; note: string }>
+  skipped: string[]
+  equityKrw?: number
+  gate?: string | null
+  account?: { cashKrw: number; lockedKrw: number; positions: number; syncedAt: string }
+  note?: string
+}
+export async function getLivePreview(): Promise<LivePreview> {
+  return req("crypto/live/preview")
 }
 
 export async function getPaperEquity(limit = 2000): Promise<Array<{ ts: string; equityKrw: number; cashKrw: number; positions: number }>> {

@@ -6,8 +6,9 @@ import { NextResponse, type NextRequest } from "next/server"
  * 사용자 세션은 httpOnly 쿠키(hs_session)에 있고, 여기서 X-Session 헤더로 옮겨 준다 —
  * 브라우저 JS는 세션 토큰을 볼 수 없다.
  *
- * 쓰기는 계정/금고 경로만 통과시킨다(로그인·가입·로그아웃·키 저장/삭제). 주문·자동매매
- * 토글·킬스위치는 여전히 백엔드 API에 직접 토큰으로 — 공개 대시보드에서 돈이 움직이지 않는다.
+ * 쓰기는 계정/금고/제어 경로만 통과시킨다(로그인·가입·로그아웃·키 저장/삭제·거래 모드·제어 평면).
+ * 거래 모드(paper↔real)는 owner 세션이 있어야 하고 백엔드가 다시 검사한다. 개별 주문·킬스위치는
+ * 여전히 백엔드 API에 직접 토큰으로.
  * BACKEND_TOKEN이 없으면 503 BACKEND_NOT_CONFIGURED — 목데이터로 대체하지 않는다.
  */
 
@@ -26,7 +27,7 @@ const ALLOW_GET: RegExp[] = [
   /^orders$/,
   /^quotes\/[^/]+(\/chart)?$/,
   /^risk\/limits$/,
-  /^crypto\/(status|quotes|signals|paper\/equity|universe|candles(\/[A-Za-z0-9-]+)?|scanner(\/backtest|\/spa)?|timelock-verify|contracts|contract\/[A-Za-z0-9-]+|timelock\/[A-Za-z0-9-]+|pipeline(\/nodes\/[^/]+|\/logs)?|sentiment(\/feed)?)$/,
+  /^crypto\/(mode|live\/preview|status|quotes|signals|paper\/equity|universe|candles(\/[A-Za-z0-9-]+)?|scanner(\/backtest|\/spa)?|timelock-verify|contracts|contract\/[A-Za-z0-9-]+|timelock\/[A-Za-z0-9-]+|pipeline(\/nodes\/[^/]+|\/logs)?|sentiment(\/feed)?)$/,
   /^office\/(status|roster|runs(\/[^/]+)?)$/,
   /^auth\/(config|me)$/,
   /^keys$/,
@@ -38,6 +39,8 @@ const ALLOW_WRITE: Array<{ method: string; re: RegExp }> = [
   { method: "POST", re: /^auth\/(register|login|logout)$/ },
   { method: "PUT", re: /^keys\/(upbit|kis)$/ },
   { method: "DELETE", re: /^keys\/(upbit|kis)$/ },
+  // 거래 모드 스위치 — 백엔드에서 owner 세션 + confirm:"REAL" 을 다시 검사한다
+  { method: "POST", re: /^crypto\/mode$/ },
   { method: "POST", re: /^ops\/supervisor\/(pause|resume|heal|auto-recovery|[A-Za-z0-9_-]+\/break)$/ },
   { method: "POST", re: /^evolution\/(step|deploy)$/ },
   { method: "POST", re: /^office\/run$/ },

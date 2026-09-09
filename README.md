@@ -30,8 +30,9 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 ## 페이퍼 모드
 
 `CRYPTO_TRADE=true`가 기본값 — 크립토 데스크는 시작하자마자 **페이퍼 장부**로
-라이브 기록을 쌓는다 (실주문은 여전히 `CRYPTO_TRADE_ALLOW_REAL=true` + Upbit 키
-둘 다 없으면 불가능). 체결은 슬리피지 반영 가격 + 수수료 차감으로 기록되고,
+라이브 기록을 쌓는다. 실주문은 **설정 페이지의 거래 모드 스위치**(owner가
+`REAL` 타이핑)로만 켜지고, 켜는 순간 Upbit 계좌 조회로 키·허용 IP를 검증한다 —
+환경변수로는 켤 수 없다 (`docs/deploy-railway.md` "실주문 켜기"). 체결은 슬리피지 반영 가격 + 수수료 차감으로 기록되고,
 상태는 `backend/data/crypto-paper.json`(현금/포지션/주문), 에쿼티 스냅샷은
 `backend/data/crypto-paper-equity.jsonl`(시간당 1줄)에 저장되어 재시작을
 견딘다. 조회: `GET /api/crypto/status`(paperSince 포함),
@@ -49,9 +50,8 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
   (비용 반영, BTC 보유·동일가중 벤치마크, 블록 부트스트랩 p-값 +
   **유니버스 크기만큼 Bonferroni 다중검정 보정**). 스캔 자체가 N번의 암묵적
   검정이라는 사실을 숫자로 노출한다.
-- `POST /api/crypto/scanner/rotate` — 페이퍼 장부를 타깃 비중으로 로테이션.
-  **페이퍼 전용** — 실주문 모드에서는 거부. `CRYPTO_SCANNER=true`면 24h마다
-  자동 로테이션.
+- `POST /api/crypto/scanner/rotate` — 410. 스캐너는 유니버스만 만들고 집행은
+  제어 평면이 한다 (거래 모드가 real이면 그 집행이 Upbit 실계좌로 나간다).
 
 이 모드가 극대화하는 것은 "비용 차감 후 위험조정 기대수익"이라는 시도이지
 수익 자체가 아니다 — 백테스트는 인샘플 상한선이고, 판단은 페이퍼 장부의

@@ -25,7 +25,7 @@ import { candleStoreStatus, getDayCandles } from "../crypto/candle-store.js";
 import { controlPlane, type EngineId } from "../control/plane.js";
 import { upbitRateStatus } from "../crypto/upbit.js";
 import { egressStatus, egressCheck } from "../core/egress.js";
-import { requireSession } from "../auth/routes.js";
+import { requireSession, requireOwner } from "../auth/routes.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
 import { walkForwardValidate } from "../ml/validate.js";
@@ -33,6 +33,7 @@ import { DEFAULT_PARAMS } from "../ml/train.js";
 import { tuneHyperparams } from "../ml/tune.js";
 import { buildQuantReport } from "../quant/report.js";
 import type { Exchange, Order } from "../kis/types.js";
+import type { AuthedRequest } from "../auth/routes.js";
 
 export const router = Router();
 
@@ -471,7 +472,8 @@ router.get("/crypto/scanner/backtest", async (req, res) => {
 router.post("/crypto/paper/reset", (req, res) => {
   const start = req.body?.startKrw !== undefined ? Number(req.body.startKrw) : undefined;
   if (start !== undefined && !(start > 0)) return res.status(400).json({ error: "startKrw는 양수" });
-  const r = cryptoDesk.resetPaper(start);
+  let r: ReturnType<typeof cryptoDesk.resetPaper>;
+  try { r = cryptoDesk.resetPaper(start); } catch (e) { return res.status(409).json({ error: (e as Error).message }); }
   controlPlane.onLedgerReset();
   res.json({ ok: true, ...r, control: { policy: controlPlane.status().policy } });
 });
@@ -514,6 +516,33 @@ router.get("/crypto/scanner/spa", async (req, res) => {
 // 스캐너 로테이션은 없어졌다 — 유니버스는 엔진들이 거래한다
 router.post("/crypto/scanner/rotate", requireSession, (_req, res) => {
   res.status(410).json({ error: "알트 스캐너는 엔진이 아니다 — 유니버스(투자 대상 자산)는 오피스·진화·신호 엔진이 거래한다. 협의회 결정은 홈에서 본다" });
+});
+
+// ===== 거래 모드 (paper ↔ real) — owner가 UI에서 전환. 환경변수로는 못 켠다 =====
+router.get("/crypto/mode", (_req, res) => { res.json(cryptoDesk.modeStatus()); });
+// body: { mode: "paper" | "real", confirm?: "REAL" } — real은 confirm 문구까지 맞아야 한다.
+// real 전환은 Upbit 계좌 조회가 성공해야 완료된다 (키·허용 IP·권한 검증).
+router.post("/crypto/mode", requireSession, requireOwner, async (req, res) => {
+  const mode = req.body?.mode;
+  if (mode !== "paper" && mode !== "real") return res.status(400).json({ error: 'mode: "paper" | "real" 필요' });
+  if (mode === "real" && req.body?.confirm !== "REAL") return res.status(400).json({ error: '실주문 전환은 confirm: "REAL" 이 있어야 합니다' });
+  const by = (req as AuthedRequest).user?.email ?? "owner";
+  const r = await cryptoDesk.setMode(mode, by);
+  if (r.error) return res.status(409).json({ error: r.error, ...cryptoDesk.modeStatus() });
+  logger.warn("[api] 거래 모드 전환", { mode, by });
+  res.json(cryptoDesk.modeStatus());
+});
+// 드라이런 — 보류 중(또는 마지막) 결정의 타깃으로 실계좌 기준 주문 계획만 계산. 주문은 나가지 않는다.
+router.get("/crypto/live/preview", requireSession, async (_req, res) => {
+  const st = controlPlane.status();
+  const decision = st.pending ?? st.decisions.find((d) => d.status === "executed") ?? null;
+  if (!decision) return res.json({ decision: null, orders: [], skipped: [], note: "계획할 결정이 없습니다" });
+  try {
+    const plan = await cryptoDesk.planLive(decision.targets);
+    res.json({ decision: { id: decision.id, ts: decision.ts, status: decision.status, targets: decision.targets }, ...plan });
+  } catch (e) {
+    res.status(502).json({ error: `실계좌 조회 실패: ${(e as Error).message}` });
+  }
 });
 
 router.post("/crypto/autotrade", (req, res) => {

@@ -4,7 +4,9 @@ import { dirname, join } from "node:path";
 import { PipelineEngine, type PipelineContext } from "../pipeline/engine.js";
 import type { ExecutionSignal } from "../pipeline/types.js";
 import { NewsIngestor } from "../sentiment/news.js";
-import { upbit, type UpbitTicker } from "./upbit.js";
+import { armReal, upbit, type UpbitTicker } from "./upbit.js";
+import { live, liveEquityKrw, planRotation, type LiveAccount } from "./live.js";
+import { riskManager } from "../risk/riskManager.js";
 import { config } from "../config.js";
 import { supervisor } from "../core/supervisor.js";
 import { controlPlane } from "../control/plane.js";
@@ -15,10 +17,11 @@ import { logger } from "../core/logger.js";
  * 시세/캔들은 공개 API라 MOCK_DATA와 무관하게 항상 실데이터로 돈다
  * (네트워크 실패 시 다음 주기 재시도, 수치를 지어내지 않는다).
  *
- * 주문 경로 3단:
- *   CRYPTO_TRADE=false            → 신호만 (기본)
- *   CRYPTO_TRADE=true             → 페이퍼 주문 기록 + 페이퍼 포지션 갱신
- *   + CRYPTO_TRADE_ALLOW_REAL + 키 → 실제 Upbit 주문 (upbit.placeOrder가 최종 관문)
+ * 거래 모드(UI 스위치, data/crypto-mode.json에 영속):
+ *   paper (기본) → 제어 평면 결정이 페이퍼 장부만 움직인다
+ *   real         → 같은 결정이 Upbit 실계좌로 나간다 (live.ts). owner가 설정 화면에서
+ *                  "REAL"을 타이핑해 켠다. 켜는 순간 계좌 동기화로 키·허용 IP를 검증한다.
+ * 환경변수 CRYPTO_TRADE_ALLOW_REAL은 모드 파일이 없을 때의 부팅 기본값일 뿐이다.
  */
 
 import { cryptoUniverse, MAJORS } from "./universe.js";
@@ -36,6 +39,13 @@ const PAPER_SLIP_PCT = 0.05; // 시장가 슬리피지 가정
 // 영속화 — 재시작해도 페이퍼 실적이 이어져야 "라이브 기록"이 된다
 const STATE_FILE = join(process.cwd(), "data", "crypto-paper.json");
 const EQUITY_FILE = join(process.cwd(), "data", "crypto-paper-equity.jsonl");
+// 실계좌 — 모드 스위치와 실주문 기록은 페이퍼와 별도 파일 (페이퍼 기록을 오염시키지 않는다)
+const MODE_FILE = join(process.cwd(), "data", "crypto-mode.json");
+const LIVE_FILE = join(process.cwd(), "data", "crypto-live.json");
+const LIVE_EQUITY_FILE = join(process.cwd(), "data", "crypto-live-equity.jsonl");
+const LIVE_SYNC_MS = 60_000; // 실모드 계좌 재동기화 주기
+
+export type TradingMode = "paper" | "real";
 const EQUITY_SNAPSHOT_MS = 5 * 60_000; // 5분 — 시간 단위로는 판단이 성기다 // 1시간마다 에쿼티 스냅샷
 
 export interface CryptoRiskLimits {
@@ -73,6 +83,17 @@ class CryptoDesk extends EventEmitter {
   private altPrices = new Map<string, number>();
   lastError: string | null = null;
   paperSince: string | null = null;
+  /** 거래 모드 — UI 스위치. real이면 rotateTo가 실계좌로 나간다 */
+  mode: TradingMode = "paper";
+  modeSince: string | null = null;
+  modeBy: string | null = null;
+  /** 실계좌 스냅샷 (real 모드에서 60초마다 + 집행 직후 동기화) */
+  liveAccount: LiveAccount | null = null;
+  liveError: string | null = null;
+  /** 실모드 시작 시점의 에쿼티 — 실모드 드로다운·수익률 기준 */
+  liveStartKrw: number | null = null;
+  liveSince: string | null = null;
+  private liveTimer: NodeJS.Timeout | null = null;
   private timer: NodeJS.Timeout | null = null;
   private equityTimer: NodeJS.Timeout | null = null;
   private orderSeq = 0;
@@ -81,11 +102,11 @@ class CryptoDesk extends EventEmitter {
     super();
     const ctx: PipelineContext = {
       positionOf: (symbol) => {
-        const p = this.paperPositions.get(symbol);
+        const p = this.ledger().positions.get(symbol);
         const t = this.lastTickers.get(symbol);
         return p && t ? { qty: p.qty, price: t.trade_price } : null;
       },
-      positionsCount: () => this.paperPositions.size,
+      positionsCount: () => this.ledger().positions.size,
       equity: () => this.equityKrw(),
       maxWeightPct: () => this.limits.maxWeightPct,
       riskCheck: (p) => {
@@ -101,14 +122,121 @@ class CryptoDesk extends EventEmitter {
     this.news = new NewsIngestor({ queryFor: (s) => `${s} crypto`, mockMode: false, sourceId: "news-rss-crypto", market: "crypto" });
   }
 
+  private priceOf(market: string): number {
+    return this.lastTickers.get(market)?.trade_price ?? this.altPrices.get(market) ?? 0;
+  }
+
+  /** 현재 모드의 장부 — 파이프라인·유니버스·상태는 전부 이걸 본다 */
+  ledger(): { cashKrw: number; positions: Map<string, { qty: number; avgKrw: number }> } {
+    if (this.mode === "real") return { cashKrw: this.liveAccount?.cashKrw ?? 0, positions: this.liveAccount?.positions ?? new Map() };
+    return { cashKrw: this.paperCashKrw, positions: this.paperPositions };
+  }
+
   equityKrw(): number {
+    if (this.mode === "real") return this.liveAccount ? liveEquityKrw(this.liveAccount, (m) => this.priceOf(m)) : 0;
     let eq = this.paperCashKrw;
     // paperPositions 키는 심볼("BTC") — 티커 키는 마켓("KRW-BTC")
-    for (const [sym, p] of this.paperPositions) {
-      const px = this.lastTickers.get(`KRW-${sym}`)?.trade_price ?? this.altPrices.get(`KRW-${sym}`) ?? 0;
-      eq += p.qty * px;
-    }
+    for (const [sym, p] of this.paperPositions) eq += p.qty * this.priceOf(`KRW-${sym}`);
     return eq;
+  }
+
+  // ===== 거래 모드 (UI 스위치) =====
+
+  private loadMode() {
+    try {
+      if (existsSync(MODE_FILE)) {
+        const m = JSON.parse(readFileSync(MODE_FILE, "utf-8")) as { mode: TradingMode; since: string; by: string };
+        this.mode = m.mode === "real" ? "real" : "paper"; this.modeSince = m.since ?? null; this.modeBy = m.by ?? null;
+      } else if (config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys()) {
+        // 모드 파일이 없을 때만 env가 부팅 기본값 — 이후로는 UI 스위치가 진실
+        this.mode = "real"; this.modeSince = new Date().toISOString(); this.modeBy = "env:CRYPTO_TRADE_ALLOW_REAL";
+      }
+      if (existsSync(LIVE_FILE)) {
+        const l = JSON.parse(readFileSync(LIVE_FILE, "utf-8")) as { startKrw: number | null; since: string | null };
+        this.liveStartKrw = l.startKrw ?? null; this.liveSince = l.since ?? null;
+      }
+    } catch (e) {
+      logger.warn("거래 모드 복원 실패 — paper로", { error: (e as Error).message });
+      this.mode = "paper";
+    }
+    armReal(this.mode === "real");
+    if (this.mode === "real") logger.warn("⚠️ 실주문 모드로 기동 — 제어 평면 결정이 Upbit 실계좌로 나간다", { since: this.modeSince, by: this.modeBy });
+  }
+
+  private saveMode() {
+    try {
+      mkdirSync(dirname(MODE_FILE), { recursive: true });
+      writeFileSync(MODE_FILE, JSON.stringify({ mode: this.mode, since: this.modeSince, by: this.modeBy }));
+      writeFileSync(LIVE_FILE, JSON.stringify({ startKrw: this.liveStartKrw, since: this.liveSince }));
+    } catch (e) {
+      logger.warn("거래 모드 저장 실패", { error: (e as Error).message });
+    }
+  }
+
+  /** 실계좌 동기화 — 키·허용 IP가 틀리면 여기서 바로 드러난다 */
+  async syncLive(): Promise<LiveAccount> {
+    try {
+      this.liveAccount = await live.sync();
+      this.liveError = null;
+      return this.liveAccount;
+    } catch (e) {
+      this.liveError = (e as Error).message;
+      logger.error("[live] 계좌 동기화 실패", { error: this.liveError });
+      throw e;
+    }
+  }
+
+  /** 보유 알트의 현재가를 티커로 채운다 — 데스크 유니버스 밖 코인도 에쿼티에 들어가야 한다 */
+  private async refreshHeldPrices() {
+    const missing = [...this.ledger().positions.keys()].map((s) => `KRW-${s}`).filter((m) => !this.lastTickers.has(m));
+    if (!missing.length) return;
+    try { for (const t of await upbit.tickers(missing)) if (t.trade_price > 0) this.altPrices.set(t.market, t.trade_price); } catch { /* 다음 주기 */ }
+  }
+
+  private startLiveLoop() {
+    if (this.liveTimer) return;
+    const tick = async () => { try { await this.syncLive(); await this.refreshHeldPrices(); } catch { /* liveError에 남음 */ } };
+    void tick();
+    this.liveTimer = setInterval(() => void tick(), LIVE_SYNC_MS);
+    this.liveTimer.unref();
+  }
+
+  private stopLiveLoop() {
+    if (this.liveTimer) clearInterval(this.liveTimer);
+    this.liveTimer = null;
+  }
+
+  /**
+   * 거래 모드 전환 — owner가 UI에서. real로 갈 때는 계좌 동기화가 성공해야 바뀐다
+   * (키 없음·허용 IP 불일치·권한 부족이 전부 여기서 걸린다). 실패하면 모드는 그대로.
+   */
+  async setMode(mode: TradingMode, by: string): Promise<{ error?: string; account?: LiveAccount }> {
+    if (mode === this.mode) return {};
+    if (mode === "real") {
+      if (!upbit.hasKeys()) return { error: "Upbit 키가 없습니다 — 설정 페이지 금고 또는 환경변수에 넣으세요" };
+      if (riskManager.killSwitchActive) return { error: "킬스위치가 켜져 있습니다 — 해제 후 전환" };
+      let account: LiveAccount;
+      try { account = await this.syncLive(); } catch (e) { return { error: `Upbit 계좌 조회 실패 — 키/허용 IP/권한 확인: ${(e as Error).message}` }; }
+      await this.refreshHeldPrices();
+      this.mode = "real"; this.modeSince = new Date().toISOString(); this.modeBy = by;
+      this.liveSince = this.modeSince; this.liveStartKrw = Math.round(liveEquityKrw(account, (m) => this.priceOf(m)));
+      armReal(true);
+      this.saveMode();
+      this.startLiveLoop();
+      try { mkdirSync(dirname(LIVE_EQUITY_FILE), { recursive: true }); appendFileSync(LIVE_EQUITY_FILE, JSON.stringify({ ts: this.modeSince, equityKrw: this.liveStartKrw, cashKrw: Math.round(account.cashKrw), positions: account.positions.size }) + "\n"); } catch { /* 스냅샷은 다음 주기 */ }
+      logger.warn("⚠️ 실주문 모드 ON", { by, cashKrw: Math.round(account.cashKrw), positions: account.positions.size, equityKrw: this.liveStartKrw });
+      this.pipeline.log("auto-trade", `거래 모드 → REAL (${by}) — 실계좌 ₩${this.liveStartKrw.toLocaleString()}, 보유 ${account.positions.size}종목`);
+      this.emit("mode", this.mode);
+      return { account };
+    }
+    this.mode = "paper"; this.modeSince = new Date().toISOString(); this.modeBy = by;
+    armReal(false);
+    this.stopLiveLoop();
+    this.saveMode();
+    logger.warn("실주문 모드 OFF → paper", { by });
+    this.pipeline.log("auto-trade", `거래 모드 → PAPER (${by})`);
+    this.emit("mode", this.mode);
+    return {};
   }
 
   // ===== 페이퍼 장부 영속화 =====
@@ -154,11 +282,14 @@ class CryptoDesk extends EventEmitter {
 
   private snapshotEquity() {
     if (this.lastTickers.size === 0) return;
+    if (this.mode === "real" && !this.liveAccount) return; // 동기화 전엔 0을 찍지 않는다
+    const file = this.mode === "real" ? LIVE_EQUITY_FILE : EQUITY_FILE;
+    const l = this.ledger();
     try {
-      mkdirSync(dirname(EQUITY_FILE), { recursive: true });
+      mkdirSync(dirname(file), { recursive: true });
       appendFileSync(
-        EQUITY_FILE,
-        JSON.stringify({ ts: new Date().toISOString(), equityKrw: Math.round(this.equityKrw()), cashKrw: Math.round(this.paperCashKrw), positions: this.paperPositions.size }) + "\n",
+        file,
+        JSON.stringify({ ts: new Date().toISOString(), equityKrw: Math.round(this.equityKrw()), cashKrw: Math.round(l.cashKrw), positions: l.positions.size }) + "\n",
       );
     } catch (e) {
       logger.warn("에쿼티 스냅샷 실패", { error: (e as Error).message });
@@ -167,6 +298,7 @@ class CryptoDesk extends EventEmitter {
 
   /** 페이퍼 장부 초기화 — 포지션·주문·에쿼티 기록을 전부 지우고 시드에서 다시 시작한다. 실계좌와 무관(페이퍼 전용) */
   resetPaper(startKrw = PAPER_START_KRW): { startKrw: number; since: string; clearedOrders: number; clearedPositions: number } {
+    if (this.mode === "real") throw new Error("실주문 모드에서는 페이퍼 초기화를 하지 않는다 — 먼저 paper로 전환");
     const clearedOrders = this.orders.length, clearedPositions = this.paperPositions.size;
     this.paperCashKrw = startKrw;
     this.paperPositions = new Map();
@@ -183,9 +315,10 @@ class CryptoDesk extends EventEmitter {
 
   /** 페이퍼 에쿼티 커브 (JSONL → 배열) */
   paperEquity(limit = 2000): Array<{ ts: string; equityKrw: number; cashKrw: number; positions: number }> {
+    const file = this.mode === "real" ? LIVE_EQUITY_FILE : EQUITY_FILE;
     try {
-      if (!existsSync(EQUITY_FILE)) return [];
-      return readFileSync(EQUITY_FILE, "utf-8")
+      if (!existsSync(file)) return [];
+      return readFileSync(file, "utf-8")
         .trim()
         .split("\n")
         .slice(-limit)
@@ -198,6 +331,8 @@ class CryptoDesk extends EventEmitter {
   start() {
     if (this.timer) return;
     this.loadState();
+    this.loadMode();
+    if (this.mode === "real") this.startLiveLoop();
     if (!this.paperSince) {
       this.paperSince = new Date().toISOString();
       this.saveState();
@@ -207,7 +342,7 @@ class CryptoDesk extends EventEmitter {
     setTimeout(() => this.snapshotEquity(), 30_000).unref(); // 기동 직후 1회
     this.pipeline.start(cryptoUniverse.symbols());
     // 유니버스가 바뀌면 파이프라인 추적·뉴스 심볼도 따라간다 — 알트도 신호 엔진의 거래 대상이다
-    cryptoUniverse.attachHeld(() => [...this.paperPositions.keys()].map((s) => `KRW-${s}`));
+    cryptoUniverse.attachHeld(() => [...this.ledger().positions.keys()].map((s) => `KRW-${s}`));
     // 뉴스 RSS는 마켓 15개까지 — 27개를 다 돌리면 Google News가 503을 낸다 (2026-09-03 로컬). 나머지 알트는 시세·호가·워커 데스크로 읽는다
     cryptoUniverse.on("change", (markets: string[]) => { for (const m of markets) this.pipeline.track(COIN_OF(m)); this.news.setSymbols(markets.slice(0, NEWS_SYMBOLS_MAX).map(COIN_OF)); });
     this.pipeline.on("signal", (sig: ExecutionSignal) => void this.onSignal(sig));
@@ -299,20 +434,18 @@ class CryptoDesk extends EventEmitter {
   }
 
   /**
-   * 스캐너 로테이션 — 페이퍼 장부를 타깃 비중으로 맞춘다. **페이퍼 전용**:
-   * 실주문 모드(CRYPTO_TRADE_ALLOW_REAL+키)가 켜져 있으면 거부한다 —
-   * 스캐너 규칙이 페이퍼에서 기록을 증명하기 전에는 실돈에 손대지 않는다.
-   * priceOf: 데스크가 추적하지 않는 알트 마켓의 현재가 (스캐너가 공급).
+   * 제어 평면 집행 — 장부를 타깃 비중으로 맞춘다. 돈 경계는 여기 한 곳:
+   *   paper → 페이퍼 장부 체결 (수수료·슬리피지 부과)
+   *   real  → live.ts로 Upbit 실주문 (킬스위치·주문 수 상한·현금 클램프 통과 후)
+   * priceOf: 데스크가 추적하지 않는 알트 마켓의 현재가 (제어 평면이 공급).
    */
-  rotateTo(
+  async rotateTo(
     targets: Array<{ market: string; weightPct: number }>,
     priceOf: Map<string, number>,
     reason: string,
-  ): { orders: CryptoOrder[]; skipped: string[]; error?: string } {
-    if (config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys()) {
-      return { orders: [], skipped: [], error: "스캐너 로테이션은 페이퍼 전용 — 실주문 모드에서는 거부한다 (페이퍼 기록으로 증명이 먼저)" };
-    }
+  ): Promise<{ orders: CryptoOrder[]; skipped: string[]; error?: string }> {
     for (const [m, px] of priceOf) if (px > 0) this.altPrices.set(m, px);
+    if (this.mode === "real") return this.rotateLive(targets, reason);
     const price = (market: string) => priceOf.get(market) ?? this.lastTickers.get(market)?.trade_price ?? 0;
     // 현재 에쿼티 (스캐너 가격 우선 — 데스크 미추적 알트 포함)
     let equity = this.paperCashKrw;
@@ -401,28 +534,74 @@ class CryptoDesk extends EventEmitter {
     return { orders: done, skipped };
   }
 
+  /** 실주문 계획만 (드라이런) — 계좌를 새로 읽고 주문 목록을 돌려준다. 주문은 나가지 않는다 */
+  async planLive(targets: Array<{ market: string; weightPct: number }>, priceOf?: Map<string, number>) {
+    const account = await this.syncLive();
+    await this.refreshHeldPrices();
+    const prices = new Map<string, number>();
+    for (const m of new Set([...targets.map((t) => t.market), ...[...account.positions.keys()].map((s) => `KRW-${s}`)])) prices.set(m, priceOf?.get(m) || this.priceOf(m));
+    const plan = planRotation({ account, prices, targets, maxOrderKrw: this.limits.maxOrderKrw, feePct: PAPER_FEE_PCT });
+    return { ...plan, gate: live.gate(plan.orders.length), account: { cashKrw: Math.round(account.cashKrw), lockedKrw: Math.round(account.lockedKrw), positions: account.positions.size, syncedAt: account.syncedAt } };
+  }
+
+  private async rotateLive(targets: Array<{ market: string; weightPct: number }>, reason: string): Promise<{ orders: CryptoOrder[]; skipped: string[]; error?: string }> {
+    if (!this.tradeEnabled) return { orders: [], skipped: [], error: "크립토 자동매매 OFF — 실주문 모드지만 집행하지 않는다" };
+    let plan: Awaited<ReturnType<typeof this.planLive>>;
+    try { plan = await this.planLive(targets); } catch (e) { return { orders: [], skipped: [], error: `실계좌 조회 실패 — 집행 취소: ${(e as Error).message}` }; }
+    if (plan.gate) return { orders: [], skipped: plan.skipped, error: plan.gate };
+    if (plan.orders.length === 0) { this.pipeline.log("auto-trade", `실주문 — 보낼 주문 없음 (스킵 ${plan.skipped.length}) — ${reason}`); return { orders: [], skipped: plan.skipped }; }
+    const r = await live.execute(plan.orders, { reason, feePct: PAPER_FEE_PCT });
+    if (r.account) { this.liveAccount = r.account; this.liveError = null; }
+    const orders: CryptoOrder[] = r.fills.map((f) => ({ id: f.uuid, market: f.market, side: f.side, volume: f.volume, priceKrw: +f.priceKrw.toFixed(0), amountKrw: Math.round(f.amountKrw), costKrw: Math.round(f.feeKrw), mode: "real", reason, ts: f.ts }));
+    for (const o of orders.reverse()) this.orders.unshift(o);
+    if (this.orders.length > 100) this.orders.length = 100;
+    this.saveState();
+    this.snapshotEquity();
+    const skipped = [...plan.skipped, ...r.skipped];
+    this.pipeline.log("auto-trade", `⚠️ 실주문 집행 — 체결 ${orders.length}건, 스킵 ${skipped.length}건 [REAL] — ${reason}`);
+    logger.warn("[live] 회전 완료", { fills: orders.length, skipped, reason });
+    return { orders, skipped };
+  }
+
   setTrade(enabled: boolean): string | null {
-    if (enabled && config.CRYPTO_TRADE_ALLOW_REAL && !upbit.hasKeys()) {
-      return "CRYPTO_TRADE_ALLOW_REAL=true인데 Upbit 키가 없습니다 — 키를 넣거나 플래그를 내리세요";
-    }
     this.tradeEnabled = enabled;
-    this.pipeline.log("auto-trade", enabled ? `크립토 자동매매 ON (${config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys() ? "실주문" : "페이퍼"})` : "크립토 자동매매 OFF");
+    this.pipeline.log("auto-trade", enabled ? `크립토 자동매매 ON (${this.mode === "real" ? "실주문" : "페이퍼"})` : "크립토 자동매매 OFF");
     return null;
   }
 
+  modeStatus() {
+    return {
+      mode: this.mode,
+      since: this.modeSince,
+      by: this.modeBy,
+      hasKeys: upbit.hasKeys(),
+      killSwitch: riskManager.killSwitchActive,
+      tradeEnabled: this.tradeEnabled,
+      live: this.liveAccount
+        ? { syncedAt: this.liveAccount.syncedAt, cashKrw: Math.round(this.liveAccount.cashKrw), lockedKrw: Math.round(this.liveAccount.lockedKrw), positions: this.liveAccount.positions.size, equityKrw: Math.round(this.mode === "real" ? this.equityKrw() : liveEquityKrw(this.liveAccount, (m) => this.priceOf(m))), startKrw: this.liveStartKrw, since: this.liveSince, error: this.liveError }
+        : { syncedAt: null, error: this.liveError },
+      limits: { maxOrderKrw: this.limits.maxOrderKrw },
+    };
+  }
+
   status() {
+    const real = this.mode === "real";
+    const l = this.ledger();
     return {
       tradeEnabled: this.tradeEnabled,
-      mode: config.CRYPTO_TRADE_ALLOW_REAL && upbit.hasKeys() ? "real" : "paper",
+      mode: this.mode,
+      modeSince: this.modeSince,
       hasKeys: upbit.hasKeys(),
-      paperSince: this.paperSince,
-      paperStartKrw: PAPER_START_KRW,
+      // real 모드에서는 "since/start"가 실모드 시작 시점·에쿼티 — 드로다운·수익률 기준이 실계좌로 바뀐다
+      paperSince: real ? this.liveSince : this.paperSince,
+      paperStartKrw: real ? (this.liveStartKrw ?? 0) : PAPER_START_KRW,
       costs: { feePct: PAPER_FEE_PCT, slipPct: PAPER_SLIP_PCT },
       markets: cryptoUniverse.markets(),
       equityKrw: Math.round(this.equityKrw()),
-      cashKrw: Math.round(this.paperCashKrw),
-      positions: [...this.paperPositions.entries()].map(([symbol, p]) => {
-        const cur = this.lastTickers.get(`KRW-${symbol}`)?.trade_price ?? this.altPrices.get(`KRW-${symbol}`) ?? 0;
+      cashKrw: Math.round(l.cashKrw),
+      live: real ? { syncedAt: this.liveAccount?.syncedAt ?? null, lockedKrw: Math.round(this.liveAccount?.lockedKrw ?? 0), error: this.liveError } : null,
+      positions: [...l.positions.entries()].map(([symbol, p]) => {
+        const cur = this.priceOf(`KRW-${symbol}`);
         // 평단은 반올림하지 않는다 — ₩0.005짜리 코인의 평단을 0으로 만들어 손익률이 깨졌다 (BONK avg 0)
         return { symbol, qty: p.qty, avgKrw: +p.avgKrw.toPrecision(6), curKrw: cur };
       }),

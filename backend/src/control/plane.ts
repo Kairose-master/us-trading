@@ -18,7 +18,7 @@ import { capTurnover } from "./rebalance.js";
  * 아니면 owner 승인을 기다린다. 실행 뒤에는 각 엔진의 제안이 실제로 어땠는지를 실현
  * 수익으로 추적해 엔진 가중치가 스스로 움직인다(지수 가중, quant/allocator와 같은 규칙).
  *
- * 돈 경계는 그대로: 실행은 cryptoDesk.rotateTo(페이퍼 전용, 실주문 모드면 거부)뿐이다.
+ * 돈 경계는 그대로: 실행은 cryptoDesk.rotateTo뿐이다 — 데스크 거래 모드(UI 스위치)가 paper면 페이퍼 장부, real이면 Upbit 실계좌.
  */
 
 export type EngineId = "office" | "evolution" | "signals";
@@ -253,7 +253,7 @@ class ControlPlane extends EventEmitter {
   }
 
   private async execute(decision: Decision, by: "autopilot" | "operator", reason: string): Promise<Decision> {
-    const r = cryptoDesk.rotateTo(decision.targets, await this.pricesFor(decision.targets), `control plane ${by} — ${decision.contributions.map((c) => c.engine).join("+")} (${reason})`);
+    const r = await cryptoDesk.rotateTo(decision.targets, await this.pricesFor(decision.targets), `control plane ${by} — ${decision.contributions.map((c) => c.engine).join("+")} (${reason})`);
     decision.execution = { ts: new Date().toISOString(), orders: r.orders.length, skipped: r.skipped, ...(r.error ? { error: r.error } : {}) };
     decision.status = r.error ? "rejected" : "executed"; decision.by = by;
     // 제안은 집행 뒤에도 남는다 — 매니저의 마지막 입장이 TTL까지 협의회에 계속 앉아 있어야 정족수가 성립한다

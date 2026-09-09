@@ -1,5 +1,4 @@
 import { createHmac, createHash, randomUUID } from "node:crypto";
-import { config } from "../config.js";
 import { upbitKeys } from "../auth/credentials.js";
 import { egressFetch } from "../core/egress.js";
 
@@ -7,7 +6,7 @@ import { egressFetch } from "../core/egress.js";
  * Upbit REST 클라이언트 — 의존성 zero.
  * 공개(시세/캔들/호가): 키 불필요, 항상 실데이터.
  * 개인(계좌/주문): JWT(HS256, query_hash=SHA512) — UPBIT_ACCESS_KEY/SECRET_KEY
- * 가 있어야 하고, 주문은 CRYPTO_TRADE_ALLOW_REAL까지 켜져야 나간다.
+ * 가 있어야 하고, 주문은 데스크가 거래 모드를 real로 무장(armReal)해야 나간다.
  * 개인 호출은 EXCHANGE_PROXY_URL이 있으면 고정 IP 프록시를 거친다(허용 IP 등록용,
  * src/core/egress.ts). 공개 호출은 프록시 한도를 아끼려 항상 직접 나간다.
  * 공개 레이트리밋(초당 10회/IP)을 넘지 않도록 폴링 주기는 데스크에서 관리.
@@ -40,6 +39,37 @@ export interface UpbitOrderbook {
   market: string;
   orderbook_units: UpbitOrderbookUnit[];
 }
+
+/** GET /v1/accounts 한 줄 — balance는 가용, locked는 미체결 주문에 묶인 양 */
+export interface UpbitAccount {
+  currency: string;
+  balance: string;
+  locked: string;
+  avg_buy_price: string;
+  unit_currency: string;
+}
+
+/** POST /v1/orders · GET /v1/order 응답 (필요한 필드만) */
+export interface UpbitOrderState {
+  uuid: string;
+  side: "bid" | "ask";
+  ord_type: string;
+  state: "wait" | "watch" | "done" | "cancel";
+  market: string;
+  volume: string | null;
+  executed_volume: string;
+  paid_fee: string;
+  price: string | null;
+  trades?: Array<{ price: string; volume: string; funds: string }>;
+}
+
+/**
+ * 실주문 무장 플래그 — 데스크가 거래 모드를 real로 바꿀 때만 켠다 (UI 스위치).
+ * placeOrder는 이 플래그 없이는 절대 나가지 않는다. 환경변수로는 켤 수 없다.
+ */
+let realArmed = false;
+export function armReal(on: boolean) { realArmed = on; }
+export function isRealArmed() { return realArmed; }
 
 export interface UpbitCandle {
   market: string;
@@ -161,17 +191,28 @@ export const upbit = {
     return `${head}.${body}.${sig}`;
   },
 
-  async accounts(): Promise<Array<{ currency: string; balance: string; avg_buy_price: string }>> {
+  async accounts(): Promise<UpbitAccount[]> {
     const res = await egressFetch("upbit", `${BASE}/accounts`, {
       headers: { Authorization: `Bearer ${this.authToken()}` },
       signal: AbortSignal.timeout(TIMEOUT),
     });
-    if (!res.ok) throw new Error(`Upbit /accounts → HTTP ${res.status}`);
-    return (await res.json()) as Array<{ currency: string; balance: string; avg_buy_price: string }>;
+    if (!res.ok) throw new Error(`Upbit /accounts → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return (await res.json()) as UpbitAccount[];
+  },
+
+  /** 주문 단건 조회 — 시장가 체결 확인용 (state: wait/watch/done/cancel) */
+  async order(uuid: string): Promise<UpbitOrderState> {
+    const query = `uuid=${encodeURIComponent(uuid)}`;
+    const res = await egressFetch("upbit", `${BASE}/order?${query}`, {
+      headers: { Authorization: `Bearer ${this.authToken(query)}` },
+      signal: AbortSignal.timeout(TIMEOUT),
+    });
+    if (!res.ok) throw new Error(`Upbit /order → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return (await res.json()) as UpbitOrderState;
   },
 
   /**
-   * 실주문 — CRYPTO_TRADE_ALLOW_REAL + 키가 전부 있어야 나간다.
+   * 실주문 — 데스크가 실주문 모드로 무장(armReal)했고 키가 있어야 나간다.
    * side: bid(매수)/ask(매도) · ord_type: price(시장가 매수, price=KRW금액),
    * market(시장가 매도, volume=수량), limit(지정가, 둘 다)
    */
@@ -181,9 +222,10 @@ export const upbit = {
     ord_type: "limit" | "price" | "market";
     volume?: string;
     price?: string;
-  }): Promise<{ uuid: string }> {
-    if (!config.CRYPTO_TRADE_ALLOW_REAL) {
-      throw new Error("실주문 차단 — CRYPTO_TRADE_ALLOW_REAL=true 없이 Upbit 주문은 나가지 않는다");
+    identifier?: string;
+  }): Promise<UpbitOrderState> {
+    if (!realArmed) {
+      throw new Error("실주문 차단 — 데스크 거래 모드가 real이 아니면 Upbit 주문은 나가지 않는다");
     }
     const params = new URLSearchParams();
     params.set("market", p.market);
@@ -191,6 +233,7 @@ export const upbit = {
     params.set("ord_type", p.ord_type);
     if (p.volume) params.set("volume", p.volume);
     if (p.price) params.set("price", p.price);
+    if (p.identifier) params.set("identifier", p.identifier);
     const query = params.toString();
     const res = await egressFetch("upbit", `${BASE}/orders`, {
       method: "POST",
@@ -202,6 +245,6 @@ export const upbit = {
       signal: AbortSignal.timeout(TIMEOUT),
     });
     if (!res.ok) throw new Error(`Upbit 주문 실패 → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-    return (await res.json()) as { uuid: string };
+    return (await res.json()) as UpbitOrderState;
   },
 };

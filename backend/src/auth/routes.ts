@@ -19,6 +19,12 @@ export function requireSession(req: AuthedRequest, res: Response, next: NextFunc
   next();
 }
 
+/** owner만 — 거래 모드 전환처럼 돈 경계를 바꾸는 쓰기 */
+export function requireOwner(req: AuthedRequest, res: Response, next: NextFunction) {
+  if (req.user?.role !== "owner") return res.status(403).json({ error: "owner 계정만 할 수 있습니다", code: "NOT_OWNER" });
+  next();
+}
+
 // 로그인 시도 제한 — IP당 10분에 20회
 const attempts = new Map<string, number[]>();
 function throttled(ip: string): boolean {
