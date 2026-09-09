@@ -85,13 +85,20 @@ async function echoIp(viaProxy: string | null): Promise<string> {
 }
 
 /**
- * 실제로 나가는 IP 확인 — direct는 Railway 컨테이너의 현재 IP(고정 아님),
- * proxy는 거래소가 보게 될 IP(허용 IP에 등록할 값). 프록시 호출 1회를 소모한다.
+ * 실제로 나가는 IP 확인 — direct는 컨테이너가 직접 나갈 때의 IP(Railway Static IP를
+ * 켰으면 3개 중 하나가 로드밸런싱으로 잡히므로 몇 번 샘플링해 전부 모은다),
+ * proxy는 EXCHANGE_PROXY_URL을 거친 IP. 거래소 허용 IP에는 directSeen 전부
+ * (프록시를 쓸 땐 proxy)를 등록한다. 프록시가 있으면 프록시 요청 1회를 소모한다.
  */
-export async function egressCheck(): Promise<{ direct: string | null; proxy: string | null; error?: string }> {
-  const out: { direct: string | null; proxy: string | null; error?: string } = { direct: null, proxy: null };
+export async function egressCheck(samples = 3): Promise<{ direct: string | null; directSeen: string[]; proxy: string | null; error?: string }> {
+  const out: { direct: string | null; directSeen: string[]; proxy: string | null; error?: string } = { direct: null, directSeen: [], proxy: null };
   const errs: string[] = [];
-  try { out.direct = await echoIp(null); } catch (e) { errs.push(`direct: ${(e as Error).message}`); }
+  const seen = new Set<string>();
+  for (let i = 0; i < Math.max(1, samples); i++) {
+    try { seen.add(await echoIp(null)); } catch (e) { if (i === 0) errs.push(`direct: ${(e as Error).message}`); }
+  }
+  out.directSeen = [...seen];
+  out.direct = out.directSeen[0] ?? null;
   const url = config.EXCHANGE_PROXY_URL.trim();
   if (url) {
     try { out.proxy = await echoIp(url); } catch (e) { errs.push(`proxy: ${(e as Error).message}`); }

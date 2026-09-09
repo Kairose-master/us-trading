@@ -290,12 +290,14 @@ router.post("/autotrade", (req, res) => {
 });
 
 // ===== 아웃바운드 IP (거래소 허용 IP 등록용) =====
-// ?check=1 이면 ipify로 실제 나가는 IP를 잰다 — direct(컨테이너, 고정 아님) vs
-// proxy(거래소가 볼 IP = 허용 IP에 넣을 값). 프록시 요청 1회 소모.
+// ?check=1 이면 ipify로 실제 나가는 IP를 잰다. directSeen = 컨테이너가 직접 나갈 때
+// 보이는 IP들(Railway Static IP면 3개가 번갈아 나오므로 ?samples=6 정도로 전부 모을 것),
+// proxy = EXCHANGE_PROXY_URL을 거친 IP. 허용 IP에는 그 값들을 등록한다.
 router.get("/system/egress", async (req, res) => {
   const status = egressStatus();
   if (!("check" in req.query)) return res.json(status);
-  res.json({ ...status, ...(await egressCheck()) });
+  const samples = Math.min(10, Math.max(1, Number(req.query.samples ?? 3) || 3));
+  res.json({ ...status, ...(await egressCheck(samples)) });
 });
 
 // ===== 크립토 (Upbit — 항상 실데이터) =====
