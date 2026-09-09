@@ -5,6 +5,7 @@ import { KIS, EXCH_CODE } from "./endpoints.js";
 import { tokenManager } from "./auth.js";
 import { RateLimiter } from "../core/rateLimiter.js";
 import { logger } from "../core/logger.js";
+import { axiosEgress } from "../core/egress.js";
 import type { Exchange, Side, OrderType, Session } from "./types.js";
 
 /**
@@ -18,7 +19,7 @@ class KisClient {
   readonly limiter = new RateLimiter(2, 4); // 보수적으로 2req/s (신규계정 제한 대응)
 
   constructor() {
-    this.http = axios.create({ baseURL: config.kisBaseUrl, timeout: 10_000 });
+    this.http = axios.create({ baseURL: config.kisBaseUrl, timeout: 10_000, ...axiosEgress("kis") });
   }
 
   private async headers(trId: string) {

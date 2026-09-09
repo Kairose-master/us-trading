@@ -68,6 +68,53 @@
   서버리스 워커와 달리 이쪽은 상시 파이프라인 상태를 담은 툴까지 서빙.
   Handsel에 붙일 땐 `MCP_AUTH_TOKEN`을 별도로 설정할 것.
 
+## 허용 IP — Upbit 키를 넣을 때 (고정 IP 프록시)
+
+Upbit Open API 키는 발급 때 **허용 IP**를 반드시 등록해야 하고, 다른 IP에서
+부르면 `no_authorization_ip`로 거부된다. 그런데 Railway Hobby는 나가는 IP가
+고정이 아니다 — 재배포하면 바뀔 수 있어서 지금 IP를 등록해도 언젠가 깨진다.
+고정 IP는 Railway Pro($20/월, Settings → Networking → Static IPs)에만 있다.
+
+Pro 없이 가는 방법: **고정 IP HTTP 프록시**를 두고, 백엔드가 Upbit **인증
+호출(계좌/주문)만** 그 프록시로 보낸다 (`backend/src/core/egress.ts`). 시세·캔들
+같은 공개 호출은 여전히 직접 나가서 프록시 한도를 안 쓴다. 인증 호출은 주문 때만
+나가므로 무료 티어로 충분하다.
+
+무료 티어 현황(2026-09): **Fixie** 무료 플랜 월 500회(HTTP 프록시). QuotaGuard는
+무료 플랜이 없어졌다(3일 체험 후 $19/월).
+
+1. https://app.usefixie.com 가입 → 무료 플랜(Tricycle) → 대시보드에서
+   **프록시 URL**(`http://fixie:비밀번호@velodrome.usefixie.com:80` 형태)과
+   **아웃바운드 IP 2개**를 확인.
+2. Railway → 백엔드 서비스 → **Variables**에 추가 → 자동 재배포:
+
+   | 변수 | 값 |
+   |---|---|
+   | `EXCHANGE_PROXY_URL` | Fixie 프록시 URL (비밀번호 포함) |
+   | `EXCHANGE_PROXY_TARGETS` | `upbit` (기본값이라 생략 가능. KIS는 허용 IP가 없어 넣을 이유 없음) |
+
+3. 재배포 후 실제로 나가는 IP를 확인 (프록시 요청 1회 소모):
+   ```bash
+   curl -H "Authorization: Bearer <토큰>" "https://<도메인>/api/system/egress?check=1"
+   # {"configured":true,"proxy":"http://velodrome.usefixie.com","targets":["upbit"],
+   #  "direct":"<Railway 현재 IP — 고정 아님>","proxy":"<Fixie IP — 이걸 등록>"}
+   ```
+   `proxy`가 Fixie 대시보드의 IP 중 하나와 같으면 정상. `check` 없이 부르면
+   설정만 보여주고 요청을 소모하지 않는다.
+4. Upbit → 마이페이지 → Open API 관리 → 키 발급/수정 → **허용 IP에 Fixie IP 2개
+   전부** 등록. 그 다음 `UPBIT_ACCESS_KEY`/`UPBIT_SECRET_KEY`를 Railway Variables
+   또는 설정 페이지 금고에 넣는다.
+
+**Vercel(대시보드)에는 넣을 게 없다.** 프론트는 거래소를 직접 부르지 않고
+`/api/backend/*` 프록시로 이 백엔드만 부른다. Vercel 서버리스도 IP가 고정이
+아니지만 Upbit와 통신하는 건 Railway 백엔드뿐이라 상관없다. Vercel 변수는
+기존대로 `BACKEND_TOKEN` 하나면 된다.
+
+알아둘 것: 무료 500회/월은 인증 호출에만 쓰이지만, 잔고 폴링 같은 걸 나중에
+추가하면 금방 소진된다(1분 폴링 = 월 4만 회). 그때는 Fixie Commuter($5/월,
+2,500회)나 Railway Pro로 올릴 것. 프록시 URL엔 비밀번호가 들어 있으니 로그/상태
+응답엔 host만 찍힌다.
+
 ## 새 커밋이 배포되지 않을 때 (구 빌드가 계속 살아 있음)
 
 Railway는 빌드가 실패하면 마지막 성공 배포를 그대로 둔다. `/health`는 200인데

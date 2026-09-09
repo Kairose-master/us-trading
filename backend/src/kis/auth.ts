@@ -1,4 +1,5 @@
 import axios from "axios";
+import { axiosEgress } from "../core/egress.js";
 import { config } from "../config.js";
 import { kisKeys } from "../auth/credentials.js";
 import { KIS } from "./endpoints.js";
@@ -32,7 +33,7 @@ class TokenManager {
       grant_type: "client_credentials",
       appkey: (kisKeys()?.appKey ?? ""),
       appsecret: (kisKeys()?.appSecret ?? ""),
-    });
+    }, axiosEgress("kis"));
     this.token = res.data.access_token as string;
     // expires_in은 초 단위
     this.expiresAt = Date.now() + Number(res.data.expires_in ?? 86400) * 1000;
@@ -46,7 +47,7 @@ class TokenManager {
       grant_type: "client_credentials",
       appkey: (kisKeys()?.appKey ?? ""),
       secretkey: (kisKeys()?.appSecret ?? ""), // 주의: 이 엔드포인트만 'secretkey' 키를 씀
-    });
+    }, axiosEgress("kis"));
     return res.data.approval_key as string;
   }
 }

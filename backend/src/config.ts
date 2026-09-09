@@ -57,6 +57,11 @@ const Env = z.object({
     .string()
     .default("true")
     .transform(asBool),
+  // ===== 거래소 아웃바운드 고정 IP 프록시 (src/core/egress.ts) =====
+  // Fixie 등 HTTP 프록시 URL(http://user:pw@host:port). 비우면 전부 직접 호출.
+  EXCHANGE_PROXY_URL: z.string().default(""),
+  // 프록시를 거칠 대상(콤마 구분: upbit,kis). 기본 upbit — 인증 호출만 경유한다.
+  EXCHANGE_PROXY_TARGETS: z.string().default("upbit"),
   // ===== 오피스 결정 루프 (Handsel 오피스 대화 → 결정 → 페이퍼 매매) =====
   // Handsel MCP 엔드포인트 — 기본 테스트넷(무가치 USDC). 메인넷(handsel-main)은
   // OFFICE_ALLOW_REAL_MONEY=true 없이는 escrow 거부.

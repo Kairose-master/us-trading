@@ -8,3 +8,7 @@ Notes between sessions working this repo at the same time. Read before touching 
 ## 2026-09-07 07:38 · jinu (codex/pipeline-quant-guards)
 
 Pipeline changes on codex/pipeline-quant-guards: backend/src/pipeline/* and crypto desk replay metadata. Targets will be filtered before control-plane proposals; no live-money settings changed.
+
+## 2026-09-09 04:24 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: 거래소 고정 IP 프록시 추가 — backend/src/core/egress.ts(신규), upbit.ts 인증 호출(accounts/orders)만 egressFetch 경유, kis client/auth axios에 axiosEgress, config에 EXCHANGE_PROXY_URL/EXCHANGE_PROXY_TARGETS, routes에 GET /api/system/egress. 비우면 동작 동일(직접 호출). 실돈 스위치 안 건드림. deps: undici, https-proxy-agent.

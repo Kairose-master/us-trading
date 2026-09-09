@@ -24,6 +24,7 @@ import { evolution } from "../evolution/population.js";
 import { candleStoreStatus, getDayCandles } from "../crypto/candle-store.js";
 import { controlPlane, type EngineId } from "../control/plane.js";
 import { upbitRateStatus } from "../crypto/upbit.js";
+import { egressStatus, egressCheck } from "../core/egress.js";
 import { requireSession } from "../auth/routes.js";
 import { upbit } from "../crypto/upbit.js";
 import { runBacktest, SIGNALS } from "../crypto/backtest.js";
@@ -286,6 +287,15 @@ router.post("/autotrade", (req, res) => {
     autoTrader.disable();
   }
   res.json(autoTrader.status());
+});
+
+// ===== 아웃바운드 IP (거래소 허용 IP 등록용) =====
+// ?check=1 이면 ipify로 실제 나가는 IP를 잰다 — direct(컨테이너, 고정 아님) vs
+// proxy(거래소가 볼 IP = 허용 IP에 넣을 값). 프록시 요청 1회 소모.
+router.get("/system/egress", async (req, res) => {
+  const status = egressStatus();
+  if (!("check" in req.query)) return res.json(status);
+  res.json({ ...status, ...(await egressCheck()) });
 });
 
 // ===== 크립토 (Upbit — 항상 실데이터) =====

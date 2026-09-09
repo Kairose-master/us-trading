@@ -1,12 +1,15 @@
 import { createHmac, createHash, randomUUID } from "node:crypto";
 import { config } from "../config.js";
 import { upbitKeys } from "../auth/credentials.js";
+import { egressFetch } from "../core/egress.js";
 
 /**
  * Upbit REST 클라이언트 — 의존성 zero.
  * 공개(시세/캔들/호가): 키 불필요, 항상 실데이터.
  * 개인(계좌/주문): JWT(HS256, query_hash=SHA512) — UPBIT_ACCESS_KEY/SECRET_KEY
  * 가 있어야 하고, 주문은 CRYPTO_TRADE_ALLOW_REAL까지 켜져야 나간다.
+ * 개인 호출은 EXCHANGE_PROXY_URL이 있으면 고정 IP 프록시를 거친다(허용 IP 등록용,
+ * src/core/egress.ts). 공개 호출은 프록시 한도를 아끼려 항상 직접 나간다.
  * 공개 레이트리밋(초당 10회/IP)을 넘지 않도록 폴링 주기는 데스크에서 관리.
  */
 
@@ -159,7 +162,7 @@ export const upbit = {
   },
 
   async accounts(): Promise<Array<{ currency: string; balance: string; avg_buy_price: string }>> {
-    const res = await fetch(`${BASE}/accounts`, {
+    const res = await egressFetch("upbit", `${BASE}/accounts`, {
       headers: { Authorization: `Bearer ${this.authToken()}` },
       signal: AbortSignal.timeout(TIMEOUT),
     });
@@ -189,7 +192,7 @@ export const upbit = {
     if (p.volume) params.set("volume", p.volume);
     if (p.price) params.set("price", p.price);
     const query = params.toString();
-    const res = await fetch(`${BASE}/orders`, {
+    const res = await egressFetch("upbit", `${BASE}/orders`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.authToken(query)}`,
