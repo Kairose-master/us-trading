@@ -28,3 +28,7 @@ claude/railway-deployment-ip-m01okr: 프론트 크립토/미국주식 화면 분
 ## 2026-09-10 00:37 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: 제어 평면 장부를 거래 모드별 파일로 분리 — plane.useMode(mode)가 data/control/state-live.json / benchmark-live.json 을 열고, 데스크 loadMode/setMode가 부른다. readState(file)는 null 반환 가능(호출부 fresh()). status()에 ledger:{mode,since} 추가.
+
+## 2026-09-10 00:46 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: 제어 평면에 기대 엣지 게이트 추가 — control/edge.ts(순수), plane.ts markTick이 시장별 드리프트(state.drift) 갱신, arbitrate가 회전 검사 뒤 edgeGate로 skipped 처리. 정책 필드 edgeGate/edgeZ/edgeHalfLifeMarks 추가(기본 true/1/72). Decision.edge, status.edge 추가. 프론트 command-center에 토글·표시.

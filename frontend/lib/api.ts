@@ -601,6 +601,8 @@ export interface ControlDecision {
   execution: { ts: string; orders: number; skipped: string[]; error?: string } | null
   by: "autopilot" | "operator" | null
   outcome?: { fromEquityKrw: number; toEquityKrw: number; pct: number; marks: number; closedAt: string | null }
+  /** 기대 엣지 게이트 — 다음 집행까지 기대 증분 수익(하한) vs 리밸런스 비용 */
+  edge?: { costPct: number; expectedPct: number; sdPct: number; lowerPct: number; horizonMarks: number; z: number; coverage: number; pass: boolean; why: string }
   shadow?: { mode: "quorum" | "weighted"; targets: ControlTarget[]; cashPct: number; summary: string[] }
   council?: {
     rounds: Array<{ round: number; title: string; positions: Array<{ manager: ControlManagerId; market: string; stance: "SUPPORT" | "OPPOSE" | "ABSTAIN" | "VETO"; weightPct: number | null; reason: string }>; notes: string[] }>
@@ -655,6 +657,10 @@ export interface ControlPolicy {
   eta: number
   councilMode: "quorum" | "weighted"
   convictionMin: number
+  /** 기대 엣지 게이트 — 하한(기대 − z·σ)이 비용을 넘어야 집행 */
+  edgeGate?: boolean
+  edgeZ?: number
+  edgeHalfLifeMarks?: number
 }
 export interface CouncilModeStat { mode: "quorum" | "weighted"; active: boolean; marks: number; hits: number; hitRate: number | null; cumReturnPct: number; decisions: number; targets: ControlTarget[] }
 export interface ControlBenchmark {
@@ -678,6 +684,8 @@ export interface ControlStatus {
   mode: string
   /** 이 협의회 장부의 기록 시작 — 실모드면 실주문 개시 시점 */
   ledger?: { mode: "paper" | "real"; since: string | null }
+  /** 엣지 게이트 재료 — 드리프트를 추적 중인 시장 수, 판단 가능한 시장 수, 지평(마크), 편도 비용 */
+  edge?: { markets: number; ready: number; minMarks: number; horizonMarks: number; oneWayCostPct: number }
   killSwitch: boolean
   policy: ControlPolicy
   managers: ControlManager[]

@@ -236,7 +236,7 @@ function DecisionCard({ d, pending, onApprove, onReject, busy, auto }: { d: Cont
         <span className="ml-auto font-mono text-[11px] tnum text-muted-foreground">회전율 {d.turnoverPct.toFixed(1)}%{d.execution ? ` · 주문 ${d.execution.orders}건` : ""}{d.execution?.error ? ` · ${d.execution.error}` : ""}{d.outcome ? <span className={cn("ml-1", d.outcome.pct > 0 ? "text-emerald-300" : d.outcome.pct < 0 ? "text-rose-300" : "")}> · 결과 {d.outcome.pct >= 0 ? "+" : ""}{d.outcome.pct.toFixed(2)}%{d.outcome.closedAt ? "" : " (진행)"}</span> : null}</span>
       </div>
       <button type="button" onClick={() => setOpen((o) => !o)} className="mt-2 text-[11px] text-muted-foreground underline-offset-2 hover:underline">
-        {open ? "근거 접기" : `근거 ${d.rationale.length}줄 · 제약 ${d.constraints.length}건`}
+        {open ? "근거 접기" : `근거 ${d.rationale.length}줄 · 제약 ${d.constraints.length}건`}{d.edge && <span className={cn("ml-2 font-mono", d.edge.pass ? "text-emerald-300" : "text-rose-300")} title={d.edge.why}>엣지 {d.edge.expectedPct >= 0 ? "+" : ""}{d.edge.expectedPct.toFixed(3)}% (하한 {d.edge.lowerPct >= 0 ? "+" : ""}{d.edge.lowerPct.toFixed(3)}%) vs 비용 {d.edge.costPct.toFixed(3)}% · {d.edge.horizonMarks}마크 · {d.edge.pass ? "통과" : "미달"}</span>}
       </button>
       {open && d.council && (
         <div className="mt-2 rounded-md border border-border/70 bg-muted/20 p-2">
@@ -379,6 +379,13 @@ export function CommandCenter() {
           <span>집행 간격 ≥ {s.policy.minIntervalMin}분</span>
           <span>제안 유효 {s.policy.proposalTtlH}h</span>
           <span>마지막 집행 {s.lastExecutedAt ? ago(s.lastExecutedAt) : "없음"}</span>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border/70 bg-muted/20 px-3 py-2 font-mono text-[11px] tnum">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">엣지 게이트 · 다음 집행까지 기대 수익 하한 &gt; 비용일 때만 집행</span>
+          <button type="button" disabled={busy} onClick={() => void run(() => setControlPolicy({ edgeGate: !(s.policy.edgeGate ?? true) }), (s.policy.edgeGate ?? true) ? "엣지 게이트 OFF — 비용과 무관하게 집행" : "엣지 게이트 ON — 기대 수익 하한이 비용을 넘어야 집행")} className={cn("rounded-md border px-2 py-0.5 font-semibold", (s.policy.edgeGate ?? true) ? "border-emerald-400/60 text-emerald-300" : "border-border text-muted-foreground")}>{(s.policy.edgeGate ?? true) ? "ON" : "OFF"}</button>
+          <span>z = {s.policy.edgeZ ?? 1}σ</span>
+          <span>반감기 {s.policy.edgeHalfLifeMarks ?? 72}마크</span>
+          {s.edge && <><span>지평 {s.edge.horizonMarks}마크 (집행 간격)</span><span>편도 비용 {s.edge.oneWayCostPct.toFixed(2)}%</span><span className="text-muted-foreground">드리프트 {s.edge.ready}/{s.edge.markets}시장 준비 (최소 {s.edge.minMarks}마크)</span></>}
         </div>
         {(() => {
           const b = s.benchmark

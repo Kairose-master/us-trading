@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
 import { cryptoDesk, type TradingMode } from "../crypto/desk.js";
+import { edgeGate, updateDrift, type EdgeRead, type MarketDrift } from "./edge.js";
 import { cryptoUniverse } from "../crypto/universe.js";
 import { upbit } from "../crypto/upbit.js";
 import { riskManager } from "../risk/riskManager.js";
@@ -57,6 +58,8 @@ export interface Decision {
   shadow?: { mode: CouncilMode; targets: Target[]; cashPct: number; summary: string[] };
   /** 집행된 결정의 실현 결과 — 다음 집행까지 장부 에쿼티 변화 (5분 마크) */
   outcome?: { fromEquityKrw: number; toEquityKrw: number; pct: number; marks: number; closedAt: string | null };
+  /** 기대 엣지 게이트 — 다음 집행까지의 기대 증분 수익 하한 vs 비용 (edge.ts) */
+  edge?: EdgeRead;
 }
 export interface EngineState {
   id: EngineId;
@@ -86,7 +89,9 @@ interface State {
   pending: Decision | null;
   lastExecutedAt: string | null;
   lastMarkedDate: string | null;
-  policy: { maxWeightPct: number; maxPositions: number; cashFloorPct: number; grossMaxPct: number; minTurnoverPct: number; maxTurnoverPct: number; minIntervalMin: number; proposalTtlH: number; eta: number; councilMode: CouncilMode; convictionMin: number };
+  policy: { maxWeightPct: number; maxPositions: number; cashFloorPct: number; grossMaxPct: number; minTurnoverPct: number; maxTurnoverPct: number; minIntervalMin: number; proposalTtlH: number; eta: number; councilMode: CouncilMode; convictionMin: number; edgeGate: boolean; edgeZ: number; edgeHalfLifeMarks: number };
+  /** 시장별 5분 마크 드리프트 (EW 평균·분산) — 기대 엣지 게이트의 재료. 시장 데이터라 장부 전환 때 이어받는다 */
+  drift: Record<string, MarketDrift>;
   /** 의결 방식별 그림자 성적 — 두 방식이 같은 제안 위에서 각각 냈을 포트폴리오를 틱마다 실시세로 마킹 */
   modeStats: Record<CouncilMode, { targets: Target[]; lastMarkPrices: Record<string, number> | null; returns: number[]; marks: number; hits: number; cumReturnPct: number; decisions: number }>;
 }
@@ -96,12 +101,14 @@ interface State {
 const FILE_OF = (mode: TradingMode) => join(process.cwd(), "data", "control", mode === "real" ? "state-live.json" : "state.json");
 // 집행 간격 60분·최소 회전 8% — 15분마다 오는 신호 제안까지 전부 집행하면 장부가 잔거래로 오염된다 (2026-09-02 실제로 그랬다)
 // 한 번의 집행이 장부의 25% 넘게 갈아엎지 못한다 — 진화 스쿼드가 바뀌면 56%가 한 시간에 회전했다(2026-09-03 01:20). 목표까지는 여러 집행에 걸쳐 조금씩 간다
-const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, maxTurnoverPct: 25, minIntervalMin: 60, proposalTtlH: 30, eta: 8, councilMode: "quorum", convictionMin: 0.34 };
+// 기대 엣지 게이트(edge.ts): 다음 집행까지의 기대 증분 수익 하한(z=1σ)이 리밸런스 비용을 넘어야 집행. 드리프트 반감기 6h(72마크)
+const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, maxTurnoverPct: 25, minIntervalMin: 60, proposalTtlH: 30, eta: 8, councilMode: "quorum", convictionMin: 0.34, edgeGate: true, edgeZ: 1, edgeHalfLifeMarks: 72 };
+const EDGE_MIN_MARKS = 6; // 시장별 최소 이력 (30분) — 그 전엔 그 시장을 기대에 넣지 않는다
 const freshModeStat = () => ({ targets: [] as Target[], lastMarkPrices: null as Record<string, number> | null, returns: [] as number[], marks: 0, hits: 0, cumReturnPct: 0, decisions: 0 });
 
 function fresh(): State {
   const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0, marks: 0, hits: 0, lastMarkPrices: null, lastMarkAt: null }])) as unknown as Record<EngineId, EngineState>;
-  return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY, modeStats: { quorum: freshModeStat(), weighted: freshModeStat() } };
+  return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY, modeStats: { quorum: freshModeStat(), weighted: freshModeStat() }, drift: {} };
 }
 function readState(file: string): State | null {
   try {
@@ -112,6 +119,7 @@ function readState(file: string): State | null {
       for (const e of ENGINES) { const x = st.engines[e.id]; x.marks ??= 0; x.hits ??= 0; x.lastMarkPrices ??= null; x.lastMarkAt ??= null; }
       // 스캐너는 엔진에서 빠졌다 — 남은 상태·제안은 버린다 (유니버스 층으로 옮겨감)
       st.modeStats ??= { quorum: freshModeStat(), weighted: freshModeStat() };
+      st.drift ??= {};
       const known = new Set<string>(ENGINES.map((e) => e.id));
       for (const k of Object.keys(st.engines)) if (!known.has(k)) delete (st.engines as Record<string, unknown>)[k];
       st.proposals = st.proposals.filter((p) => known.has(p.engine));
@@ -156,6 +164,7 @@ class ControlPlane extends EventEmitter {
       for (const e of ENGINES) { st.engines[e.id].enabled = prev.engines[e.id].enabled; st.engines[e.id].weight = prev.engines[e.id].weight; st.engines[e.id].lastProposal = prev.engines[e.id].lastProposal; }
       const now = Date.now();
       st.proposals = prev.proposals.filter((p) => Date.parse(p.expiresAt) > now);
+      st.drift = { ...prev.drift }; // 시장 드리프트는 장부가 아니라 시장 데이터 — 새 장부에서도 게이트가 바로 판단할 수 있게
     }
     this.ledgerMode = mode; this.file = file; this.st = st;
     this.save();
@@ -190,6 +199,7 @@ class ControlPlane extends EventEmitter {
       ledger: { mode: this.ledgerMode, since: desk.paperSince },
       killSwitch: riskManager.killSwitchActive,
       policy: this.st.policy,
+      edge: { ...this.driftSummary(), horizonMarks: Math.max(1, Math.round(this.st.policy.minIntervalMin / Math.max(1, config.CONTROL_TICK_MIN))), oneWayCostPct: desk.costs.feePct + desk.costs.slipPct },
       managers: MANAGERS.map((m) => { const e = ENGINES.some((x) => x.id === m.id) ? this.st.engines[m.id as EngineId] : null; return { ...m, enabled: e ? e.enabled : true, weight: e ? +e.weight.toFixed(4) : null, lastProposal: e?.lastProposal ?? null, cumReturnPct: e ? +e.cumReturnPct.toFixed(2) : null }; }),
       engines: ENGINES.map((e) => { const s = this.st.engines[e.id]; return { ...e, enabled: s.enabled, weight: +s.weight.toFixed(4), share: s.enabled ? +(s.weight / wsum).toFixed(3) : 0, lastProposal: s.lastProposal, proposals: s.proposals, cumReturnPct: +s.cumReturnPct.toFixed(2), days: s.returns.length, marks: s.marks, hits: s.hits, hitRate: s.marks ? +(s.hits / s.marks).toFixed(3) : null, avgIntervalPct: s.returns.length ? +((s.returns.reduce((a, x) => a + x, 0) / s.returns.length) * 100).toFixed(4) : null, lastMarkAt: s.lastMarkAt }; }),
       attribution: this.attribution(),
@@ -270,6 +280,15 @@ class ControlPlane extends EventEmitter {
     if (this.st.paused) { decision.status = "blocked"; decision.rationale.push(`paused by ${this.st.pausedBy ?? "operator"} at ${this.st.pausedAt ?? "?"} — resume to execute`); this.push(decision); logger.info("[control] blocked — paused"); return decision; }
     const sinceLast = this.st.lastExecutedAt ? (Date.now() - Date.parse(this.st.lastExecutedAt)) / 60_000 : Infinity;
     if (turnover < pol.minTurnoverPct) { decision.status = "skipped"; decision.rationale.push(`turnover ${turnover.toFixed(1)}% < ${pol.minTurnoverPct}% — nothing worth trading`); this.push(decision); return decision; }
+    // 기대 엣지 게이트 — 다음 집행까지 비용보다 큰 수익을 낼 확신(하한 > 비용)이 없으면 집행하지 않는다.
+    // 보류(pending)로 남는 결정도 집행 시점에 스케줄러가 재중재하므로 그때 최신 드리프트로 다시 판단한다.
+    decision.edge = this.edgeOf(holdings, targets);
+    if (pol.edgeGate && !decision.edge.pass) {
+      decision.status = "skipped"; decision.rationale.push(`edge gate: ${decision.edge.why}`);
+      this.push(decision); logger.info("[control] skipped by edge gate", { expectedPct: decision.edge.expectedPct, lowerPct: decision.edge.lowerPct, costPct: decision.edge.costPct, coverage: decision.edge.coverage });
+      return decision;
+    }
+    if (!pol.edgeGate) decision.rationale.push(`edge gate off: ${decision.edge.why}`);
     if (sinceLast < pol.minIntervalMin) { decision.rationale.push(`last execution ${sinceLast.toFixed(0)}m ago < ${pol.minIntervalMin}m — held as pending`); this.st.pending = decision; this.emit("pending", decision); return decision; }
     if (this.st.autopilot) return this.execute(decision, "autopilot", reason);
     this.st.pending = decision; this.emit("pending", decision);
@@ -278,6 +297,31 @@ class ControlPlane extends EventEmitter {
   }
 
   private push(d: Decision) { this.st.decisions.unshift(d); if (this.st.decisions.length > 200) this.st.decisions.length = 200; this.emit("decision", d); }
+
+  /** 이 결정(현재 → 목표)의 기대 엣지 vs 비용. 비용은 데스크의 수수료+슬리피지(편도), 지평은 최소 집행 간격 */
+  private edgeOf(holdings: Target[], targets: Target[]): EdgeRead {
+    const desk = cryptoDesk.status();
+    const pol = this.st.policy;
+    return edgeGate({
+      holdings, targets, drift: this.st.drift,
+      horizonMarks: Math.max(1, Math.round(pol.minIntervalMin / Math.max(1, config.CONTROL_TICK_MIN))),
+      oneWayCostPct: desk.costs.feePct + desk.costs.slipPct,
+      z: pol.edgeZ, minMarks: EDGE_MIN_MARKS,
+    });
+  }
+
+  /** 틱마다 — 그 틱에 받은 실시세로 시장별 드리프트를 갱신한다 (7일 이상 안 본 시장은 버린다) */
+  private updateDrift(prices: Map<string, number>, now: string) {
+    for (const [m, px] of prices) if (px > 0) this.st.drift[m] = updateDrift(this.st.drift[m], px, now, this.st.policy.edgeHalfLifeMarks);
+    const cutoff = Date.now() - 7 * 86400_000;
+    for (const [m, d] of Object.entries(this.st.drift)) if (Date.parse(d.lastAt) < cutoff) delete this.st.drift[m];
+  }
+
+  /** 드리프트 요약 — 상태 응답용 */
+  private driftSummary() {
+    const rows = Object.entries(this.st.drift);
+    return { markets: rows.length, ready: rows.filter(([, d]) => d.n >= EDGE_MIN_MARKS).length, minMarks: EDGE_MIN_MARKS };
+  }
 
   /** 데스크가 추적하지 않는 알트(스캐너·진화 유니버스)의 현재가는 여기서 직접 채운다 — 없으면 rotateTo가 그 종목을 건너뛰고 "현재가 없음"으로 남긴다. */
   private async pricesFor(targets: Target[]): Promise<Map<string, number>> {
@@ -377,6 +421,9 @@ class ControlPlane extends EventEmitter {
     const next = { ...this.st.policy, ...patch };
     if (next.councilMode !== "quorum" && next.councilMode !== "weighted") next.councilMode = this.st.policy.councilMode;
     next.convictionMin = Math.max(0.1, Math.min(0.9, Number(next.convictionMin) || this.st.policy.convictionMin));
+    next.edgeGate = typeof next.edgeGate === "boolean" ? next.edgeGate : this.st.policy.edgeGate;
+    next.edgeZ = Math.max(0, Math.min(3, Number.isFinite(Number(next.edgeZ)) ? Number(next.edgeZ) : this.st.policy.edgeZ));
+    next.edgeHalfLifeMarks = Math.max(6, Math.min(2000, Math.round(Number(next.edgeHalfLifeMarks)) || this.st.policy.edgeHalfLifeMarks));
     const modeChanged = next.councilMode !== this.st.policy.councilMode;
     this.st.policy = next; this.save(); this.emitState();
     if (modeChanged) { logger.info("[control] council mode", { mode: next.councilMode }); void this.arbitrate("council mode changed").catch(() => undefined); }
@@ -398,8 +445,11 @@ class ControlPlane extends EventEmitter {
   async markTick(): Promise<void> {
     const targets = new Set<string>();
     for (const e of ENGINES) for (const t of this.st.engines[e.id].lastProposal?.targets ?? []) targets.add(t.market);
+    for (const p of this.st.proposals) for (const t of p.targets) targets.add(t.market);
+    for (const t of this.st.pending?.targets ?? []) targets.add(t.market);
     const prices = await this.pricesFor([...targets].map((market) => ({ market, weightPct: 0 })));
     const now = new Date().toISOString();
+    this.updateDrift(prices, now);
     const rets: Array<[EngineId, number]> = [];
     for (const e of ENGINES) {
       const s = this.st.engines[e.id];
