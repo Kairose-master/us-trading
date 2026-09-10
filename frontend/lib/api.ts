@@ -676,6 +676,8 @@ export interface ControlStatus {
   unattended: boolean
   scheduler: { everyMin: number; lastTickAt: string | null; nextEligibleAt: string | null }
   mode: string
+  /** 이 협의회 장부의 기록 시작 — 실모드면 실주문 개시 시점 */
+  ledger?: { mode: "paper" | "real"; since: string | null }
   killSwitch: boolean
   policy: ControlPolicy
   managers: ControlManager[]

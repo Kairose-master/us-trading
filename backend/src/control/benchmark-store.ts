@@ -4,7 +4,8 @@ import { logger } from "../core/logger.js";
 import { upbit } from "../crypto/upbit.js";
 import { computeBenchmark, makeBase, type BenchmarkBase, type BenchmarkRead } from "./benchmark.js";
 
-const FILE = join(process.cwd(), "data", "control", "benchmark.json");
+const FILE_OF = (mode: "paper" | "real") => join(process.cwd(), "data", "control", mode === "real" ? "benchmark-live.json" : "benchmark.json");
+let FILE = FILE_OF("paper");
 
 /**
  * 벤치마크 기준의 보관·복원.
@@ -15,6 +16,13 @@ class BenchmarkStore {
   private base: BenchmarkBase | null = null;
   private last: BenchmarkRead | null = null;
   constructor() { this.load(); }
+  /** 거래 모드별 기준 파일 — 실모드는 실주문 개시 시점의 기준을 따로 둔다 */
+  useMode(mode: "paper" | "real") {
+    const f = FILE_OF(mode);
+    if (f === FILE) return;
+    FILE = f; this.base = null; this.last = null;
+    this.load();
+  }
   private load() { try { if (existsSync(FILE)) this.base = JSON.parse(readFileSync(FILE, "utf-8")); } catch (e) { logger.warn("[benchmark] load failed", { error: (e as Error).message }); } }
   private save() { try { mkdirSync(dirname(FILE), { recursive: true }); writeFileSync(FILE, JSON.stringify(this.base, null, 2)); } catch (e) { logger.warn("[benchmark] save failed", { error: (e as Error).message }); } }
 

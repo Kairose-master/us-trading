@@ -161,6 +161,7 @@ class CryptoDesk extends EventEmitter {
     }
     armReal(this.mode === "real");
     if (this.mode === "real") logger.warn("⚠️ 실주문 모드로 기동 — 제어 평면 결정이 Upbit 실계좌로 나간다", { since: this.modeSince, by: this.modeBy });
+    controlPlane.useMode(this.mode, "boot");
   }
 
   private saveMode() {
@@ -226,6 +227,7 @@ class CryptoDesk extends EventEmitter {
       try { mkdirSync(dirname(LIVE_EQUITY_FILE), { recursive: true }); appendFileSync(LIVE_EQUITY_FILE, JSON.stringify({ ts: this.modeSince, equityKrw: this.liveStartKrw, cashKrw: Math.round(account.cashKrw), positions: account.positions.size }) + "\n"); } catch { /* 스냅샷은 다음 주기 */ }
       logger.warn("⚠️ 실주문 모드 ON", { by, cashKrw: Math.round(account.cashKrw), positions: account.positions.size, equityKrw: this.liveStartKrw });
       this.pipeline.log("auto-trade", `거래 모드 → REAL (${by}) — 실계좌 ₩${this.liveStartKrw.toLocaleString()}, 보유 ${account.positions.size}종목`);
+      controlPlane.useMode("real", by); // 협의회 기록은 실주문 개시 이후만
       this.emit("mode", this.mode);
       return { account };
     }
@@ -235,6 +237,7 @@ class CryptoDesk extends EventEmitter {
     this.saveMode();
     logger.warn("실주문 모드 OFF → paper", { by });
     this.pipeline.log("auto-trade", `거래 모드 → PAPER (${by})`);
+    controlPlane.useMode("paper", by);
     this.emit("mode", this.mode);
     return {};
   }

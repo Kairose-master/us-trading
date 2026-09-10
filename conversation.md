@@ -24,3 +24,7 @@ claude/railway-deployment-ip-m01okr: 금고 마스터 키 자동 생성 — CRED
 ## 2026-09-10 00:34 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: 프론트 크립토/미국주식 화면 분리 — /crypto = 크립토 데스크(모드 배지·계좌·제어 평면·보유·에쿼티), 알파 리서치는 /crypto/research 로 이동, / 와 /positions 는 미국주식(KIS) 전용, 사이드바 3그룹(크립토·미국주식·공통), 헤더는 크립토 경로에서 Upbit·거래모드 배지. 파이프라인·센티먼트는 ?market= 로 초기 시장. 백엔드 변경 없음.
+
+## 2026-09-10 00:37 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: 제어 평면 장부를 거래 모드별 파일로 분리 — plane.useMode(mode)가 data/control/state-live.json / benchmark-live.json 을 열고, 데스크 loadMode/setMode가 부른다. readState(file)는 null 반환 가능(호출부 fresh()). status()에 ledger:{mode,since} 추가.

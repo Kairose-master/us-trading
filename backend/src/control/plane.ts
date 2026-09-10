@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logger } from "../core/logger.js";
-import { cryptoDesk } from "../crypto/desk.js";
+import { cryptoDesk, type TradingMode } from "../crypto/desk.js";
 import { cryptoUniverse } from "../crypto/universe.js";
 import { upbit } from "../crypto/upbit.js";
 import { riskManager } from "../risk/riskManager.js";
@@ -91,7 +91,9 @@ interface State {
   modeStats: Record<CouncilMode, { targets: Target[]; lastMarkPrices: Record<string, number> | null; returns: number[]; marks: number; hits: number; cumReturnPct: number; decisions: number }>;
 }
 
-const FILE = join(process.cwd(), "data", "control", "state.json");
+// 거래 모드별 상태 파일 — 실주문을 켜면 협의회 기록(결정·타율·의결 통계)이 새 장부에서 시작하고
+// 페이퍼 기록은 제 파일에 그대로 남는다. 다시 paper로 돌아오면 그 파일을 다시 연다.
+const FILE_OF = (mode: TradingMode) => join(process.cwd(), "data", "control", mode === "real" ? "state-live.json" : "state.json");
 // 집행 간격 60분·최소 회전 8% — 15분마다 오는 신호 제안까지 전부 집행하면 장부가 잔거래로 오염된다 (2026-09-02 실제로 그랬다)
 // 한 번의 집행이 장부의 25% 넘게 갈아엎지 못한다 — 진화 스쿼드가 바뀌면 56%가 한 시간에 회전했다(2026-09-03 01:20). 목표까지는 여러 집행에 걸쳐 조금씩 간다
 const DEFAULT_POLICY: State["policy"] = { maxWeightPct: 30, maxPositions: 8, cashFloorPct: 10, grossMaxPct: 90, minTurnoverPct: 8, maxTurnoverPct: 25, minIntervalMin: 60, proposalTtlH: 30, eta: 8, councilMode: "quorum", convictionMin: 0.34 };
@@ -101,10 +103,10 @@ function fresh(): State {
   const engines = Object.fromEntries(ENGINES.map((e) => [e.id, { id: e.id, enabled: true, weight: 1, lastProposal: null, returns: [], cumReturnPct: 0, proposals: 0, marks: 0, hits: 0, lastMarkPrices: null, lastMarkAt: null }])) as unknown as Record<EngineId, EngineState>;
   return { autopilot: config.CONTROL_AUTOPILOT, paused: false, pausedAt: null, pausedBy: null, engines, proposals: [], decisions: [], pending: null, lastExecutedAt: null, lastMarkedDate: null, policy: DEFAULT_POLICY, modeStats: { quorum: freshModeStat(), weighted: freshModeStat() } };
 }
-function readState(): State {
+function readState(file: string): State | null {
   try {
-    if (existsSync(FILE)) {
-      const st = JSON.parse(readFileSync(FILE, "utf-8")) as State; st.policy = { ...DEFAULT_POLICY, ...st.policy }; const f = fresh(); for (const e of ENGINES) st.engines[e.id] ??= f.engines[e.id];
+    if (existsSync(file)) {
+      const st = JSON.parse(readFileSync(file, "utf-8")) as State; st.policy = { ...DEFAULT_POLICY, ...st.policy }; const f = fresh(); for (const e of ENGINES) st.engines[e.id] ??= f.engines[e.id];
       // 오토파일럿은 부팅마다 env 기본값으로 — 사람 손 없이 돌아야 한다. 멈추려면 pause(지속)를 쓴다
       st.autopilot = config.CONTROL_AUTOPILOT; st.paused ??= false; st.pausedAt ??= null; st.pausedBy ??= null;
       for (const e of ENGINES) { const x = st.engines[e.id]; x.marks ??= 0; x.hits ??= 0; x.lastMarkPrices ??= null; x.lastMarkAt ??= null; }
@@ -116,12 +118,14 @@ function readState(): State {
       if (st.pending && st.pending.contributions.some((c) => !known.has(c.engine))) st.pending = null;
       return st;
     }
-  } catch (e) { logger.warn("제어 평면 상태 복원 실패 — 새로 시작", { error: (e as Error).message }); }
-  return fresh();
+  } catch (e) { logger.warn("제어 평면 상태 복원 실패 — 새로 시작", { error: (e as Error).message, file }); }
+  return null;
 }
 
 class ControlPlane extends EventEmitter {
-  private st = readState();
+  private ledgerMode: TradingMode = "paper";
+  private file = FILE_OF("paper");
+  private st = readState(this.file) ?? fresh();
   private priceOf: () => Map<string, number> = () => new Map();
   attachPrices(fn: () => Map<string, number>) { this.priceOf = fn; }
   private sentimentOf: () => SentimentRead[] = () => [];
@@ -131,7 +135,41 @@ class ControlPlane extends EventEmitter {
   private equityOf: () => number = () => 0;
   attachEquity(fn: () => number) { this.equityOf = fn; }
 
-  private save() { mkdirSync(dirname(FILE), { recursive: true }); const tmp = `${FILE}.tmp`; writeFileSync(tmp, JSON.stringify(this.st)); renameSync(tmp, FILE); }
+  private save() { mkdirSync(dirname(this.file), { recursive: true }); const tmp = `${this.file}.tmp`; writeFileSync(tmp, JSON.stringify(this.st)); renameSync(tmp, this.file); }
+
+  /**
+   * 거래 모드에 맞는 협의회 장부로 바꾼다 (데스크가 부팅·전환 때 부른다).
+   * 실모드 장부가 처음이면 새로 만든다 — 결정 로그·타율·의결 통계·마킹은 0에서 시작하고,
+   * 운영 설정(정책·정지·엔진 참여/가중)과 살아 있는 제안은 이어받는다 (정족수가 바로 서게).
+   * 벤치마크도 그 모드의 파일로 바꾸고, 새 장부면 실모드 시작 에쿼티를 기준으로 다시 잡는다.
+   */
+  useMode(mode: TradingMode, by = "boot") {
+    const file = FILE_OF(mode);
+    if (file === this.file && this.ledgerMode === mode) return;
+    try { this.save(); } catch (e) { logger.warn("[control] 이전 장부 저장 실패", { error: (e as Error).message }); }
+    const prev = this.st;
+    let st = readState(file);
+    const created = !st;
+    if (!st) {
+      st = fresh();
+      st.policy = { ...prev.policy }; st.paused = prev.paused; st.pausedAt = prev.pausedAt; st.pausedBy = prev.pausedBy; st.autopilot = prev.autopilot;
+      for (const e of ENGINES) { st.engines[e.id].enabled = prev.engines[e.id].enabled; st.engines[e.id].weight = prev.engines[e.id].weight; st.engines[e.id].lastProposal = prev.engines[e.id].lastProposal; }
+      const now = Date.now();
+      st.proposals = prev.proposals.filter((p) => Date.parse(p.expiresAt) > now);
+    }
+    this.ledgerMode = mode; this.file = file; this.st = st;
+    this.save();
+    benchmarkStore.useMode(mode);
+    if (created) {
+      const desk = cryptoDesk.status();
+      const markets = [...new Set(["KRW-BTC", ...cryptoUniverse.markets()])];
+      void this.pricesFor(markets.map((market) => ({ market, weightPct: 0 })))
+        .then((px) => benchmarkStore.rebaseLive(desk.paperSince ?? new Date().toISOString(), desk.paperStartKrw, cryptoUniverse.markets(), Object.fromEntries(px)))
+        .catch((e) => logger.warn("[benchmark] rebase on mode switch failed", { error: (e as Error).message }));
+    }
+    logger.warn(`[control] 협의회 장부 → ${mode.toUpperCase()}${created ? " (새 장부 — 실적 0에서 시작)" : " (기존 장부 복원)"}`, { by, decisions: st.decisions.length, proposals: st.proposals.length });
+    this.emitState();
+  }
   private emitState() { this.emit("state", this.status()); }
 
   status() {
@@ -148,6 +186,8 @@ class ControlPlane extends EventEmitter {
       unattended: this.st.autopilot && !this.st.paused && !riskManager.killSwitchActive,
       scheduler: { everyMin: config.CONTROL_TICK_MIN, lastTickAt: this.lastTickAt, nextEligibleAt: Number.isFinite(sinceLastMin) ? new Date(Date.parse(this.st.lastExecutedAt!) + this.st.policy.minIntervalMin * 60_000).toISOString() : null },
       mode: desk.mode,
+      /** 이 협의회 장부가 언제부터의 기록인가 — 실모드면 실주문 개시 시점 */
+      ledger: { mode: this.ledgerMode, since: desk.paperSince },
       killSwitch: riskManager.killSwitchActive,
       policy: this.st.policy,
       managers: MANAGERS.map((m) => { const e = ENGINES.some((x) => x.id === m.id) ? this.st.engines[m.id as EngineId] : null; return { ...m, enabled: e ? e.enabled : true, weight: e ? +e.weight.toFixed(4) : null, lastProposal: e?.lastProposal ?? null, cumReturnPct: e ? +e.cumReturnPct.toFixed(2) : null }; }),
