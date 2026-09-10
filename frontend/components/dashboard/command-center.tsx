@@ -277,11 +277,12 @@ function DecisionCard({ d, pending, onApprove, onReject, busy, auto }: { d: Cont
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
           <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-400/40 px-2.5 py-1.5 text-emerald-300"><Play className="size-3.5" aria-hidden="true" /> 자동 집행 예정 — {auto.nextEligibleAt ? (Date.parse(auto.nextEligibleAt) > Date.now() ? `${Math.max(1, Math.ceil((Date.parse(auto.nextEligibleAt) - Date.now()) / 60_000))}분 뒤 (집행 간격)` : `다음 ${auto.everyMin}분 틱에`) : `다음 ${auto.everyMin}분 틱에`} 스케줄러가 집행한다. 손댈 것 없음.</span>
           <button type="button" disabled={busy} onClick={onApprove} className="rounded-md border border-border px-2.5 py-1.5 text-muted-foreground disabled:opacity-50" title="간격을 기다리지 않고 지금 집행 (선택)">지금 집행 (선택)</button>
+          <button type="button" disabled={busy} onClick={onReject} className="inline-flex items-center gap-1 rounded-md border border-rose-400/60 px-2.5 py-1.5 font-semibold text-rose-300 disabled:opacity-50" title="이 결정을 버린다 — 다음 중재까지 집행되지 않는다"><X className="size-3.5" aria-hidden="true" /> 거부</button>
         </div>
       )}
       {pending && !auto && (
         <div className="mt-3 flex gap-2">
-          <button type="button" disabled={busy} onClick={onApprove} className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-50"><Check className="size-3.5" aria-hidden="true" /> 승인 · 페이퍼 집행</button>
+          <button type="button" disabled={busy} onClick={onApprove} className="inline-flex items-center gap-1 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-black disabled:opacity-50"><Check className="size-3.5" aria-hidden="true" /> 승인 · 집행</button>
           <button type="button" disabled={busy} onClick={onReject} className="inline-flex items-center gap-1 rounded-md border border-rose-400/60 px-3 py-1.5 text-xs font-semibold text-rose-300 disabled:opacity-50"><X className="size-3.5" aria-hidden="true" /> 거부</button>
         </div>
       )}

@@ -385,8 +385,21 @@ class ControlPlane extends EventEmitter {
   private lastTickAt: string | null = null;
   private timer: NodeJS.Timeout | null = null;
   /** 스케줄러 — 사람 없이 돌아가게 하는 부분. 주기마다: 만료 제안 정리 → 보류 결정이 집행 가능해졌으면 새 제안들로 재중재해 집행 */
+  /** 참여 제외된 매니저가 기여한 보류 결정은 무효 — 이전 구성의 유물이라 집행하지 않고 버린다 */
+  private pruneStalePending(): boolean {
+    const d = this.st.pending;
+    if (!d) return false;
+    const stale = d.contributions.filter((c) => !this.st.engines[c.engine]?.enabled).map((c) => c.engine);
+    if (!stale.length) return false;
+    d.status = "skipped"; d.rationale.push(`superseded — ${stale.join("+")} no longer in the council; decision made under the old line-up is discarded`);
+    this.st.pending = null; this.push(d);
+    logger.warn("[control] stale pending decision discarded", { id: d.id, stale });
+    return true;
+  }
+
   async tick(): Promise<void> {
     this.lastTickAt = new Date().toISOString();
+    if (this.pruneStalePending()) { this.save(); this.emitState(); }
     await this.markTick().catch((e) => logger.warn("[control] mark failed", { error: (e as Error).message }));
     const before = this.st.proposals.length; this.activeProposals();
     if (this.st.proposals.length !== before) { logger.info("[control] expired proposals dropped", { dropped: before - this.st.proposals.length }); this.save(); }
@@ -403,6 +416,7 @@ class ControlPlane extends EventEmitter {
   }
   startScheduler() {
     if (this.timer) return;
+    if (this.pruneStalePending()) this.save();
     const every = Math.max(1, config.CONTROL_TICK_MIN) * 60_000;
     this.timer = setInterval(() => void this.tick().catch((e) => logger.warn("[control] tick failed", { error: (e as Error).message })), every);
     this.timer.unref();
