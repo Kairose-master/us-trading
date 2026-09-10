@@ -18,7 +18,10 @@ function StatCard({ label, value, sub, valueClass }: { label: string; value: str
   )
 }
 
-/** 숫자는 전부 /account/holdings 실기록 — 크립토 페이퍼 장부 + 미국 장부 + Yahoo 환율 */
+const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const signedUsd = (v: number) => `${v > 0 ? "+" : v < 0 ? "-" : ""}$${Math.abs(v).toFixed(2)}`
+
+/** 미국주식 계좌만 — /account/holdings 실기록의 us 부분 + Yahoo 환율. 크립토는 /crypto 데스크 */
 export function StatCards() {
   const { data, isLoading } = useHoldings()
 
@@ -31,35 +34,18 @@ export function StatCards() {
       </div>
     )
   }
-  const c = data.crypto
   const u = data.us
-  const totalPnlKrw = data.fx.rate > 0 ? c.pnlKrw + u.pnlUsd * data.fx.rate : c.pnlKrw
-  const totalStartKrw = data.fx.rate > 0 ? c.startKrw + u.startUsd * data.fx.rate : c.startKrw
+  const fx = data.fx.rate
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <StatCard
-        label="총자산 (크립토 + 미국)"
-        value={data.totalKrw !== null ? krw(data.totalKrw) : krw(c.equityKrw)}
-        sub={data.fx.rate > 0 ? `환율 ₩${data.fx.rate.toLocaleString("ko-KR")} (Yahoo KRW=X)` : "환율 미수신 — 크립토만 합산"}
+        label={u.connected ? `미국주식 평가 (KIS ${u.mode === "real" ? "실계좌" : "모의계좌"})` : "미국주식 평가 (KIS 미연결 · 페이퍼)"}
+        value={usd(u.equityUsd)}
+        sub={fx > 0 ? `≈ ${krw(u.equityUsd * fx)} · 환율 ₩${fx.toLocaleString("ko-KR")}` : "환율 미수신"}
       />
-      <StatCard
-        label={`크립토 ${c.mode === "real" ? "실계좌" : "페이퍼"} (Upbit)`}
-        value={krw(c.equityKrw)}
-        sub={`${signedKrw(c.pnlKrw)} (${fmtPct(c.pnlPct)}) · 보유 ${c.positions.length}`}
-        valueClass={pnlClass(c.pnlKrw)}
-      />
-      <StatCard
-        label={u.connected ? `미국 KIS ${u.mode}` : "미국 (KIS 미연결 · 페이퍼)"}
-        value={`$${u.equityUsd.toLocaleString("en-US", { minimumFractionDigits: 2 })}`}
-        sub={`${u.pnlUsd >= 0 ? "+" : "-"}$${Math.abs(u.pnlUsd).toFixed(2)} (${fmtPct(u.pnlPct)}) · 보유 ${u.positions.length}`}
-        valueClass={pnlClass(u.pnlUsd)}
-      />
-      <StatCard
-        label="총 평가손익"
-        value={signedKrw(totalPnlKrw)}
-        sub={totalStartKrw > 0 ? fmtPct((totalPnlKrw / totalStartKrw) * 100) : undefined}
-        valueClass={pnlClass(totalPnlKrw)}
-      />
+      <StatCard label="평가손익" value={signedUsd(u.pnlUsd)} sub={`${fmtPct(u.pnlPct)}${fx > 0 ? ` · ${signedKrw(u.pnlUsd * fx)}` : ""}`} valueClass={pnlClass(u.pnlUsd)} />
+      <StatCard label="현금 (USD)" value={usd(u.cashUsd)} sub={u.connected ? undefined : `페이퍼 시드 $${u.startUsd.toLocaleString()}`} />
+      <StatCard label="보유 종목" value={String(u.positions.length)} sub={u.connected ? `KIS ${u.mode}` : "KIS 키를 설정에 넣으면 실계좌"} />
     </div>
   )
 }

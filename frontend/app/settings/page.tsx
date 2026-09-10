@@ -1,6 +1,6 @@
 import { SettingsClient } from "@/components/settings/settings-client"
 
-export const metadata = { title: "설정 — US 오토트레이더" }
+export const metadata = { title: "설정 — 오토트레이더" }
 
 export default function SettingsPage() {
   return (

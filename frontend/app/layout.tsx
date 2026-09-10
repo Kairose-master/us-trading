@@ -8,8 +8,8 @@ const _geistSans = Geist({ subsets: ['latin'] })
 const _geistMono = Geist_Mono({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'US 오토트레이더 — 미국주식 자동매매 대시보드',
-  description: 'KIS Open API 기반 미국주식 자동매매 개인 대시보드',
+  title: '오토트레이더 — 크립토(Upbit) · 미국주식(KIS)',
+  description: 'Upbit 크립토 데스크와 KIS 미국주식을 분리한 자동매매 개인 대시보드',
   generator: 'v0.app',
   icons: {
     icon: [

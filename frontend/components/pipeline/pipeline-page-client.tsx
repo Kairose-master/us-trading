@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
 import { ApiError, getPipeline, getPipelineLogs, isBackendNotConfigured, type Market } from "@/lib/api"
@@ -10,7 +11,9 @@ import { PipelineMonitor } from "./pipeline-monitor"
 import { AutoTradeCard } from "./auto-trade-card"
 
 export function PipelinePageClient() {
-  const [market, setMarket] = useState<Market>("crypto")
+  const params = useSearchParams()
+  const wanted: Market = params.get("market") === "us" ? "us" : "crypto"
+  const [market, setMarket] = useState<Market>(wanted)
   const [selected, setSelected] = useState<string | null>(null)
   const [live, setLive] = useState<PipelineSnapshot | null>(null)
   const [liveLogs, setLiveLogs] = useState<PipelineLogLine[]>([])
@@ -32,6 +35,8 @@ export function PipelinePageClient() {
     setLiveLogs([])
     setSelected(null)
   }
+  // 사이드바에서 다른 시장 링크를 누르면 (같은 페이지, 쿼리만 바뀜) 따라간다
+  useEffect(() => { if (wanted !== market) switchMarket(wanted) }, [wanted]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const snapshot = live ?? fetched
   const notConfigured = isBackendNotConfigured(error)

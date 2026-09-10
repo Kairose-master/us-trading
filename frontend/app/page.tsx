@@ -1,11 +1,11 @@
 "use client"
 
-import { OctagonX } from "lucide-react"
+import Link from "next/link"
+import { Bitcoin, OctagonX } from "lucide-react"
 import { StatCards } from "@/components/dashboard/stat-cards"
-import { EquityChart } from "@/components/dashboard/equity-chart"
 import { TickerStrip } from "@/components/dashboard/ticker-strip"
 import { MarketCountdown } from "@/components/dashboard/market-countdown"
-import { CommandCenter } from "@/components/dashboard/command-center"
+import { PositionsTable } from "@/components/positions/positions-table"
 import { useSystemStatus } from "@/components/shell/kill-switch"
 
 function KillSwitchNotice() {
@@ -22,24 +22,23 @@ function KillSwitchNotice() {
   )
 }
 
+/** 미국주식 대시보드 — KIS 계좌·시세·보유만. 크립토는 /crypto 데스크로 분리 */
 export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold">대시보드</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-lg font-bold">미국주식 대시보드 — KIS</h1>
+          <Link href="/crypto" className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground">
+            <Bitcoin className="size-3" aria-hidden="true" /> 크립토는 데스크에서
+          </Link>
+        </div>
         <MarketCountdown />
       </div>
       <KillSwitchNotice />
       <StatCards />
-      <CommandCenter />
-      <div className="grid gap-4 xl:grid-cols-5">
-        <div className="xl:col-span-3">
-          <EquityChart />
-        </div>
-        <div className="xl:col-span-2">
-          <TickerStrip />
-        </div>
-      </div>
+      <TickerStrip />
+      <PositionsTable />
     </div>
   )
 }

@@ -1,7 +1,7 @@
-import { CryptoPageClient } from "@/components/crypto/crypto-page-client"
+import { CryptoDesk } from "@/components/crypto/crypto-desk"
 
-export const metadata = { title: "크립토 알파 리서치 — US 오토트레이더" }
+export const metadata = { title: "크립토 데스크 — 오토트레이더" }
 
 export default function CryptoPage() {
-  return <CryptoPageClient />
+  return <CryptoDesk />
 }

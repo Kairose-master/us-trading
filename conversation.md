@@ -20,3 +20,7 @@ claude/railway-deployment-ip-m01okr: 실주문 경로 추가 + 거래 모드 UI 
 ## 2026-09-10 00:20 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: 금고 마스터 키 자동 생성 — CREDENTIALS_MASTER_KEY 없으면 backend/src/auth/crypto.ts가 첫 기동 때 data/vault-master.key(0600)를 만들어 쓴다. env가 있으면 그게 우선. 볼륨 없으면 재배포마다 키가 바뀌니 /app/data 볼륨 전제.
+
+## 2026-09-10 00:34 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: 프론트 크립토/미국주식 화면 분리 — /crypto = 크립토 데스크(모드 배지·계좌·제어 평면·보유·에쿼티), 알파 리서치는 /crypto/research 로 이동, / 와 /positions 는 미국주식(KIS) 전용, 사이드바 3그룹(크립토·미국주식·공통), 헤더는 크립토 경로에서 Upbit·거래모드 배지. 파이프라인·센티먼트는 ?market= 로 초기 시장. 백엔드 변경 없음.

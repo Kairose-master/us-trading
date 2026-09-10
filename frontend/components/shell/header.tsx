@@ -1,7 +1,10 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
+import { Bitcoin } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { TradingModeBadge } from "@/components/crypto/crypto-desk"
 import {
   SESSION_LABEL,
   formatEtClock,
@@ -93,12 +96,44 @@ function ApiGauge() {
   )
 }
 
+const CRYPTO_PATHS = ["/crypto", "/scanner", "/office", "/evolution", "/lab", "/quant"]
+
+/** 지금 보는 화면이 크립토 묶음인지 — 헤더의 시장 표시를 그쪽으로 바꾼다 */
+export function useIsCryptoRoute(): boolean {
+  const pathname = usePathname()
+  const params = useSearchParams()
+  if (CRYPTO_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return true
+  if (pathname === "/pipeline" || pathname === "/sentiment") return (params.get("market") ?? "crypto") === "crypto"
+  return false
+}
+
+function CryptoClock() {
+  const [now, setNow] = useState<Date | null>(null)
+  useEffect(() => {
+    setNow(new Date())
+    const t = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  return (
+    <div className="flex items-center gap-3">
+      <span className="inline-flex items-center gap-1.5 rounded-md bg-chart-1/15 px-2 py-0.5 text-xs font-semibold text-chart-1">
+        <Bitcoin className="size-3.5" aria-hidden="true" /> Upbit · 24시간 장
+      </span>
+      <span className="hidden font-mono text-xs tnum text-muted-foreground md:inline">
+        SEL <span className="text-foreground">{now ? formatKstClock(now) : "--:--:--"}</span>
+      </span>
+      <TradingModeBadge />
+    </div>
+  )
+}
+
 export function AppHeader() {
+  const crypto = useIsCryptoRoute()
   return (
     <header className="sticky top-0 z-40 flex h-14 items-center justify-between gap-4 border-b border-border bg-background/90 px-4 backdrop-blur">
-      <SessionClock />
+      {crypto ? <CryptoClock /> : <SessionClock />}
       <div className="flex items-center gap-4">
-        <ApiGauge />
+        {!crypto && <ApiGauge />}
         <WsIndicator />
         <KillSwitchButton compact />
       </div>

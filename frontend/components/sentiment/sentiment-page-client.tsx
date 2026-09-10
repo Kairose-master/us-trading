@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { MessageSquareText, Newspaper, TrendingDown, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -26,8 +27,11 @@ function fmtScore(score: number): string {
 }
 
 export function SentimentPageClient() {
-  const [market, setMarket] = useState<Market>("crypto")
+  const params = useSearchParams()
+  const wanted: Market = params.get("market") === "us" ? "us" : "crypto"
+  const [market, setMarket] = useState<Market>(wanted)
   const [liveFeed, setLiveFeed] = useState<ScoredNews[]>([])
+  useEffect(() => { if (wanted !== market) { setMarket(wanted); setLiveFeed([]) } }, [wanted]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const { data: overview, isLoading, mutate, error } = useSWR(["sentiment", market], () => getSentiment(market), { refreshInterval: 5000 })
   const { data: fetchedFeed } = useSWR(["sentiment-feed", market], () => getSentimentFeed(60, market), { refreshInterval: 5000 })

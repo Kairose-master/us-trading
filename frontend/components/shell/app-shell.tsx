@@ -1,6 +1,6 @@
 "use client"
 
-import type { ReactNode } from "react"
+import { Suspense, type ReactNode } from "react"
 import { Toaster, toast } from "sonner"
 import { LiveSocketProvider, useLiveChannel } from "@/hooks/useLiveSocket"
 import { SettingsProvider } from "@/components/settings-provider"
@@ -24,10 +24,14 @@ export function AppShell({ children }: { children: ReactNode }) {
     <SettingsProvider>
       <LiveSocketProvider>
         <div className="flex min-h-dvh">
-          <AppSidebar />
+          <Suspense fallback={<aside className="w-14 shrink-0 border-r border-sidebar-border bg-sidebar md:w-52" />}>
+            <AppSidebar />
+          </Suspense>
           <div className="flex min-w-0 flex-1 flex-col">
             <KillSwitchBanner />
-            <AppHeader />
+            <Suspense fallback={<header className="h-14 border-b border-border" />}>
+              <AppHeader />
+            </Suspense>
             <main className="min-w-0 flex-1 p-4 md:p-6">{children}</main>
           </div>
         </div>

@@ -2,18 +2,20 @@
 
 import useSWR from "swr"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { getPaperEquity } from "@/lib/api"
+import { getCryptoStatus, getPaperEquity } from "@/lib/api"
 import { Card, Skeleton } from "@/components/primitives"
 
 export function EquityChart() {
   const { data: raw, isLoading } = useSWR("paper-equity", () => getPaperEquity(2000), { refreshInterval: 60_000 })
+  const { data: st } = useSWR("crypto-status", getCryptoStatus, { refreshInterval: 60_000, shouldRetryOnError: false })
+  const real = st?.mode === "real"
   const data = raw?.map((p) => ({ date: p.ts.slice(0, 16).replace("T", " "), equityKrw: p.equityKrw }))
 
   return (
     <Card className="flex flex-col gap-3 p-4">
       <div className="flex items-baseline justify-between">
-        <h2 className="text-sm font-semibold">크립토 페이퍼 자산 (₩) — 시간별 실기록</h2>
-        <span className="text-xs text-muted-foreground">crypto-paper-equity.jsonl</span>
+        <h2 className="text-sm font-semibold">{real ? "크립토 실계좌 자산 (₩) — 5분 실기록" : "크립토 페이퍼 자산 (₩) — 5분 실기록"}</h2>
+        <span className="text-xs text-muted-foreground">{real ? "crypto-live-equity.jsonl" : "crypto-paper-equity.jsonl"}</span>
       </div>
       {isLoading || !data ? (
         <Skeleton className="h-56 w-full" />
@@ -52,7 +54,7 @@ export function EquityChart() {
                   fontSize: 12,
                 }}
                 labelStyle={{ color: "var(--color-muted-foreground)" }}
-                formatter={(v) => [`₩${Math.round(Number(v)).toLocaleString("ko-KR")}`, "페이퍼 자산"]}
+                formatter={(v) => [`₩${Math.round(Number(v)).toLocaleString("ko-KR")}`, real ? "실계좌 자산" : "페이퍼 자산"]}
               />
               <Area
                 type="monotone"

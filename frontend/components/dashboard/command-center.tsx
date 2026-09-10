@@ -357,7 +357,7 @@ export function CommandCenter() {
             ) : (
               <button type="button" disabled={busy} onClick={() => void run(() => pauseControl(), "정지 — 재개 전까지 어떤 결정도 집행되지 않는다 (재배포에도 유지)")} className="inline-flex items-center gap-1.5 rounded-md border border-rose-500/70 px-3 py-1.5 text-xs font-semibold text-rose-400 disabled:opacity-50"><OctagonX className="size-3.5" aria-hidden="true" /> 자동 운행 정지</button>
             )}
-            <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[11px] text-muted-foreground">{s.mode === "paper" ? "PAPER" : s.mode.toUpperCase()}</span>
+            <span className={cn("rounded-full border px-2 py-0.5 font-mono text-[11px] font-semibold", s.mode === "real" ? "border-rose-500/70 text-rose-400" : "border-border text-muted-foreground")}>{s.mode === "real" ? "REAL — 실계좌" : "PAPER"}</span>
             <button type="button" disabled={busy} onClick={() => void run(() => arbitrateNow(), "중재 실행")} className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs disabled:opacity-50"><Gavel className="size-3.5" aria-hidden="true" /> 지금 중재</button>
             <button type="button" disabled={busy} onClick={() => void mutate()} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs" aria-label="새로고침"><RefreshCw className="size-3.5" aria-hidden="true" /></button>
             <div className="inline-flex items-center overflow-hidden rounded-md border border-border text-xs" role="radiogroup" aria-label="집행 모드">
@@ -429,7 +429,7 @@ export function CommandCenter() {
       </Card>
 
       {s.pending && (
-        <DecisionCard d={s.pending} pending busy={busy} auto={s.autopilot && !s.paused ? { nextEligibleAt: s.scheduler.nextEligibleAt, everyMin: s.scheduler.everyMin } : null} onApprove={() => void run(() => approveDecision(), s.autopilot ? "지금 집행 — 페이퍼 장부 회전" : "승인 — 페이퍼 장부 회전")} onReject={() => void run(() => rejectDecision(), "결정 거부")} />
+        <DecisionCard d={s.pending} pending busy={busy} auto={s.autopilot && !s.paused ? { nextEligibleAt: s.scheduler.nextEligibleAt, everyMin: s.scheduler.everyMin } : null} onApprove={() => void run(() => approveDecision(), s.mode === "real" ? (s.autopilot ? "지금 집행 — ⚠️ Upbit 실주문" : "승인 — ⚠️ Upbit 실주문") : s.autopilot ? "지금 집행 — 페이퍼 장부 회전" : "승인 — 페이퍼 장부 회전")} onReject={() => void run(() => rejectDecision(), "결정 거부")} />
       )}
 
       <div className="grid gap-4 xl:grid-cols-5">
@@ -475,7 +475,7 @@ export function CommandCenter() {
           </Card>
         </div>
       </div>
-      <p className="text-[10px] text-muted-foreground">기본은 무인 운행이다 — 아무것도 누르지 않아도 협의회가 결정하고 스케줄러가 페이퍼 집행한다. 조작(정지·모드·참여·가중)만 <Link href="/login" className="underline">로그인</Link> 세션이 필요하고, 페이퍼 외 실거래는 이 화면에서 켤 수 없다.</p>
+      <p className="text-[10px] text-muted-foreground">기본은 무인 운행이다 — 아무것도 누르지 않아도 협의회가 결정하고 스케줄러가 {s.mode === "real" ? "Upbit 실계좌에" : "페이퍼 장부에"} 집행한다. 조작(정지·모드·참여·가중)만 <Link href="/login" className="underline">로그인</Link> 세션이 필요하고, 페이퍼↔실주문 전환은 이 화면이 아니라 <Link href="/settings" className="underline">설정의 거래 모드</Link>에서만 한다.</p>
     </div>
   )
 }
