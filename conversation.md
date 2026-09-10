@@ -32,3 +32,7 @@ claude/railway-deployment-ip-m01okr: 제어 평면 장부를 거래 모드별 �
 ## 2026-09-10 00:46 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: 제어 평면에 기대 엣지 게이트 추가 — control/edge.ts(순수), plane.ts markTick이 시장별 드리프트(state.drift) 갱신, arbitrate가 회전 검사 뒤 edgeGate로 skipped 처리. 정책 필드 edgeGate/edgeZ/edgeHalfLifeMarks 추가(기본 true/1/72). Decision.edge, status.edge 추가. 프론트 command-center에 토글·표시.
+
+## 2026-09-10 03:41 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: council.ts 정족수 = min(2, 켜진 제안 매니저 수), 신호 단독 매수 금지는 다른 제안 매니저가 켜져 있을 때만. plane.setEngine이 참여 변경 시 보류 결정을 superseded로 버리고 즉시 재중재.

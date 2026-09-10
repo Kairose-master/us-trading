@@ -62,6 +62,22 @@ describe("council — quorum", () => {
   it("a disabled manager's proposal is ignored", () => {
     const r = convene({ proposals: [prop("evolution", { "KRW-BTC": 20 }), prop("office", { "KRW-BTC": 20 })], standing: standing({}, ["office"]), sentiment: [], risk: risk() });
     expect(out(r, "KRW-BTC").outcome).toBe("REJECTED");
+    expect(r.summary.some((s) => s.includes("participation: evolution+signals"))).toBe(true);
+  });
+  it("quorum follows the enabled proposer count: with only one manager left it decides alone — signals included", () => {
+    const r = convene({ proposals: [prop("signals", { "KRW-SOL": 20 }, 1), prop("office", { "KRW-BTC": 20 })], standing: standing({}, ["office", "evolution"]), sentiment: [], risk: risk() });
+    expect(out(r, "KRW-SOL").outcome).toBe("ADOPTED");
+    expect(r.tally.find((t) => t.market === "KRW-BTC")).toBeUndefined(); // 제외된 오피스의 시장은 안건에도 없다
+    expect(r.summary.some((s) => s.includes("sole proposer decides alone"))).toBe(true);
+  });
+  it("with two managers enabled but one silent, the lone supporter still needs a second vote", () => {
+    const r = convene({ proposals: [prop("evolution", { "KRW-BTC": 20 })], standing: standing({}, ["office"]), sentiment: [], risk: risk() });
+    expect(out(r, "KRW-BTC").outcome).toBe("REJECTED");
+    expect(out(r, "KRW-BTC").why).toContain("quorum is 2");
+  });
+  it("weighted mode: a sole enabled signals manager may buy when conviction clears the threshold", () => {
+    const r = convene({ mode: "weighted", proposals: [prop("signals", { "KRW-SOL": 20 }, 1)], standing: standing({}, ["office", "evolution"]), sentiment: [], risk: risk() });
+    expect(out(r, "KRW-SOL").outcome).toBe("ADOPTED");
   });
 });
 

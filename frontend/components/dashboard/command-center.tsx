@@ -443,7 +443,7 @@ export function CommandCenter() {
         <Card className="p-4 xl:col-span-2">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-bold">총괄 매니저 협의회{s.ledger?.mode === "real" && <span className="ml-2 rounded-full border border-rose-500/70 px-2 py-0.5 font-mono text-[10px] font-semibold text-rose-400" title={s.ledger.since ? `실주문 개시 ${new Date(s.ledger.since).toLocaleString("ko-KR", { hour12: false })} 이후 기록만` : "실주문 개시 이후 기록만"}>REAL · {s.ledger.since ? `${s.ledger.since.slice(0, 10)}~` : "개시 이후"}</span>}</h2>
-            <span className="text-[10px] text-muted-foreground">제안 3(오피스·진화·신호) + 감성·리스크 2 · 정족수 = 제안 매니저 2명 · 신호 혼자서는 매수 불가 · 유니버스 = 메이저 + 알트 상위 30</span>
+            <span className="text-[10px] text-muted-foreground">제안 3(오피스·진화·신호) + 감성·리스크 2 · 정족수 = min(2, 켜진 제안 매니저 수) · 참여 제외한 매니저는 제안도 반대도 못 한다 · 유니버스 = 메이저 + 알트 상위 30</span>
           </div>
           <div className="space-y-2">
             {s.engines.map((e) => (

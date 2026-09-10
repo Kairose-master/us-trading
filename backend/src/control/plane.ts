@@ -413,8 +413,17 @@ class ControlPlane extends EventEmitter {
   setAutopilot(on: boolean) { this.st.autopilot = on; logger.info("[control] autopilot", { on }); this.save(); this.emitState(); if (on && this.st.pending) void this.arbitrate("autopilot on"); }
   setEngine(id: EngineId, patch: { enabled?: boolean; weight?: number }) {
     const e = this.st.engines[id]; if (!e) throw new Error("unknown engine");
+    const participationChanged = patch.enabled !== undefined && patch.enabled !== e.enabled;
     if (patch.enabled !== undefined) e.enabled = patch.enabled;
     if (patch.weight !== undefined) e.weight = Math.max(0.05, Math.min(5, patch.weight));
+    if (participationChanged) {
+      // 참여가 바뀌면 이전 구성으로 만든 보류 결정은 무효다 — 버리고 지금 켜진 매니저들만으로 다시 중재한다
+      if (this.st.pending) { const d = this.st.pending; d.status = "skipped"; d.rationale.push(`superseded — ${id} ${patch.enabled ? "joined" : "left"} the council; re-arbitrated with current participation`); this.st.pending = null; this.push(d); }
+      logger.info("[control] engine participation changed — re-arbitrating", { id, enabled: patch.enabled });
+      this.save(); this.emitState();
+      void this.arbitrate("engine participation changed").then(() => { this.save(); this.emitState(); }).catch((err) => logger.warn("[control] re-arbitrate after participation change failed", { error: (err as Error).message }));
+      return;
+    }
     this.save(); this.emitState();
   }
   setPolicy(patch: Partial<State["policy"]>) {
