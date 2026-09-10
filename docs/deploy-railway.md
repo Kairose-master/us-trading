@@ -118,8 +118,9 @@ Variables에 넣지 않는다.
 
 1. 위 "허용 IP" 절대로 Static IP 3개를 Upbit 허용 IP에 등록 (키 권한: 자산조회 +
    주문만. **출금 OFF**).
-2. Railway Variables에 `CREDENTIALS_MASTER_KEY`(`openssl rand -hex 32`)가 있어야
-   금고가 열린다. 없으면 넣고 재배포.
+2. 금고 마스터 키는 설정할 게 없다 — 첫 기동 때 서버가 만들어 볼륨
+   `data/vault-master.key`에 둔다 (`/app/data` 볼륨이 붙어 있어야 재배포 후에도 같은 키).
+   env `CREDENTIALS_MASTER_KEY`는 키를 볼륨 밖에 두고 싶을 때만 선택.
 3. 대시보드 → 로그인(첫 가입자가 owner) → **설정** → Upbit Open API 키를 금고에
    저장.
 4. 설정 → **거래 모드** 카드 → "드라이런"으로 실계좌 기준 주문 계획을 먼저 본다

@@ -16,3 +16,7 @@ claude/railway-deployment-ip-m01okr: 거래소 고정 IP 프록시 추가 — ba
 ## 2026-09-09 08:20 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: 실주문 경로 추가 + 거래 모드 UI 스위치. backend/src/crypto/live.ts(신규, Upbit 실집행: 계획→매도→재동기화→매수, uuid 체결 확인), desk.ts(mode paper/real, data/crypto-mode.json 영속, rotateTo가 async가 됨 — 호출부는 await 필요, real이면 live로), upbit.ts(placeOrder는 armReal 없이는 차단, order(uuid) 추가), routes(GET/POST /crypto/mode owner 전용 confirm:'REAL', GET /crypto/live/preview 드라이런), auth/routes requireOwner, 프론트 설정 페이지 거래 모드 카드 + 프록시 허용. CRYPTO_TRADE_ALLOW_REAL은 부팅 기본값으로만 남음 — 환경변수로 실주문 못 켬. 기본은 여전히 paper. 스캐너/오피스/진화 파일은 안 건드림.
+
+## 2026-09-10 00:20 · agent (claude/railway-deployment-ip-m01okr)
+
+claude/railway-deployment-ip-m01okr: 금고 마스터 키 자동 생성 — CREDENTIALS_MASTER_KEY 없으면 backend/src/auth/crypto.ts가 첫 기동 때 data/vault-master.key(0600)를 만들어 쓴다. env가 있으면 그게 우선. 볼륨 없으면 재배포마다 키가 바뀌니 /app/data 볼륨 전제.

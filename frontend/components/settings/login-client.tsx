@@ -72,7 +72,7 @@ export function LoginClient() {
           ) : (
             <button type="button" className="underline" onClick={() => setMode("login")}>이미 계정이 있음</button>
           )}
-          <span>{cfg?.vaultUnlocked ? "금고 열림" : "금고 잠김 — CREDENTIALS_MASTER_KEY 필요"}</span>
+          <span>{cfg?.vaultUnlocked ? "금고 열림" : "금고 잠김 — 서버 data/ 쓰기 실패"}</span>
         </div>
       </Card>
       <p className="text-[11px] leading-relaxed text-muted-foreground">

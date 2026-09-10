@@ -1,5 +1,38 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { config } from "../config.js";
+import { logger } from "../core/logger.js";
+
+/**
+ * 마스터 키 출처 (우선순위):
+ *   1) CREDENTIALS_MASTER_KEY 환경변수 — 있으면 그대로 (볼륨과 분리된 키 = 더 강한 모델)
+ *   2) data/vault-master.key — 없으면 첫 기동 때 32바이트를 생성해 0600으로 저장한다.
+ * 2)는 암호문(vault.json)과 같은 볼륨에 키가 놓이므로 볼륨 자체가 유출되면 같이 열린다.
+ * 대신 설정 없이 바로 쓸 수 있다. 이 파일을 지우면 기존 암호문은 못 연다 — 키를 다시 등록해야 한다.
+ */
+const KEY_FILE = join(process.cwd(), "data", "vault-master.key");
+
+function fileMasterKey(): Buffer | null {
+  try {
+    if (existsSync(KEY_FILE)) {
+      const hex = readFileSync(KEY_FILE, "utf-8").trim();
+      if (/^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, "hex");
+      logger.error("금고 키 파일이 손상됨 — 금고 잠김 (파일을 지우면 새 키가 생성되지만 기존 암호문은 못 연다)", { file: KEY_FILE });
+      return null;
+    }
+    const key = randomBytes(32);
+    mkdirSync(dirname(KEY_FILE), { recursive: true });
+    const tmp = `${KEY_FILE}.tmp`;
+    writeFileSync(tmp, key.toString("hex") + "\n", { mode: 0o600 });
+    renameSync(tmp, KEY_FILE);
+    logger.warn("금고 마스터 키를 새로 생성해 볼륨에 저장 — 볼륨이 없으면 재배포마다 바뀌어 저장한 거래소 키를 못 연다", { file: KEY_FILE });
+    return key;
+  } catch (e) {
+    logger.error("금고 키 파일 생성/읽기 실패 — 금고 잠김", { file: KEY_FILE, error: (e as Error).message });
+    return null;
+  }
+}
 
 /**
  * 비밀번호 해시(scrypt) + 자격증명 금고(AES-256-GCM).
@@ -34,7 +67,7 @@ let masterKey: Buffer | null | undefined;
 export function vaultKey(): Buffer | null {
   if (masterKey !== undefined) return masterKey;
   const raw = config.CREDENTIALS_MASTER_KEY;
-  if (!raw) return (masterKey = null);
+  if (!raw) return (masterKey = fileMasterKey());
   masterKey = /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, "hex") : scryptSync(raw, "us-trading-vault-v1", 32, { N: 16384, r: 8, p: 1 });
   return masterKey;
 }
@@ -48,7 +81,7 @@ export interface Sealed {
 
 export function seal(obj: unknown, aad: string): Sealed {
   const key = vaultKey();
-  if (!key) throw new Error("VAULT_LOCKED: CREDENTIALS_MASTER_KEY 미설정");
+  if (!key) throw new Error("VAULT_LOCKED: 금고 키를 만들 수 없음 (data/ 쓰기 실패 또는 키 파일 손상) — 서버 로그 확인");
   const iv = randomBytes(12);
   const c = createCipheriv("aes-256-gcm", key, iv);
   c.setAAD(Buffer.from(aad));

@@ -257,13 +257,13 @@ export function SettingsClient() {
         <span className="text-muted-foreground">
           엔진이 쓰는 키: Upbit {src.upbit ?? "없음"} · KIS {src.kis ?? "없음"} {src.owner && `(owner ${src.owner})`}
         </span>
-        <span className={cn("ml-auto font-mono text-[10px]", src.vaultUnlocked ? "text-chart-1" : "text-destructive")}>{src.vaultUnlocked ? "금고 열림 (AES-256-GCM)" : "금고 잠김 — CREDENTIALS_MASTER_KEY 미설정"}</span>
+        <span className={cn("ml-auto font-mono text-[10px]", src.vaultUnlocked ? "text-chart-1" : "text-destructive")}>{src.vaultUnlocked ? "금고 열림 (AES-256-GCM)" : "금고 잠김 — 서버 data/ 쓰기 실패 또는 키 파일 손상"}</span>
         <button type="button" onClick={onLogout} className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
           <LogOut className="size-3" aria-hidden="true" /> 로그아웃
         </button>
       </Card>
       {!src.vaultUnlocked && (
-        <Card className="p-3 text-[11px] text-destructive">서버 환경변수 CREDENTIALS_MASTER_KEY(openssl rand -hex 32)가 없어 키를 저장할 수 없습니다. Railway Variables에 넣으면 바로 열립니다.</Card>
+        <Card className="p-3 text-[11px] text-destructive">금고가 잠겨 키를 저장할 수 없습니다. 서버가 data/vault-master.key를 만들거나 읽지 못한 상태입니다 — Railway 볼륨(/app/data)이 붙어 있는지와 서버 로그를 확인하세요.</Card>
       )}
       <TradingModeCard isOwner={me.user.role === "owner"} hasUpbitKeys={Boolean(src.upbit)} />
       <div className="grid gap-4 lg:grid-cols-2">

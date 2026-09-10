@@ -84,7 +84,7 @@ authRouter.put("/keys/:provider", requireSession, (req: AuthedRequest, res) => {
   const provider = req.params.provider as Provider;
   const fields = PROVIDER_FIELDS[provider];
   if (!fields) return res.status(404).json({ error: "알 수 없는 공급자" });
-  if (!authStore.vaultUnlocked()) return res.status(503).json({ error: "금고가 잠겨 있습니다 — 서버에 CREDENTIALS_MASTER_KEY를 설정하세요", code: "VAULT_LOCKED" });
+  if (!authStore.vaultUnlocked()) return res.status(503).json({ error: "금고가 잠겨 있습니다 — 서버가 data/vault-master.key를 만들거나 읽지 못함 (볼륨·로그 확인)", code: "VAULT_LOCKED" });
   const body = (req.body ?? {}) as Record<string, unknown>;
   const keys: Record<string, string> = {};
   for (const f of fields) if (typeof body[f] === "string") keys[f] = body[f] as string;
