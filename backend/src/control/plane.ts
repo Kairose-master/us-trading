@@ -216,6 +216,18 @@ class ControlPlane extends EventEmitter {
     };
   }
 
+  /**
+   * 지금 어떤 제안 매니저라도 지지하는 마켓들 — 데스크의 "지지 소멸" 청산 규칙이 본다.
+   * 켜진 매니저의 살아 있는 제안이 하나도 없으면 null (정보 없음 — 판단하지 않는다).
+   */
+  supportedMarkets(): Set<string> | null {
+    const props = this.activeProposals().filter((p) => this.st.engines[p.engine]?.enabled);
+    if (!props.length) return null;
+    const out = new Set<string>();
+    for (const p of props) for (const t of p.targets) if (t.weightPct > 0) out.add(t.market);
+    return out;
+  }
+
   private activeProposals(): Proposal[] {
     const now = Date.now();
     this.st.proposals = this.st.proposals.filter((p) => Date.parse(p.expiresAt) > now);

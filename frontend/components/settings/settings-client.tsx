@@ -5,7 +5,7 @@ import Link from "next/link"
 import useSWR from "swr"
 import { toast } from "sonner"
 import { AlertTriangle, LogOut, ShieldCheck, Trash2 } from "lucide-react"
-import { ApiError, authMe, deleteKeys, getKeys, getLivePreview, getTradingMode, isBackendNotConfigured, logout, putKeys, setTradingMode, type MaskedKeys } from "@/lib/api"
+import { ApiError, authMe, deleteKeys, getExitStatus, getKeys, getLivePreview, getTradingMode, isBackendNotConfigured, logout, patchExitRules, putKeys, setTradingMode, type ExitRules, type MaskedKeys } from "@/lib/api"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
 import { cn } from "@/lib/utils"
 
@@ -214,6 +214,97 @@ function TradingModeCard({ isOwner, hasUpbitKeys }: { isOwner: boolean; hasUpbit
   )
 }
 
+const EXIT_FIELDS: Array<{ key: Exclude<keyof ExitRules, "enabled">; label: string; unit: string; hint: string; step?: number }> = [
+  { key: "stopLossPct", label: "손절", unit: "% ↓평단", hint: "평단 대비 이만큼 빠지면 전량 매도", step: 0.5 },
+  { key: "trailingStopPct", label: "트레일링 스탑", unit: "% ↓고점", hint: "추적 시작 후 고점 대비 이만큼 빠지면 전량 매도", step: 0.5 },
+  { key: "takeProfitPct", label: "익절", unit: "% ↑평단", hint: "평단 대비 이만큼 오르면 아래 비율만큼 매도 (포지션당 1회)", step: 1 },
+  { key: "takeProfitSellPct", label: "익절 매도 비율", unit: "%", hint: "익절 때 파는 비율. 나머지는 트레일링이 지킨다", step: 5 },
+  { key: "staleHours", label: "지지 소멸", unit: "시간", hint: "어느 매니저도 지지하지 않는 상태가 이만큼 이어지면 전량 매도", step: 1 },
+  { key: "reentryCooldownMin", label: "재진입 금지", unit: "분", hint: "청산한 종목을 협의회가 바로 되사지 못하게 막는 시간", step: 30 },
+]
+
+/** 청산 규칙 — 협의회 회전(60분 간격·회전율 하한·엣지 게이트)과 별개로 데스크가 10초마다 검사해 즉시 파는 규칙 */
+function ExitRulesCard({ isOwner }: { isOwner: boolean }) {
+  const { data: ex, mutate, error } = useSWR("crypto-exits", getExitStatus, { refreshInterval: 30_000 })
+  const [draft, setDraft] = useState<Partial<ExitRules>>({})
+  const [busy, setBusy] = useState(false)
+  const rules = ex?.rules
+  const val = (k: Exclude<keyof ExitRules, "enabled">): number | undefined => (draft[k] !== undefined ? draft[k] : rules?.[k])
+  const dirty = Object.keys(draft).length > 0
+  const save = async () => {
+    setBusy(true)
+    try {
+      const r = await patchExitRules(draft)
+      mutate(r, { revalidate: false })
+      setDraft({})
+      toast.success("청산 규칙을 저장했습니다")
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "저장 실패")
+    } finally {
+      setBusy(false)
+    }
+  }
+  const toggle = async () => {
+    if (!rules) return
+    setBusy(true)
+    try {
+      const r = await patchExitRules({ enabled: !rules.enabled })
+      mutate(r, { revalidate: false })
+      toast[r.rules.enabled ? "success" : "warning"](r.rules.enabled ? "청산 규칙 ON" : "청산 규칙 OFF — 손절·익절이 나가지 않습니다")
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "전환 실패")
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+        <h2 className="text-sm font-semibold">청산 규칙 — 손절·트레일링·익절</h2>
+        {rules ? (
+          <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", rules.enabled ? "bg-chart-1/15 text-chart-1" : "bg-destructive/15 text-destructive")}>{rules.enabled ? "ON" : "OFF"}</span>
+        ) : error ? (
+          <span className="font-mono text-[10px] text-destructive">상태 조회 실패</span>
+        ) : (
+          <Skeleton className="h-4 w-12" />
+        )}
+        {ex?.lastCheckAt && <span className="text-[10px] text-muted-foreground">마지막 검사 {new Date(ex.lastCheckAt).toLocaleTimeString("ko-KR", { hour12: false })} · 감시 {ex.positions.length}종목</span>}
+      </div>
+      <div className="flex flex-col gap-3 p-4 text-xs">
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          협의회 회전은 60분 간격·회전율 8% 하한·엣지 게이트·30시간 제안 유효기간에 묶여 있어 손절이 늦다. 이 규칙은 데스크가 시세마다(10초) 보유 종목을 검사해 조건에 걸리면 그 게이트들을 우회하고 즉시 시장가로 판다.
+          페이퍼·실모드 공통. 실모드에서는 킬스위치가 켜져 있거나 자동매매가 OFF면 팔지 않고 기록만 남긴다.
+        </p>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {EXIT_FIELDS.map((f) => (
+            <label key={f.key} className="flex flex-col gap-1">
+              <span className="text-[11px] font-medium">{f.label} <span className="font-normal text-muted-foreground">({f.unit})</span></span>
+              <input
+                type="number" inputMode="decimal" step={f.step ?? 1} disabled={!isOwner || !rules}
+                value={val(f.key) ?? ""}
+                onChange={(e) => { const v = e.target.value === "" ? undefined : Number(e.target.value); setDraft((d) => (v === undefined || v === rules?.[f.key] ? Object.fromEntries(Object.entries(d).filter(([k]) => k !== f.key)) : { ...d, [f.key]: v })) }}
+                className="rounded-md border border-border bg-background px-2 py-1 font-mono text-xs tnum disabled:opacity-60"
+              />
+              <span className="text-[10px] leading-snug text-muted-foreground">{f.hint}</span>
+            </label>
+          ))}
+        </div>
+        {!isOwner ? (
+          <p className="text-[11px] text-muted-foreground">owner 계정만 바꿀 수 있습니다.</p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" disabled={busy || !dirty} onClick={save} className={cn("rounded-md bg-foreground px-3 py-1.5 text-xs font-semibold text-background", (busy || !dirty) && "opacity-50")}>{busy ? "…" : "저장"}</button>
+            {dirty && <button type="button" disabled={busy} onClick={() => setDraft({})} className="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-muted">되돌리기</button>}
+            <button type="button" disabled={busy || !rules} onClick={toggle} className={cn("ml-auto rounded-md border px-3 py-1.5 text-xs font-semibold", rules?.enabled ? "border-destructive/60 text-destructive hover:bg-destructive/10" : "border-border hover:bg-muted")}>
+              {rules?.enabled ? "청산 규칙 끄기" : "청산 규칙 켜기"}
+            </button>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 export function SettingsClient() {
   const { data: me, error, mutate: mutateMe } = useSWR("auth-me", authMe, { shouldRetryOnError: false })
   const { data: keys, mutate: mutateKeys } = useSWR(me ? "keys" : null, getKeys)
@@ -266,6 +357,7 @@ export function SettingsClient() {
         <Card className="p-3 text-[11px] text-destructive">금고가 잠겨 키를 저장할 수 없습니다. 서버가 data/vault-master.key를 만들거나 읽지 못한 상태입니다 — Railway 볼륨(/app/data)이 붙어 있는지와 서버 로그를 확인하세요.</Card>
       )}
       <TradingModeCard isOwner={me.user.role === "owner"} hasUpbitKeys={Boolean(src.upbit)} />
+      <ExitRulesCard isOwner={me.user.role === "owner"} />
       <div className="grid gap-4 lg:grid-cols-2">
         <KeyForm provider="upbit" title="Upbit Open API" hint="업비트 마이페이지 → Open API 관리에서 발급. 권한은 자산조회·주문만 켜고 출금은 끄세요. 허용 IP에는 Railway Static IP 3개를 등록해야 합니다 (docs/deploy-railway.md). 저장한 뒤 위 '거래 모드'에서 REAL로 켭니다. 시세·백테스트·페이퍼는 키 없이도 돕니다." masked={keys?.keys.upbit ?? null} onSaved={onSaved} />
         <KeyForm provider="kis" title="한국투자증권 KIS Open API" hint="KIS Developers에서 실전/모의 키를 따로 발급. 서버의 KIS_MODE(mock/real)와 맞는 키를 넣으세요. MOCK_DATA=false로 바꿔야 실계좌 보유가 붙습니다." masked={keys?.keys.kis ?? null} onSaved={onSaved} />

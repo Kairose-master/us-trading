@@ -215,6 +215,32 @@ export async function getTradingMode(): Promise<TradingModeStatus> {
 export async function setTradingMode(mode: TradingMode): Promise<TradingModeStatus> {
   return write("crypto/mode", "POST", mode === "real" ? { mode, confirm: "REAL" } : { mode })
 }
+// ===== 청산 규칙 (손절·트레일링·익절·지지 소멸) — 협의회와 별개로 데스크가 즉시 판다 =====
+export interface ExitRules {
+  enabled: boolean
+  stopLossPct: number
+  trailingStopPct: number
+  takeProfitPct: number
+  takeProfitSellPct: number
+  staleHours: number
+  reentryCooldownMin: number
+}
+export interface ExitStatus {
+  rules: ExitRules
+  mode: TradingMode
+  tradeEnabled: boolean
+  killSwitch: boolean
+  positions: Array<{ symbol: string; qty: number; avgKrw: number; curKrw: number; pnlPct: number; highKrw: number; stopKrw: number; trailKrw: number; takeKrw: number | null; tpTaken: boolean; unsupportedSince: string | null; since: string | null }>
+  cooldown: Array<{ symbol: string; until: string }>
+  log: Array<{ ts: string; mode: TradingMode; market: string; kind: "stop" | "trail" | "take" | "stale"; sellPct: number; volume: number; pnlPct: number; reason: string; orderId: string | null; error: string | null }>
+  lastCheckAt: string | null
+}
+export async function getExitStatus(): Promise<ExitStatus> {
+  return req("crypto/exits")
+}
+export async function patchExitRules(patch: Partial<ExitRules>): Promise<ExitStatus> {
+  return write("crypto/exits", "PATCH", patch)
+}
 export interface LivePreview {
   decision: { id: string; ts: string; status: string; targets: Array<{ market: string; weightPct: number }> } | null
   orders: Array<{ market: string; side: "buy" | "sell"; amountKrw: number; volume: number; note: string }>
@@ -335,7 +361,7 @@ export interface MaskedKeys {
   kis: { updatedAt: string; last4: Record<string, string> } | null
 }
 
-async function write<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<T> {
+async function write<T>(path: string, method: "POST" | "PUT" | "PATCH" | "DELETE", body?: unknown): Promise<T> {
   const res = await fetch(`/api/backend/${path}`, { method, headers: body !== undefined ? { "content-type": "application/json" } : undefined, body: body !== undefined ? JSON.stringify(body) : undefined })
   const text = await res.text()
   let json: unknown = null

@@ -535,6 +535,14 @@ router.post("/crypto/mode", requireSession, requireOwner, async (req, res) => {
   logger.warn("[api] 거래 모드 전환", { mode, by });
   res.json(cryptoDesk.modeStatus());
 });
+// 청산 규칙 — 손절·트레일링·익절·지지 소멸. 협의회와 별개로 데스크가 시세마다 검사해 즉시 판다.
+router.get("/crypto/exits", (_req, res) => { res.json(cryptoDesk.exitStatus()); });
+router.patch("/crypto/exits", requireSession, requireOwner, (req, res) => {
+  const by = (req as AuthedRequest).user?.email ?? "owner";
+  const r = cryptoDesk.setExitRules(req.body ?? {}, by);
+  if (r.error) return res.status(400).json({ error: r.error, ...cryptoDesk.exitStatus() });
+  res.json(cryptoDesk.exitStatus());
+});
 // 드라이런 — 보류 중(또는 마지막) 결정의 타깃으로 실계좌 기준 주문 계획만 계산. 주문은 나가지 않는다.
 router.get("/crypto/live/preview", requireSession, async (_req, res) => {
   const st = controlPlane.status();

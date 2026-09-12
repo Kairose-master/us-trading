@@ -67,6 +67,7 @@ export function attachWsRelay(server: Server) {
   cryptoDesk.pipeline.on("log", (line) => broadcast("crypto:pipeline:log", line));
   cryptoDesk.pipeline.on("sentiment", (payload) => broadcast("crypto:sentiment", payload));
   cryptoDesk.on("order", (order) => broadcast("crypto:order", order));
+  cryptoDesk.on("exit", (event) => broadcast("crypto:exit", event));
 
   // 수집 감독자 — 소스 상태·오케스트레이터 로그
   supervisor.on("snapshot", (snap) => broadcast("ops", snap));

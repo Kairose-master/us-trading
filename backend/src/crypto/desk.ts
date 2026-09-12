@@ -6,6 +6,7 @@ import type { ExecutionSignal } from "../pipeline/types.js";
 import { NewsIngestor } from "../sentiment/news.js";
 import { armReal, upbit, type UpbitTicker } from "./upbit.js";
 import { live, liveEquityKrw, planRotation, flowUntil, type LiveAccount, type LiveFlow } from "./live.js";
+import { applyCooldown, DEFAULT_EXIT_RULES, evaluateExits, validateExitRules, type ExitAction, type ExitRules, type ExitTrack } from "./exits.js";
 import { riskManager } from "../risk/riskManager.js";
 import { config } from "../config.js";
 import { supervisor } from "../core/supervisor.js";
@@ -44,6 +45,10 @@ const MODE_FILE = join(process.cwd(), "data", "crypto-mode.json");
 const LIVE_FILE = join(process.cwd(), "data", "crypto-live.json");
 const LIVE_EQUITY_FILE = join(process.cwd(), "data", "crypto-live-equity.jsonl");
 const LIVE_SYNC_MS = 60_000; // 실모드 계좌 재동기화 주기
+// 청산 규칙·추적 상태 — 페이퍼/실모드 공통 (규칙은 설정 페이지, 추적은 데스크가 갱신)
+const EXITS_FILE = join(process.cwd(), "data", "crypto-exits.json");
+const EXIT_CHECK_MS = 10_000; // 시세 폴링(4초)마다 다 돌릴 필요는 없다
+const EXIT_LOG_MAX = 50;
 
 export type TradingMode = "paper" | "real";
 const EQUITY_SNAPSHOT_MS = 5 * 60_000; // 5분 — 시간 단위로는 판단이 성기다 // 1시간마다 에쿼티 스냅샷
@@ -52,6 +57,21 @@ export interface CryptoRiskLimits {
   maxOrderKrw: number;
   maxWeightPct: number;
   maxPositions: number;
+}
+
+/** 청산 실행 기록 — 화면의 "왜 팔았나" */
+export interface ExitEvent {
+  ts: string;
+  mode: TradingMode;
+  market: string;
+  kind: ExitAction["kind"];
+  sellPct: number;
+  volume: number;
+  pnlPct: number;
+  reason: string;
+  /** 체결 주문 id — 실패면 null, error에 사유 */
+  orderId: string | null;
+  error: string | null;
 }
 
 export interface CryptoOrder {
@@ -99,6 +119,14 @@ class CryptoDesk extends EventEmitter {
    */
   liveFlow: LiveFlow | null = null;
   liveFlowError: string | null = null;
+  /** 청산 규칙(손절·트레일링·익절·지지 소멸) — 협의회와 별개로 시세 폴링마다 검사 */
+  exitRules: ExitRules = { ...DEFAULT_EXIT_RULES };
+  exitTracks = new Map<string, ExitTrack>();
+  /** 청산 후 재진입 금지 — 심볼 → 해제 시각 */
+  exitCooldown = new Map<string, string>();
+  exitLog: ExitEvent[] = [];
+  private exitBusy = false;
+  private lastExitCheck = 0;
   private liveTimer: NodeJS.Timeout | null = null;
   private timer: NodeJS.Timeout | null = null;
   private equityTimer: NodeJS.Timeout | null = null;
@@ -369,6 +397,7 @@ class CryptoDesk extends EventEmitter {
   start() {
     if (this.timer) return;
     this.loadState();
+    this.loadExits();
     this.loadMode();
     if (this.mode === "real") this.startLiveLoop();
     if (!this.paperSince) {
@@ -457,8 +486,178 @@ class CryptoDesk extends EventEmitter {
           volume: Math.round(t.acc_trade_volume_24h),
         });
       }
+      void this.checkExits();
       return { rows: tickers.length };
     }
+  }
+
+  // ===== 청산 규칙 — 손절·트레일링·익절·지지 소멸 (협의회 우회, 즉시 시장가) =====
+
+  private loadExits() {
+    try {
+      if (!existsSync(EXITS_FILE)) return;
+      const s = JSON.parse(readFileSync(EXITS_FILE, "utf-8")) as { rules?: Partial<ExitRules>; tracks?: Array<[string, ExitTrack]>; cooldown?: Array<[string, string]>; log?: ExitEvent[] };
+      if (s.rules && !validateExitRules(s.rules)) this.exitRules = { ...DEFAULT_EXIT_RULES, ...s.rules };
+      this.exitTracks = new Map(s.tracks ?? []);
+      this.exitCooldown = new Map(s.cooldown ?? []);
+      this.exitLog = s.log ?? [];
+      logger.info("청산 규칙 복원", { rules: this.exitRules, tracks: this.exitTracks.size, cooling: this.exitCooldown.size });
+    } catch (e) {
+      logger.warn("청산 규칙 복원 실패 — 기본값", { error: (e as Error).message });
+    }
+  }
+
+  private saveExits() {
+    try {
+      mkdirSync(dirname(EXITS_FILE), { recursive: true });
+      writeFileSync(EXITS_FILE, JSON.stringify({ rules: this.exitRules, tracks: [...this.exitTracks.entries()], cooldown: [...this.exitCooldown.entries()], log: this.exitLog.slice(0, EXIT_LOG_MAX) }));
+    } catch (e) {
+      logger.warn("청산 규칙 저장 실패", { error: (e as Error).message });
+    }
+  }
+
+  setExitRules(patch: Partial<ExitRules>, by: string): { error?: string; rules: ExitRules } {
+    const err = validateExitRules(patch);
+    if (err) return { error: err, rules: this.exitRules };
+    this.exitRules = { ...this.exitRules, ...patch };
+    this.saveExits();
+    logger.warn("[exits] 청산 규칙 변경", { by, rules: this.exitRules });
+    this.pipeline.log("auto-trade", `청산 규칙 변경 (${by}) — 손절 −${this.exitRules.stopLossPct}% · 트레일링 −${this.exitRules.trailingStopPct}% · 익절 +${this.exitRules.takeProfitPct}%/${this.exitRules.takeProfitSellPct}% · 지지 소멸 ${this.exitRules.staleHours}h · 재진입 금지 ${this.exitRules.reentryCooldownMin}분${this.exitRules.enabled ? "" : " · OFF"}`);
+    return { rules: this.exitRules };
+  }
+
+  /** 청산 상태 — 규칙, 보유 종목별 손절선·고점·트레일링선, 재진입 금지, 최근 실행 */
+  exitStatus() {
+    const now = Date.now();
+    const r = this.exitRules;
+    const l = this.ledger();
+    const positions = [...l.positions.entries()].map(([symbol, p]) => {
+      const cur = this.priceOf(`KRW-${symbol}`);
+      const t = this.exitTracks.get(symbol);
+      const high = Math.max(t?.highKrw ?? 0, cur);
+      return {
+        symbol, qty: p.qty, avgKrw: p.avgKrw, curKrw: cur,
+        pnlPct: p.avgKrw > 0 && cur > 0 ? +(((cur - p.avgKrw) / p.avgKrw) * 100).toFixed(2) : 0,
+        highKrw: high,
+        stopKrw: +(p.avgKrw * (1 - r.stopLossPct / 100)).toPrecision(6),
+        trailKrw: +(high * (1 - r.trailingStopPct / 100)).toPrecision(6),
+        takeKrw: t?.tpTaken ? null : +(p.avgKrw * (1 + r.takeProfitPct / 100)).toPrecision(6),
+        tpTaken: t?.tpTaken ?? false,
+        unsupportedSince: t?.unsupportedSince ?? null,
+        since: t?.since ?? null,
+      };
+    });
+    const cooldown = [...this.exitCooldown.entries()].filter(([, until]) => Date.parse(until) > now).map(([symbol, until]) => ({ symbol, until }));
+    return { rules: r, mode: this.mode, tradeEnabled: this.tradeEnabled, killSwitch: riskManager.killSwitchActive, positions, cooldown, log: this.exitLog.slice(0, EXIT_LOG_MAX), lastCheckAt: this.lastExitCheck ? new Date(this.lastExitCheck).toISOString() : null };
+  }
+
+  /**
+   * 보유 종목을 규칙에 대 본다 — 시세 폴링마다(10초 스로틀). 걸리면 협의회·60분 간격·엣지 게이트를
+   * 우회해 바로 판다. 실모드는 킬스위치·자동매매 OFF면 팔지 않고 기록만 남긴다.
+   */
+  async checkExits(): Promise<ExitAction[]> {
+    if (this.exitBusy || Date.now() - this.lastExitCheck < EXIT_CHECK_MS) return [];
+    if (this.mode === "real" && !this.liveAccount) return [];
+    this.exitBusy = true;
+    this.lastExitCheck = Date.now();
+    try {
+      const l = this.ledger();
+      const positions = [...l.positions.entries()].map(([symbol, p]) => ({ symbol, qty: p.qty, lockedQty: (p as { lockedQty?: number }).lockedQty ?? 0, avgKrw: p.avgKrw, curKrw: this.priceOf(`KRW-${symbol}`) }));
+      const { actions, tracks } = evaluateExits({ positions, tracks: this.exitTracks, rules: this.exitRules, supportedMarkets: controlPlane.supportedMarkets() });
+      const changed = tracks.size !== this.exitTracks.size || [...tracks].some(([k, t]) => { const o = this.exitTracks.get(k); return !o || o.highKrw !== t.highKrw || o.unsupportedSince !== t.unsupportedSince; });
+      this.exitTracks = tracks;
+      for (const a of actions) await this.executeExit(a);
+      if (changed || actions.length) this.saveExits();
+      return actions;
+    } catch (e) {
+      logger.warn("[exits] 검사 실패", { error: (e as Error).message });
+      return [];
+    } finally {
+      this.exitBusy = false;
+    }
+  }
+
+  private async executeExit(a: ExitAction) {
+    const reason = `exit:${a.kind} — ${a.reason}`;
+    const event: ExitEvent = { ts: new Date().toISOString(), mode: this.mode, market: a.market, kind: a.kind, sellPct: a.sellPct, volume: a.volume, pnlPct: a.pnlPct, reason: a.reason, orderId: null, error: null };
+    let order: CryptoOrder | null = null;
+    if (this.mode === "real") {
+      // 실주문 관문은 회전과 같다 — 다만 청산은 기존 포지션을 줄이는 것이라 주문당 상한(maxOrderKrw)은 적용하지 않는다
+      const gate = riskManager.killSwitchActive ? "킬스위치 활성 — 청산도 차단" : !this.tradeEnabled ? "크립토 자동매매 OFF — 청산 기록만" : !upbit.hasKeys() ? "Upbit 키 없음" : null;
+      if (gate) event.error = gate;
+      else {
+        const r = await live.execute([{ market: a.market, side: "sell", amountKrw: a.volume * a.curKrw, volume: a.volume, note: reason }], { reason, feePct: PAPER_FEE_PCT });
+        if (r.account) { this.liveAccount = r.account; this.liveError = null; }
+        const f = r.fills[0];
+        if (f) { order = { id: f.uuid, market: f.market, side: "sell", volume: f.volume, priceKrw: +f.priceKrw.toFixed(0), amountKrw: Math.round(f.amountKrw), costKrw: Math.round(f.feeKrw), mode: "real", reason, ts: f.ts }; this.orders.unshift(order); }
+        else event.error = r.skipped.join("; ") || "미체결";
+      }
+    } else {
+      const r = this.paperFill(a.market, "sell", a.volume * a.curKrw, a.curKrw, reason);
+      if (typeof r === "string") event.error = r; else order = r;
+    }
+    if (order) {
+      event.orderId = order.id;
+      if (this.orders.length > 100) this.orders.length = 100;
+      if (a.sellPct >= 100) {
+        this.exitTracks.delete(a.symbol);
+        if (this.exitRules.reentryCooldownMin > 0) this.exitCooldown.set(a.symbol, new Date(Date.now() + this.exitRules.reentryCooldownMin * 60_000).toISOString());
+      } else {
+        const t = this.exitTracks.get(a.symbol);
+        if (t) t.tpTaken = true;
+      }
+      this.saveState();
+      this.snapshotEquity();
+      this.emit("order", order);
+    }
+    this.exitLog.unshift(event);
+    if (this.exitLog.length > EXIT_LOG_MAX) this.exitLog.length = EXIT_LOG_MAX;
+    this.emit("exit", event);
+    const tag = this.mode === "real" ? "REAL" : "paper";
+    if (order) { logger.warn(`[exits] 청산 체결 [${tag}]`, { market: a.market, kind: a.kind, sellPct: a.sellPct, volume: a.volume, pnlPct: a.pnlPct, orderId: order.id }); this.pipeline.log("auto-trade", `${this.mode === "real" ? "⚠️ " : ""}청산 ${a.market.replace("KRW-", "")} ${a.sellPct}% [${tag}] — ${a.reason}`); }
+    else { logger.warn(`[exits] 청산 실패 [${tag}]`, { market: a.market, kind: a.kind, error: event.error }); this.pipeline.log("auto-trade", `청산 실패 ${a.market.replace("KRW-", "")} [${tag}] — ${a.reason} → ${event.error}`); }
+  }
+
+  /** 페이퍼 체결 한 건 — 수수료·슬리피지를 물고 장부를 갱신한다. 실패면 사유 문자열 */
+  private paperFill(market: string, side: "buy" | "sell", amountKrw: number, mid: number, reason: string): CryptoOrder | string {
+    if (mid <= 0) return `${market}: 현재가 없음`;
+    const slip = PAPER_SLIP_PCT / 100;
+    const fee = PAPER_FEE_PCT / 100;
+    const execPrice = side === "buy" ? mid * (1 + slip) : mid * (1 - slip);
+    const volume = +(amountKrw / execPrice).toFixed(8);
+    if (volume <= 0) return `${market}: 수량 0`;
+    const grossKrw = volume * execPrice;
+    const feeKrw = grossKrw * fee;
+    const sym = COIN_OF(market);
+    const pos = this.paperPositions.get(sym);
+    if (side === "buy") {
+      if (this.paperCashKrw < grossKrw + feeKrw) return `${market}: 현금 부족`;
+      this.paperCashKrw -= grossKrw + feeKrw;
+      if (pos) {
+        pos.avgKrw = (pos.avgKrw * pos.qty + execPrice * volume) / (pos.qty + volume);
+        pos.qty += volume;
+      } else this.paperPositions.set(sym, { qty: volume, avgKrw: execPrice });
+    } else {
+      if (!pos) return `${market}: 보유 없음`;
+      const v = Math.min(volume, pos.qty);
+      this.paperCashKrw += v * execPrice * (1 - fee);
+      pos.qty -= v;
+      if (pos.qty <= 1e-10) this.paperPositions.delete(sym);
+    }
+    const order: CryptoOrder = {
+      id: `SCAN-${++this.orderSeq}-${Date.now()}`,
+      market,
+      side,
+      volume,
+      priceKrw: +execPrice.toFixed(0),
+      amountKrw: Math.round(grossKrw),
+      costKrw: Math.round(feeKrw + Math.abs(execPrice - mid) * volume),
+      mode: "paper",
+      reason,
+      ts: new Date().toISOString(),
+    };
+    this.orders.unshift(order);
+    return order;
   }
 
   /** 파이프라인 실행 신호 → (설정에 따라) 페이퍼/실주문 */
@@ -483,62 +682,24 @@ class CryptoDesk extends EventEmitter {
     reason: string,
   ): Promise<{ orders: CryptoOrder[]; skipped: string[]; error?: string }> {
     for (const [m, px] of priceOf) if (px > 0) this.altPrices.set(m, px);
-    if (this.mode === "real") return this.rotateLive(targets, reason);
-    const price = (market: string) => priceOf.get(market) ?? this.lastTickers.get(market)?.trade_price ?? 0;
+    const price = (market: string) => priceOf.get(market) ?? this.priceOf(market);
+    // 청산 직후 재진입 금지 — 협의회가 방금 판 종목을 바로 되사지 않게. 보유 중이면 현재 비중으로 고정
+    const cool = applyCooldown(targets, this.exitCooldown, (m) => { const eq = this.equityKrw(); const p = this.ledger().positions.get(COIN_OF(m)); const px = price(m); return eq > 0 && p && px > 0 ? (p.qty * px / eq) * 100 : 0; });
+    targets = cool.targets;
+    if (cool.notes.length) this.pipeline.log("auto-trade", `재진입 금지 적용 — ${cool.notes.join(" · ")}`);
+    if (this.mode === "real") { const r = await this.rotateLive(targets, reason); return { ...r, skipped: [...cool.notes, ...r.skipped] }; }
     // 현재 에쿼티 (스캐너 가격 우선 — 데스크 미추적 알트 포함)
     let equity = this.paperCashKrw;
     for (const [sym, p] of this.paperPositions) {
       const px = price(`KRW-${sym}`);
       if (px > 0) equity += p.qty * px;
     }
-    const slip = PAPER_SLIP_PCT / 100;
-    const fee = PAPER_FEE_PCT / 100;
     const done: CryptoOrder[] = [];
-    const skipped: string[] = [];
+    const skipped: string[] = [...cool.notes];
     const fill = (market: string, side: "buy" | "sell", amountKrw: number) => {
-      const mid = price(market);
-      if (mid <= 0) {
-        skipped.push(`${market}: 현재가 없음`);
-        return;
-      }
-      const execPrice = side === "buy" ? mid * (1 + slip) : mid * (1 - slip);
-      const volume = +(amountKrw / execPrice).toFixed(8);
-      if (volume <= 0) return;
-      const grossKrw = volume * execPrice;
-      const feeKrw = grossKrw * fee;
-      const sym = COIN_OF(market);
-      const pos = this.paperPositions.get(sym);
-      if (side === "buy") {
-        if (this.paperCashKrw < grossKrw + feeKrw) {
-          skipped.push(`${market}: 현금 부족`);
-          return;
-        }
-        this.paperCashKrw -= grossKrw + feeKrw;
-        if (pos) {
-          pos.avgKrw = (pos.avgKrw * pos.qty + execPrice * volume) / (pos.qty + volume);
-          pos.qty += volume;
-        } else this.paperPositions.set(sym, { qty: volume, avgKrw: execPrice });
-      } else {
-        if (!pos) return;
-        const v = Math.min(volume, pos.qty);
-        this.paperCashKrw += v * execPrice * (1 - fee);
-        pos.qty -= v;
-        if (pos.qty <= 1e-10) this.paperPositions.delete(sym);
-      }
-      const order: CryptoOrder = {
-        id: `SCAN-${++this.orderSeq}-${Date.now()}`,
-        market,
-        side,
-        volume,
-        priceKrw: +execPrice.toFixed(0),
-        amountKrw: Math.round(grossKrw),
-        costKrw: Math.round(feeKrw + Math.abs(execPrice - mid) * volume),
-        mode: "paper",
-        reason,
-        ts: new Date().toISOString(),
-      };
-      done.push(order);
-      this.orders.unshift(order);
+      const r = this.paperFill(market, side, amountKrw, price(market), reason);
+      if (typeof r === "string") { if (!r.endsWith("수량 0") && !r.endsWith("보유 없음")) skipped.push(r); return; }
+      done.push(r);
     };
 
     const targetOf = new Map(targets.map((t) => [t.market, t.weightPct]));

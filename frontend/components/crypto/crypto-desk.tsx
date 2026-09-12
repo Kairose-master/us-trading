@@ -10,6 +10,7 @@ import { CommandCenter } from "@/components/dashboard/command-center"
 import { EquityChart } from "@/components/dashboard/equity-chart"
 import { useHoldings } from "@/components/positions/holdings-view"
 import { CryptoHoldingsCard } from "@/components/crypto/crypto-holdings"
+import { CryptoExitsCard } from "@/components/crypto/crypto-exits"
 import { cn } from "@/lib/utils"
 
 const krw = (v: number) => `₩${Math.round(v).toLocaleString("ko-KR")}`
@@ -68,6 +69,7 @@ export function CryptoDesk() {
         </div>
         {real && live?.error && <Card className="p-3 text-[11px] text-destructive">실계좌 동기화 오류: {live.error}</Card>}
         <CryptoHoldingsCard c={c} />
+        <CryptoExitsCard />
       </>
     )
   }
