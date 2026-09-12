@@ -63,6 +63,20 @@ export interface UpbitOrderState {
   trades?: Array<{ price: string; volume: string; funds: string }>;
 }
 
+/** GET /v1/deposits · /v1/withdraws 한 줄 — KRW 입출금 추적용 (필요한 필드만) */
+export interface UpbitTransfer {
+  type: "deposit" | "withdraw";
+  uuid: string;
+  currency: string;
+  /** 입금 완료 ACCEPTED · 출금 완료 DONE. 나머지(PROCESSING/WAITING/CANCELLED/…)는 아직 돈이 안 움직였거나 되돌아온 것 */
+  state: string;
+  created_at: string;
+  done_at: string | null;
+  amount: string;
+  fee: string;
+  transaction_type?: string;
+}
+
 /**
  * 실주문 무장 플래그 — 데스크가 거래 모드를 real로 바꿀 때만 켠다 (UI 스위치).
  * placeOrder는 이 플래그 없이는 절대 나가지 않는다. 환경변수로는 켤 수 없다.
@@ -198,6 +212,26 @@ export const upbit = {
     });
     if (!res.ok) throw new Error(`Upbit /accounts → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
     return (await res.json()) as UpbitAccount[];
+  },
+
+  /**
+   * 입출금 내역 한 페이지 — 최신순, 최대 100건. 실모드 시작 이후 KRW 입출금을 손익에서
+   * 빼기 위한 것 (출금은 손실이 아니다). state를 주면 그 상태만.
+   */
+  async transfers(kind: "deposits" | "withdraws", p: { currency?: string; state?: string; page?: number; limit?: number } = {}): Promise<UpbitTransfer[]> {
+    const params = new URLSearchParams();
+    if (p.currency) params.set("currency", p.currency);
+    if (p.state) params.set("state", p.state);
+    params.set("limit", String(Math.min(100, p.limit ?? 100)));
+    params.set("page", String(p.page ?? 1));
+    params.set("order_by", "desc");
+    const query = params.toString();
+    const res = await egressFetch("upbit", `${BASE}/${kind}?${query}`, {
+      headers: { Authorization: `Bearer ${this.authToken(query)}` },
+      signal: AbortSignal.timeout(TIMEOUT),
+    });
+    if (!res.ok) throw new Error(`Upbit /${kind} → HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return (await res.json()) as UpbitTransfer[];
   },
 
   /** 주문 단건 조회 — 시장가 체결 확인용 (state: wait/watch/done/cancel) */

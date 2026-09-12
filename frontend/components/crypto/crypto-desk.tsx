@@ -62,7 +62,7 @@ export function CryptoDesk() {
       <>
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Stat label={real ? "실계좌 평가 (Upbit)" : "페이퍼 평가 (Upbit 실시세)"} value={krw(c.equityKrw)} sub={real ? `동기화 ${live?.syncedAt ? new Date(live.syncedAt).toLocaleTimeString("ko-KR", { hour12: false }) : "대기"}` : `시드 ${krw(c.startKrw)}`} />
-          <Stat label={real ? "실모드 시작 이후 손익" : "페이퍼 손익"} value={signedKrw(c.pnlKrw)} sub={fmtPct(c.pnlPct)} valueClass={pnlClass(c.pnlKrw)} />
+          <Stat label={real ? "실모드 시작 이후 손익" : "페이퍼 손익"} value={signedKrw(c.pnlKrw)} sub={real && c.flowKrw ? `${fmtPct(c.pnlPct)} · ${c.flowKrw < 0 ? "출금" : "입금"} ${krw(Math.abs(c.flowKrw))} 제외` : fmtPct(c.pnlPct)} valueClass={pnlClass(c.pnlKrw)} />
           <Stat label="현금 (KRW)" value={krw(c.cashKrw)} sub={real && live?.lockedKrw ? `미체결 묶임 ${krw(live.lockedKrw)}` : undefined} />
           <Stat label="보유 종목" value={String(c.positions.length)} sub={c.since ? `${c.since.slice(0, 10)}~` : undefined} />
         </div>

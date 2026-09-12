@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planRotation, toLiveAccount, liveEquityKrw, MIN_ORDER_KRW } from "./live.js";
+import { planRotation, toLiveAccount, liveEquityKrw, netKrwFlow, flowUntil, MIN_ORDER_KRW } from "./live.js";
 
 const acct = (cashKrw: number, pos: Record<string, [number, number]>, locked: Record<string, number> = {}) => ({
   cashKrw, lockedKrw: 0, syncedAt: "t",
@@ -57,5 +57,44 @@ describe("planRotation", () => {
   });
   it("exposes the minimum order constant used by the desk", () => {
     expect(MIN_ORDER_KRW).toBe(5_000);
+  });
+});
+
+describe("netKrwFlow", () => {
+  const T0 = "2026-09-01T00:00:00.000Z";
+  const row = (over: Partial<Parameters<typeof netKrwFlow>[0][number]>) => ({
+    type: "withdraw" as const, uuid: "u", currency: "KRW", state: "DONE", created_at: "2026-09-10T12:00:00+09:00", done_at: "2026-09-10T12:05:00+09:00", amount: "0", fee: "0", ...over,
+  });
+  it("counts a completed KRW withdrawal (plus its fee) as cash leaving, not as a loss", () => {
+    const f = netKrwFlow([row({ uuid: "w1", amount: "522998", fee: "1000" })], T0, "now");
+    expect(f.withdrawKrw).toBe(523_998); expect(f.depositKrw).toBe(0); expect(f.netKrw).toBe(-523_998);
+    expect(f.rows).toEqual([{ ts: "2026-09-10T03:05:00.000Z", krw: -523_998, type: "withdraw", uuid: "w1" }]);
+    // 시작 ₩940,000 · 출금 후 에쿼티 ₩416,002 → 손익 0
+    expect(416_002 - (940_000 + f.netKrw)).toBe(0);
+  });
+  it("nets deposits against withdrawals and orders rows by time", () => {
+    const f = netKrwFlow([
+      row({ uuid: "w1", amount: "100000", fee: "1000", done_at: "2026-09-11T00:00:00Z" }),
+      row({ type: "deposit", uuid: "d1", state: "ACCEPTED", amount: "300000", fee: "0", done_at: "2026-09-05T00:00:00Z" }),
+    ], T0);
+    expect(f.netKrw).toBe(300_000 - 101_000);
+    expect(f.rows.map((r) => r.uuid)).toEqual(["d1", "w1"]);
+    expect(flowUntil(f, "2026-09-06T00:00:00.000Z")).toBe(300_000);
+    expect(flowUntil(f, "2026-09-12T00:00:00.000Z")).toBe(199_000);
+    expect(flowUntil(null, "2026-09-12T00:00:00.000Z")).toBe(0);
+  });
+  it("ignores transfers before live start, non-KRW currencies, unfinished or reverted states, and duplicates", () => {
+    const f = netKrwFlow([
+      row({ uuid: "old", amount: "50000", done_at: "2026-08-31T23:59:59Z" }),
+      row({ uuid: "btc", currency: "BTC", amount: "1" }),
+      row({ uuid: "wait", state: "WAITING", amount: "50000" }),
+      row({ type: "deposit", uuid: "ref", state: "REFUNDED", amount: "50000" }),
+      row({ type: "deposit", uuid: "pend", state: "PROCESSING", amount: "50000" }),
+      row({ uuid: "dup", amount: "10000", fee: "0" }),
+      row({ uuid: "dup", amount: "10000", fee: "0" }),
+      row({ uuid: "nodone", amount: "5000", fee: "0", done_at: null }),
+    ], T0);
+    expect(f.rows.map((r) => r.uuid)).toEqual(["nodone", "dup"]); // done_at 없는 건은 created_at(더 이름)으로
+    expect(f.netKrw).toBe(-15_000);
   });
 });

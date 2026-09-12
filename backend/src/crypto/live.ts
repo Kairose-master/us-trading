@@ -1,4 +1,4 @@
-import { upbit, type UpbitAccount, type UpbitOrderState } from "./upbit.js";
+import { upbit, type UpbitAccount, type UpbitOrderState, type UpbitTransfer } from "./upbit.js";
 import { riskManager } from "../risk/riskManager.js";
 import { logger } from "../core/logger.js";
 
@@ -75,6 +75,57 @@ export function liveEquityKrw(acct: LiveAccount, price: (market: string) => numb
     if (px > 0) eq += p.qty * px;
   }
   return eq;
+}
+
+/** 실모드 시작 이후 KRW 입출금 한 건 — 손익·드로다운 기준을 옮기는 외부 현금흐름 */
+export interface LiveFlowRow { ts: string; krw: number; type: "deposit" | "withdraw"; uuid: string }
+export interface LiveFlow {
+  /** 입금 합(수수료 차감) */
+  depositKrw: number;
+  /** 출금 합(수수료 포함 — 계좌에서 실제로 빠진 금액) */
+  withdrawKrw: number;
+  /** 입금 − 출금. 손익 = 에쿼티 − (시작 에쿼티 + netKrw) */
+  netKrw: number;
+  /** 시간 오름차순 */
+  rows: LiveFlowRow[];
+  syncedAt: string;
+}
+
+/** 완료된 이체만 — 대기·취소·환불은 아직 돈이 안 움직였거나 되돌아왔다 */
+const FLOW_DONE_STATE: Record<UpbitTransfer["type"], string> = { deposit: "ACCEPTED", withdraw: "DONE" };
+
+/**
+ * 입출금 내역 → 실모드 시작 이후 KRW 순유입. 순수 함수.
+ * 출금은 손실이 아니고 입금은 수익이 아니다 — 실측: ₩523,998 출금이 "실모드 시작 이후 손익 −₩523,998"로 찍혔다.
+ * 코인 입출금은 세지 않는다(그 시점 시세로 환산해야 해서 별도 과제).
+ */
+export function netKrwFlow(rows: UpbitTransfer[], sinceIso: string, now = new Date().toISOString()): LiveFlow {
+  const since = Date.parse(sinceIso);
+  const out: LiveFlowRow[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    if (r.currency !== "KRW" || r.state !== FLOW_DONE_STATE[r.type]) continue;
+    const ts = r.done_at ?? r.created_at;
+    const t = Date.parse(ts);
+    if (!Number.isFinite(t) || t < since) continue;
+    const key = `${r.type}:${r.uuid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const amount = Number(r.amount) || 0, fee = Number(r.fee) || 0;
+    out.push({ ts: new Date(t).toISOString(), krw: r.type === "deposit" ? amount - fee : -(amount + fee), type: r.type, uuid: r.uuid });
+  }
+  out.sort((a, b) => a.ts.localeCompare(b.ts));
+  let depositKrw = 0, withdrawKrw = 0;
+  for (const f of out) { if (f.krw > 0) depositKrw += f.krw; else withdrawKrw -= f.krw; }
+  return { depositKrw, withdrawKrw, netKrw: depositKrw - withdrawKrw, rows: out, syncedAt: now };
+}
+
+/** 특정 시점까지 누적된 순유입 — 에쿼티 스냅샷을 입출금 보정할 때 (드로다운은 보정 에쿼티로 잰다) */
+export function flowUntil(flow: LiveFlow | null, tsIso: string): number {
+  if (!flow) return 0;
+  let sum = 0;
+  for (const f of flow.rows) { if (f.ts <= tsIso) sum += f.krw; }
+  return sum;
 }
 
 /**
@@ -170,6 +221,22 @@ async function settle(uuid: string): Promise<UpbitOrderState> {
 export const live = {
   async sync(): Promise<LiveAccount> {
     return toLiveAccount(await upbit.accounts());
+  },
+
+  /** 실모드 시작(sinceIso) 이후 KRW 입출금 — 최신순 페이지를 since 이전 건이 나올 때까지 넘긴다 */
+  async flows(sinceIso: string): Promise<LiveFlow> {
+    const since = Date.parse(sinceIso);
+    const rows: UpbitTransfer[] = [];
+    for (const kind of ["deposits", "withdraws"] as const) {
+      const type = kind === "deposits" ? "deposit" : "withdraw";
+      for (let page = 1; page <= 10; page++) {
+        const batch = await upbit.transfers(kind, { currency: "KRW", state: FLOW_DONE_STATE[type], page, limit: 100 });
+        for (const r of batch) rows.push({ ...r, type });
+        const oldest = batch.length ? Date.parse(batch[batch.length - 1].done_at ?? batch[batch.length - 1].created_at) : NaN;
+        if (batch.length < 100 || (Number.isFinite(oldest) && oldest < since)) break;
+      }
+    }
+    return netKrwFlow(rows, sinceIso);
   },
 
   /** 집행 전 관문 — 통과 못 하면 사유 */

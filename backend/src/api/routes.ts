@@ -71,10 +71,13 @@ router.get("/account/holdings", async (_req, res) => {
       hasKeys: c.hasKeys,
       since: c.paperSince,
       startKrw: c.paperStartKrw,
+      // 실모드: 시작 이후 KRW 입출금은 손익이 아니다 — 기준(baseKrw) = 시작 에쿼티 + 순입금
+      flowKrw: c.flowKrw,
+      baseKrw: c.baseKrw,
       cashKrw: c.cashKrw,
       equityKrw: c.equityKrw,
-      pnlKrw: c.equityKrw - c.paperStartKrw,
-      pnlPct: +(((c.equityKrw - c.paperStartKrw) / c.paperStartKrw) * 100).toFixed(2),
+      pnlKrw: c.equityKrw - c.baseKrw,
+      pnlPct: c.baseKrw > 0 ? +(((c.equityKrw - c.baseKrw) / c.baseKrw) * 100).toFixed(2) : 0,
       positions: cryptoPositions,
     },
     us: {

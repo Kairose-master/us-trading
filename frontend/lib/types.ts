@@ -27,6 +27,10 @@ export interface Holdings {
     hasKeys: boolean
     since: string | null
     startKrw: number
+    /** 실모드 시작 이후 KRW 순입금(입금 − 출금·수수료). 페이퍼면 0 */
+    flowKrw?: number
+    /** 손익 기준 = startKrw + flowKrw — 출금은 손실이 아니다 */
+    baseKrw?: number
     cashKrw: number
     equityKrw: number
     pnlKrw: number

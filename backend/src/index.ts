@@ -69,7 +69,8 @@ officeLoop.startAutoLoop();
 evolution.startAutoLoop();
 // 제어 평면: 가격은 크립토 데스크 티커(보유분 폴백 포함), 귀속은 하루 한 번 일봉으로
 controlPlane.attachSentiment(() => cryptoDesk.pipeline.tracker.bySymbol().map((x) => ({ market: x.symbol.startsWith("KRW-") ? x.symbol : `KRW-${x.symbol}`, score: x.score, label: x.label, mentions: x.mentions, driver: x.topDriver })));
-controlPlane.attachDrawdown(() => { const s = cryptoDesk.status(); const rows = cryptoDesk.paperEquity(5000); const peak = Math.max(s.paperStartKrw, ...rows.map((r) => r.equityKrw)); return peak > 0 ? Math.max(0, ((peak - s.equityKrw) / peak) * 100) : 0; });
+// 드로다운은 입출금 보정 에쿼티로 잰다 — 출금 직후 고점 대비 "손실"로 읽혀 협의회가 신규 포지션을 거부하던 실측 버그
+controlPlane.attachDrawdown(() => { const s = cryptoDesk.status(); const rows = cryptoDesk.paperEquity(5000); const peak = Math.max(s.paperStartKrw, ...rows.map((r) => cryptoDesk.flowAdjustedKrw(r.equityKrw, r.ts))); const cur = s.equityKrw - s.flowKrw; return peak > 0 ? Math.max(0, ((peak - cur) / peak) * 100) : 0; });
 controlPlane.attachEquity(() => cryptoDesk.status().equityKrw);
 controlPlane.startScheduler();
 // 벤치마크 기준 — 장부 since와 어긋나면 그 시각의 1분봉으로 복원 (BTC 보유 · 유니버스 동일비중).

@@ -206,7 +206,7 @@ export interface TradingModeStatus {
   hasKeys: boolean
   killSwitch: boolean
   tradeEnabled: boolean
-  live: { syncedAt: string | null; cashKrw?: number; lockedKrw?: number; positions?: number; equityKrw?: number; startKrw?: number | null; since?: string | null; error: string | null }
+  live: { syncedAt: string | null; cashKrw?: number; lockedKrw?: number; positions?: number; equityKrw?: number; startKrw?: number | null; since?: string | null; flowKrw?: number; flowError?: string | null; error: string | null }
   limits: { maxOrderKrw: number }
 }
 export async function getTradingMode(): Promise<TradingModeStatus> {

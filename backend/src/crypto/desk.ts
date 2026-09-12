@@ -5,7 +5,7 @@ import { PipelineEngine, type PipelineContext } from "../pipeline/engine.js";
 import type { ExecutionSignal } from "../pipeline/types.js";
 import { NewsIngestor } from "../sentiment/news.js";
 import { armReal, upbit, type UpbitTicker } from "./upbit.js";
-import { live, liveEquityKrw, planRotation, type LiveAccount } from "./live.js";
+import { live, liveEquityKrw, planRotation, flowUntil, type LiveAccount, type LiveFlow } from "./live.js";
 import { riskManager } from "../risk/riskManager.js";
 import { config } from "../config.js";
 import { supervisor } from "../core/supervisor.js";
@@ -93,6 +93,12 @@ class CryptoDesk extends EventEmitter {
   /** 실모드 시작 시점의 에쿼티 — 실모드 드로다운·수익률 기준 */
   liveStartKrw: number | null = null;
   liveSince: string | null = null;
+  /**
+   * 실모드 시작 이후 KRW 입출금 — 손익·드로다운 기준을 옮긴다. 출금은 손실이 아니다
+   * (실측: ₩523,998 출금이 "실모드 시작 이후 손익 −₩523,998"로 찍히고 드로다운 거부까지 걸렸다).
+   */
+  liveFlow: LiveFlow | null = null;
+  liveFlowError: string | null = null;
   private liveTimer: NodeJS.Timeout | null = null;
   private timer: NodeJS.Timeout | null = null;
   private equityTimer: NodeJS.Timeout | null = null;
@@ -187,6 +193,34 @@ class CryptoDesk extends EventEmitter {
     }
   }
 
+  /** 실모드 시작 이후 KRW 입출금 동기화 — 계좌 동기화와 분리해 실패해도 잔고는 살아 있게 */
+  async syncLiveFlow(): Promise<LiveFlow | null> {
+    if (!this.liveSince) return null;
+    try {
+      const prev = this.liveFlow?.netKrw ?? 0;
+      this.liveFlow = await live.flows(this.liveSince);
+      this.liveFlowError = null;
+      if (this.liveFlow.netKrw !== prev) logger.info("[live] 입출금 반영", { depositKrw: this.liveFlow.depositKrw, withdrawKrw: this.liveFlow.withdrawKrw, netKrw: this.liveFlow.netKrw, rows: this.liveFlow.rows.length });
+      return this.liveFlow;
+    } catch (e) {
+      this.liveFlowError = (e as Error).message;
+      logger.warn("[live] 입출금 조회 실패 — 마지막 값 유지", { error: this.liveFlowError });
+      return this.liveFlow;
+    }
+  }
+
+  /** 실모드 손익 기준 = 시작 에쿼티 + 그 이후 순입금. paper면 시드 그대로 */
+  baseKrw(): number {
+    if (this.mode !== "real") return PAPER_START_KRW;
+    return (this.liveStartKrw ?? 0) + (this.liveFlow?.netKrw ?? 0);
+  }
+
+  /** 입출금 보정 에쿼티 — 스냅샷(ts)과 현재를 같은 기준에서 비교하려고 그 시점까지의 순입금을 뺀다 */
+  flowAdjustedKrw(equityKrw: number, tsIso: string): number {
+    if (this.mode !== "real") return equityKrw;
+    return equityKrw - flowUntil(this.liveFlow, tsIso);
+  }
+
   /** 보유 알트의 현재가를 티커로 채운다 — 데스크 유니버스 밖 코인도 에쿼티에 들어가야 한다 */
   private async refreshHeldPrices() {
     const missing = [...this.ledger().positions.keys()].map((s) => `KRW-${s}`).filter((m) => !this.lastTickers.has(m));
@@ -196,7 +230,7 @@ class CryptoDesk extends EventEmitter {
 
   private startLiveLoop() {
     if (this.liveTimer) return;
-    const tick = async () => { try { await this.syncLive(); await this.refreshHeldPrices(); } catch { /* liveError에 남음 */ } };
+    const tick = async () => { try { await this.syncLive(); await this.refreshHeldPrices(); } catch { /* liveError에 남음 */ } await this.syncLiveFlow(); };
     void tick();
     this.liveTimer = setInterval(() => void tick(), LIVE_SYNC_MS);
     this.liveTimer.unref();
@@ -221,6 +255,7 @@ class CryptoDesk extends EventEmitter {
       await this.refreshHeldPrices();
       this.mode = "real"; this.modeSince = new Date().toISOString(); this.modeBy = by;
       this.liveSince = this.modeSince; this.liveStartKrw = Math.round(liveEquityKrw(account, (m) => this.priceOf(m)));
+      this.liveFlow = null; this.liveFlowError = null; // 새 기준점 — 입출금은 이 시각부터 다시 센다
       armReal(true);
       this.saveMode();
       this.startLiveLoop();
@@ -581,7 +616,7 @@ class CryptoDesk extends EventEmitter {
       killSwitch: riskManager.killSwitchActive,
       tradeEnabled: this.tradeEnabled,
       live: this.liveAccount
-        ? { syncedAt: this.liveAccount.syncedAt, cashKrw: Math.round(this.liveAccount.cashKrw), lockedKrw: Math.round(this.liveAccount.lockedKrw), positions: this.liveAccount.positions.size, equityKrw: Math.round(this.mode === "real" ? this.equityKrw() : liveEquityKrw(this.liveAccount, (m) => this.priceOf(m))), startKrw: this.liveStartKrw, since: this.liveSince, error: this.liveError }
+        ? { syncedAt: this.liveAccount.syncedAt, cashKrw: Math.round(this.liveAccount.cashKrw), lockedKrw: Math.round(this.liveAccount.lockedKrw), positions: this.liveAccount.positions.size, equityKrw: Math.round(this.mode === "real" ? this.equityKrw() : liveEquityKrw(this.liveAccount, (m) => this.priceOf(m))), startKrw: this.liveStartKrw, since: this.liveSince, flowKrw: Math.round(this.liveFlow?.netKrw ?? 0), flowError: this.liveFlowError, error: this.liveError }
         : { syncedAt: null, error: this.liveError },
       limits: { maxOrderKrw: this.limits.maxOrderKrw },
     };
@@ -598,11 +633,14 @@ class CryptoDesk extends EventEmitter {
       // real 모드에서는 "since/start"가 실모드 시작 시점·에쿼티 — 드로다운·수익률 기준이 실계좌로 바뀐다
       paperSince: real ? this.liveSince : this.paperSince,
       paperStartKrw: real ? (this.liveStartKrw ?? 0) : PAPER_START_KRW,
+      // 실모드 시작 이후 KRW 순입금(입금 − 출금·수수료). 손익 기준 = paperStartKrw + flowKrw
+      flowKrw: real ? Math.round(this.liveFlow?.netKrw ?? 0) : 0,
+      baseKrw: Math.round(this.baseKrw()),
       costs: { feePct: PAPER_FEE_PCT, slipPct: PAPER_SLIP_PCT },
       markets: cryptoUniverse.markets(),
       equityKrw: Math.round(this.equityKrw()),
       cashKrw: Math.round(l.cashKrw),
-      live: real ? { syncedAt: this.liveAccount?.syncedAt ?? null, lockedKrw: Math.round(this.liveAccount?.lockedKrw ?? 0), error: this.liveError } : null,
+      live: real ? { syncedAt: this.liveAccount?.syncedAt ?? null, lockedKrw: Math.round(this.liveAccount?.lockedKrw ?? 0), depositKrw: Math.round(this.liveFlow?.depositKrw ?? 0), withdrawKrw: Math.round(this.liveFlow?.withdrawKrw ?? 0), flowSyncedAt: this.liveFlow?.syncedAt ?? null, error: this.liveError ?? this.liveFlowError } : null,
       positions: [...l.positions.entries()].map(([symbol, p]) => {
         const cur = this.priceOf(`KRW-${symbol}`);
         // 평단은 반올림하지 않는다 — ₩0.005짜리 코인의 평단을 0으로 만들어 손익률이 깨졌다 (BONK avg 0)
