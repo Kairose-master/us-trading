@@ -939,3 +939,4 @@ export async function getPumpfunMode(): Promise<PumpLive> { return req("pumpfun/
 export async function setPumpfunMode(mode: "paper" | "real", walletPubkey?: string): Promise<{ ok: true } & PumpLive> { return write("pumpfun/mode", "POST", mode === "real" ? { mode, confirm: "REAL", walletPubkey } : { mode }) }
 export async function pumpfunFlatten(): Promise<{ ok: true; sold: number; pending: number }> { return write("pumpfun/live/flatten", "POST", {}) }
 export async function pumpfunSetLivePolicy(patch: Partial<PumpLivePolicy>): Promise<{ ok: true; policy: PumpLivePolicy }> { return write("pumpfun/live/policy", "POST", patch) }
+export async function pumpfunReconcile(): Promise<{ ok: true; adopted: string[]; closed: string[] }> { return write("pumpfun/live/reconcile", "POST", {}) }

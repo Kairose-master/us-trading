@@ -7,7 +7,7 @@ import { PumpPortalFeed, type FeedEvent } from "./feed.js";
 import { PumpLedger, DEFAULT_LEDGER_COSTS, type LedgerCosts, type LedgerSnapshot } from "./ledger.js";
 import { applyOutcome, lotExits, onLeaderTrade, DEFAULT_COPY_POLICY, type CopyAction, type CopyPolicy, type Follow } from "./copy.js";
 import { initialStanding, scoreWallets, DEFAULT_THRESHOLDS, PROVISIONAL_STANDING, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
-import { parseTxDeltas, readCurve, waitForTx, walletSol } from "./solana-rpc.js";
+import { parseTxDeltas, readCurve, tokenBalance, waitForTx, walletSol, walletTokenBalances } from "./solana-rpc.js";
 import { progress } from "./curve.js";
 import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
 import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
@@ -33,7 +33,8 @@ const MODE_FILE = join(DIR, "mode.json");
 const LIVE_FILE = join(DIR, "live.json");
 const LIVE_EQUITY_FILE = join(DIR, "live-equity.jsonl");
 const LIVE_SYNC_MS = 60_000;
-const TX_TIMEOUT_MS = 45_000;
+const TX_TIMEOUT_MS = 90_000;
+const RECONCILE_MS = 2 * 60_000;
 export type PumpMode = "paper" | "real";
 interface ModeState { mode: PumpMode; since: string | null; by: string | null; walletPubkey: string | null }
 interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; syncedAt: string | null; startSol: number | null; since: string | null; stats: { buys: number; sells: number; failed: number } }
@@ -152,6 +153,8 @@ class PumpfunDesk extends EventEmitter {
     setTimeout(() => { if (this.trades.length) this.rescore(); }, 3 * 60_000).unref();
     this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.syncWallet(); }, LIVE_SYNC_MS));
     this.timers.push(setInterval(() => void this.pollHeldCommunity(), 60_000));
+    this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.reconcileLive(); }, RECONCILE_MS));
+    if (this.modeSt.mode === "real") setTimeout(() => void this.reconcileLive(), 10_000).unref();
     if (this.modeSt.mode === "real") { logger.warn("[pumpfun] REAL mode active", { wallet: this.modeSt.walletPubkey }); void this.syncWallet(); }
     for (const t of this.timers) t.unref();
     logger.info("[pumpfun] desk started (paper, SOL)", { startSol: this.ledger.startSol, follows: Object.keys(this.st.follows).length, seeds: this.st.seeds.length, key: this.feed.hasKey });
@@ -284,16 +287,30 @@ class PumpfunDesk extends EventEmitter {
       const { sol, why } = liveBuySize(P, this.liveEquitySol(), standing, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
       if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); return; }
       this.inflight.add(`buy:${ev.mint}`);
+      const solBefore = this.liveSt.walletSol;
+      const balanceBefore = await tokenBalance(this.modeSt.walletPubkey!, ev.mint).catch(() => 0);
       try {
         const { signature } = await lightningTrade(config.PUMPFUN_API_KEY, { action: "buy", mint: ev.mint, amount: sol, denominatedInSol: true, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: ev.pool === "pump" ? "pump" : "auto" });
         const tx = await waitForTx(signature, TX_TIMEOUT_MS);
-        if (!tx) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)}: not confirmed in ${TX_TIMEOUT_MS / 1000}s (${signature.slice(0, 12)})`; logger.warn("[pumpfun] live buy unconfirmed", { signature }); return; }
-        const d = parseTxDeltas(tx, this.modeSt.walletPubkey!, ev.mint);
-        if (!d.ok || !(d.tokenDelta > 0)) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)} failed on-chain: ${d.err ?? "no tokens received"}`; logger.warn("[pumpfun] live buy failed", { signature, err: d.err, tokenDelta: d.tokenDelta }); return; }
-        const r = this.liveLedger.openFromFill({ mint: ev.mint, symbol: ev.mint.slice(0, 4), pool: ev.pool || "pump", bondingCurveKey: ev.bondingCurveKey, curve: ev.pool === "pump" && ev.vSol > 0 ? { vSol: ev.vSol, vTokens: ev.vTokens } : null, tokens: d.tokenDelta, costSol: -d.solDelta, via: a.via, reason: a.reason, signature, ts: d.ts });
+        let tokens = 0, costSol = 0, ts = new Date().toISOString();
+        if (tx) {
+          const d = parseTxDeltas(tx, this.modeSt.walletPubkey!, ev.mint);
+          if (!d.ok) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)} failed on-chain: ${d.err}`; logger.warn("[pumpfun] live buy failed", { signature, err: d.err }); return; }
+          tokens = d.tokenDelta; costSol = -d.solDelta; ts = d.ts;
+        }
+        if (!(tokens > 0)) {
+          // 확정 조회가 안 됐다 — "실패"로 단정하지 않고 잔고로 대조한다 (체결됐는데 장부에서 빠지는 게 최악)
+          const balBefore = balanceBefore, balAfter = await tokenBalance(this.modeSt.walletPubkey!, ev.mint).catch(() => balBefore);
+          const solAfter = await this.syncWallet();
+          tokens = Math.max(0, balAfter - balBefore); costSol = Math.max(0, solBefore - solAfter);
+          logger.warn("[pumpfun] live buy confirmed by balance, not by tx", { signature, tokens, costSol });
+          if (!(tokens > 0)) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)}: unconfirmed and no balance change (${signature.slice(0, 12)}) — reconcile will adopt if it lands`; return; }
+          if (!(costSol > 0)) costSol = sol; // 지갑 동기화가 늦었으면 주문액으로
+        }
+        const r = this.liveLedger.openFromFill({ mint: ev.mint, symbol: ev.mint.slice(0, 4), pool: ev.pool || "pump", bondingCurveKey: ev.bondingCurveKey, curve: ev.pool === "pump" && ev.vSol > 0 ? { vSol: ev.vSol, vTokens: ev.vTokens } : null, tokens, costSol, via: a.via, reason: a.reason, signature, ts });
         if ("error" in r) { logger.warn("[pumpfun] live lot open refused", { error: r.error }); return; }
         this.liveSt.stats.buys += 1;
-        logger.warn("[pumpfun] LIVE BUY", { mint: ev.mint, sol: -d.solDelta, tokens: d.tokenDelta, via: a.via.slice(0, 8), signature });
+        logger.warn("[pumpfun] LIVE BUY", { mint: ev.mint, sol: costSol, tokens, via: a.via.slice(0, 8), signature });
         this.emit("live-order", r.order);
       } catch (e) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)}: ${(e as Error).message}`; logger.warn("[pumpfun] live buy error", { error: this.liveError }); }
       finally { this.inflight.delete(`buy:${ev.mint}`); await this.syncWallet(); this.syncSubscriptions(); this.checkLiveDailyStop(); this.saveLive(); }
@@ -302,22 +319,69 @@ class PumpfunDesk extends EventEmitter {
     const lot = this.liveLedger.lots.get(a.lotId);
     if (!lot || this.inflight.has(`sell:${lot.id}`)) return;
     this.inflight.add(`sell:${lot.id}`);
+    const sellSolBefore = this.liveSt.walletSol;
+    const sellBalanceBefore = await tokenBalance(this.modeSt.walletPubkey!, lot.mint).catch(() => lot.tokens);
     try {
       const all = a.fraction >= 0.999;
       const tokens = all ? lot.tokens : lot.tokens * a.fraction;
       // 전량이면 "100%" — 먼지가 남지 않게 지갑의 실제 잔고 전부를 판다
       const { signature } = await lightningTrade(config.PUMPFUN_API_KEY, { action: "sell", mint: lot.mint, amount: all ? "100%" : Math.floor(tokens), denominatedInSol: false, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: lot.pool === "pump" ? "pump" : "auto" });
       const tx = await waitForTx(signature, TX_TIMEOUT_MS);
-      if (!tx) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)}: not confirmed (${signature.slice(0, 12)})`; return; }
-      const d = parseTxDeltas(tx, this.modeSt.walletPubkey!, lot.mint);
-      if (!d.ok || !(d.tokenDelta < 0)) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)} failed on-chain: ${d.err ?? "no tokens left the wallet"}`; logger.warn("[pumpfun] live sell failed", { signature, err: d.err }); return; }
-      const r = this.liveLedger.closeFromFill(lot.id, all ? lot.tokens : -d.tokenDelta, d.solDelta, a.reason, signature, d.ts);
+      let sold = 0, received = 0, ts = new Date().toISOString();
+      if (tx) {
+        const d = parseTxDeltas(tx, this.modeSt.walletPubkey!, lot.mint);
+        if (!d.ok) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)} failed on-chain: ${d.err}`; logger.warn("[pumpfun] live sell failed", { signature, err: d.err }); return; }
+        sold = -d.tokenDelta; received = d.solDelta; ts = d.ts;
+      }
+      if (!(sold > 0)) {
+        const balAfter = await tokenBalance(this.modeSt.walletPubkey!, lot.mint).catch(() => sellBalanceBefore);
+        const solAfter = await this.syncWallet();
+        sold = Math.max(0, sellBalanceBefore - balAfter); received = Math.max(0, solAfter - sellSolBefore);
+        logger.warn("[pumpfun] live sell confirmed by balance, not by tx", { signature, sold, received });
+        if (!(sold > 0)) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)}: unconfirmed and no balance change (${signature.slice(0, 12)})`; return; }
+      }
+      const r = this.liveLedger.closeFromFill(lot.id, all ? lot.tokens : sold, received, a.reason, signature, ts);
       if ("error" in r) { logger.warn("[pumpfun] live lot close refused", { error: r.error }); return; }
       this.liveSt.stats.sells += 1;
-      logger.warn("[pumpfun] LIVE SELL", { mint: lot.mint, sol: d.solDelta, pnlSol: r.order.pnlSol, pnlPct: r.order.pnlPct, reason: a.reason, signature });
+      logger.warn("[pumpfun] LIVE SELL", { mint: lot.mint, sol: received, pnlSol: r.order.pnlSol, pnlPct: r.order.pnlPct, reason: a.reason, signature });
       this.emit("live-order", r.order);
     } catch (e) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)}: ${(e as Error).message}`; logger.warn("[pumpfun] live sell error", { error: this.liveError }); }
     finally { this.inflight.delete(`sell:${lot.id}`); await this.syncWallet(); this.syncSubscriptions(); this.checkLiveDailyStop(); this.saveLive(); }
+  }
+  /**
+   * 체인 대조 — 지갑이 실제로 든 토큰 중 장부에 없는 것을 로트로 **편입**한다 (via "chain:adopted", 원가 = 지금 평가액).
+   * 확정 조회 실패로 빠진 체결, 수동 매수, 에어드랍 전부 여기로 들어와 청산 규칙(손절·되돌림·시간 정지·개발자 매도)을 받는다.
+   * 반대로 장부에는 있는데 지갑에 없는 로트(수동 매도 등)는 닫는다. 실모드에서 2분마다, 기동 때, 주문 실패 뒤.
+   */
+  async reconcileLive(): Promise<{ adopted: string[]; closed: string[] }> {
+    const out = { adopted: [] as string[], closed: [] as string[] };
+    if (!this.modeSt.walletPubkey) return out;
+    let held: Array<{ mint: string; amount: number }>;
+    try { held = await walletTokenBalances(this.modeSt.walletPubkey); } catch (e) { this.liveError = `reconcile: ${(e as Error).message}`; return out; }
+    const onChain = new Map(held.filter((h) => h.mint.endsWith("pump") && h.amount > 1).map((h) => [h.mint, h.amount]));
+    for (const [mint, amount] of onChain) {
+      const lots = this.liveLedger.lotsOf(mint);
+      if (lots.length) continue;
+      if (this.inflight.has(`buy:${mint}`)) continue;
+      // 원가를 모른다 — pump.fun 시총(SOL)으로 지금 가치를 원가로 삼는다. 이후 손익은 편입 시점부터
+      let price = 0, pool = "pump-amm", curveKey: string | null = null;
+      try {
+        const c = await communityDesk.coinBasics(mint);
+        if (c) { pool = c.complete ? "pump-amm" : "pump"; curveKey = c.bondingCurve; price = c.marketCapSol / 1_000_000_000; }
+      } catch { /* unknown */ }
+      if (!(price > 0) && curveKey) { try { const cv = await readCurve(curveKey); if (cv) price = cv.vSol / cv.vTokens; } catch { /* unknown */ } }
+      const costSol = Math.max(0.000001, amount * price);
+      const r = this.liveLedger.openFromFill({ mint, symbol: mint.slice(0, 4), pool, bondingCurveKey: curveKey, curve: null, tokens: amount, costSol, via: "chain:adopted", reason: `adopted from wallet balance (${amount.toFixed(0)} tokens, cost unknown → marked at ${costSol.toFixed(4)} SOL)`, signature: "" });
+      if (!("error" in r)) { out.adopted.push(mint); logger.warn("[pumpfun] adopted untracked position from chain", { mint, amount, costSol }); }
+    }
+    for (const lot of [...this.liveLedger.lots.values()]) {
+      if (lot.pool && !onChain.has(lot.mint) && !this.inflight.has(`sell:${lot.id}`)) {
+        const c = this.liveLedger.closeFromFill(lot.id, lot.tokens, 0, "not in wallet anymore (closed outside the desk)", "");
+        if (!("error" in c)) out.closed.push(lot.mint);
+      }
+    }
+    if (out.adopted.length || out.closed.length) { this.syncSubscriptions(); this.saveLive(); }
+    return out;
   }
   private checkLiveDailyStop() {
     if (this.st.paused || this.modeSt.mode !== "real") return;
@@ -341,6 +405,7 @@ class PumpfunDesk extends EventEmitter {
     this.liveSt.day = { date: today(), startEquitySol: this.liveEquitySol() };
     this.saveLive();
     logger.warn("[pumpfun] mode → REAL", { by, wallet: pk, walletSol: bal });
+    void this.reconcileLive();
     return { walletSol: bal };
   }
   setLivePolicy(patch: Partial<LivePolicy>): LivePolicy {
@@ -451,7 +516,8 @@ class PumpfunDesk extends EventEmitter {
     const prov = r.provisional.slice(0, provRoom);
     const keep = new Set<string>([...manual, ...top.map((w) => w.wallet), ...prov.map((w) => w.wallet)]);
     // 이미 추종 중이고 실기록이 있는 지갑은 채점에서 빠졌어도 유지 — 실기록(standing)이 판단한다. 굶으면 applyOutcome이 뺀다
-    for (const [w, f] of Object.entries(this.st.follows)) if (f.closes > 0 && keep.size < this.st.policy.followMax) keep.add(w);
+    // 실기록이 있는 지갑은 채점에서 빠졌어도 유지 — 단 누적이 양수일 때만. 실측: 누적 −47% 지갑이 이 규칙으로 살아남아 11번을 더 따라갔다
+    for (const [w, f] of Object.entries(this.st.follows)) if (f.closes > 0 && f.cumPct > 0 && keep.size < this.st.policy.followMax) keep.add(w);
     for (const w of Object.keys(this.st.follows)) if (!keep.has(w)) delete this.st.follows[w];
     for (const w of top) if (!this.st.follows[w.wallet]) this.st.follows[w.wallet] = { wallet: w.wallet, standing: initialStanding(w, topScore), since: this.lastScore.at, source: "scored", closes: 0, wins: 0, cumPct: 0, returns: [] };
     for (const w of prov) if (!this.st.follows[w.wallet]) this.st.follows[w.wallet] = { wallet: w.wallet, standing: PROVISIONAL_STANDING, since: this.lastScore.at, source: "scored", closes: 0, wins: 0, cumPct: 0, returns: [] };

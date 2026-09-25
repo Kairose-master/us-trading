@@ -497,6 +497,8 @@ router.post("/pumpfun/mode", requireSession, requireOwner, async (req, res) => {
   res.json({ ok: true, ...pumpfunDesk.liveStatus() });
 });
 router.post("/pumpfun/live/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setLivePolicy(req.body ?? {}) }); });
+// 체인 대조 — 지갑의 실제 토큰 잔고와 장부를 맞춘다 (확정 조회 실패로 빠진 체결 편입)
+router.post("/pumpfun/live/reconcile", requireSession, requireOwner, async (_req, res) => { res.json({ ok: true, ...(await pumpfunDesk.reconcileLive()), live: pumpfunDesk.liveStatus() }); });
 // 킬스위치 — 실보유 전량 매도 + 정지
 router.post("/pumpfun/live/flatten", requireSession, requireOwner, async (_req, res) => { res.json({ ok: true, ...(await pumpfunDesk.flattenLive()) }); });
 router.get("/pumpfun/events", (req, res) => { const k = req.query.kind; res.json(pumpfunDesk.events(Number(req.query.limit ?? 100), k === "create" || k === "trade" || k === "migrate" ? k : undefined)); });

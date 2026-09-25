@@ -71,9 +71,14 @@ export function parseTxDeltas(tx: ParsedTx, pubkey: string, mint: string): TxDel
   return { ok: meta.err === null || meta.err === undefined, err: meta.err ? JSON.stringify(meta.err) : null, solDelta, tokenDelta, feeSol: (meta.fee ?? 0) / 1e9, slot: tx.slot, ts };
 }
 
-/** 서명이 확정될 때까지 기다렸다가 파싱한 트랜잭션을 돌려준다. 시간 내 확정이 없으면 null */
-export async function waitForTx(signature: string, timeoutMs = 45_000): Promise<ParsedTx | null> {
+/**
+ * 서명이 확정될 때까지 기다렸다가 파싱한 트랜잭션을 돌려준다. 시간 내 확정이 없으면 null.
+ * 실측(2026-09-25 12:29): 공개 RPC 가 429 를 던져 45초 안에 조회가 안 끝났고, 체결된 매수 9건이 "실패"로 적혀 장부에서 빠졌다.
+ * 그래서 폴링 간격을 실패마다 늘리고(1.5s→…→8s), 기본 시간을 90초로. 그래도 null 이면 호출부가 잔고로 대조한다 — 여기서 "실패"를 단정하지 않는다.
+ */
+export async function waitForTx(signature: string, timeoutMs = 90_000): Promise<ParsedTx | null> {
   const t0 = Date.now();
+  let wait = 1_500;
   while (Date.now() - t0 < timeoutMs) {
     try {
       const st = await solanaRpc<{ value: Array<{ confirmationStatus?: string; err: unknown } | null> }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }]);
@@ -82,8 +87,19 @@ export async function waitForTx(signature: string, timeoutMs = 45_000): Promise<
         const tx = await solanaRpc<ParsedTx | null>("getTransaction", [signature, { encoding: "jsonParsed", commitment: "confirmed", maxSupportedTransactionVersion: 0 }]);
         if (tx) return tx;
       }
-    } catch (e) { logger.warn("[pumpfun] tx status poll failed", { signature: signature.slice(0, 12), error: (e as Error).message }); }
-    await new Promise((r) => setTimeout(r, 1_500));
+      wait = 1_500;
+    } catch (e) { logger.warn("[pumpfun] tx status poll failed", { signature: signature.slice(0, 12), error: (e as Error).message }); wait = Math.min(8_000, wait * 2); }
+    await new Promise((r) => setTimeout(r, wait));
   }
   return null;
+}
+
+/** 지갑이 든 모든 토큰 잔고 (SPL Token + Token-2022 — pump.fun 은 둘 다 쓴다) */
+export async function walletTokenBalances(pubkey: string): Promise<Array<{ mint: string; amount: number; program: string }>> {
+  const out: Array<{ mint: string; amount: number; program: string }> = [];
+  for (const program of ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"]) {
+    const r = await solanaRpc<{ value: Array<{ account: { data: { parsed: { info: { mint: string; tokenAmount: { uiAmount: number | null } } } } } }> }>("getTokenAccountsByOwner", [pubkey, { programId: program }, { encoding: "jsonParsed", commitment: "confirmed" }]);
+    for (const a of r?.value ?? []) { const i = a.account.data.parsed.info; if ((i.tokenAmount.uiAmount ?? 0) > 0) out.push({ mint: i.mint, amount: i.tokenAmount.uiAmount ?? 0, program }); }
+  }
+  return out;
 }

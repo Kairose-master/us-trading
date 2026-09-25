@@ -149,6 +149,15 @@ export class CommunityDesk {
     return f;
   }
 
+  /** 편입·마킹용 최소 정보 — 시총(SOL)·완료 여부·커브 주소 */
+  async coinBasics(mint: string, timeoutMs = 5_000): Promise<{ marketCapSol: number; complete: boolean; bondingCurve: string | null; symbol: string | null } | null> {
+    await pumpApiSlot();
+    const res = await fetch(COIN_URL(mint), { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return null;
+    const c = (await res.json()) as CoinJson & { market_cap?: number; bonding_curve?: string };
+    return { marketCapSol: c.market_cap ?? 0, complete: !!c.complete, bondingCurve: c.bonding_curve ?? null, symbol: c.symbol ?? null };
+  }
+
   /** t.me/<채널> 공개 페이지의 "N subscribers" — 초대 링크(+…)나 개인 계정은 null */
   async telegramMembers(url: string, timeoutMs = 4_000): Promise<number | null> {
     const m = /t\.me\/([A-Za-z0-9_]{4,})/.exec(url);

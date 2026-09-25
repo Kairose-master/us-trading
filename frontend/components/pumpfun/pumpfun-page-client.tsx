@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { Copy, Pause, Play, Plus, Radio, RefreshCw, ShieldAlert, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunFlatten, pumpfunPause, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpStatus } from "@/lib/api"
+import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunFlatten, pumpfunPause, pumpfunReconcile, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpStatus } from "@/lib/api"
 
 /**
  * pump.fun 카피 트레이딩 데스크 — 페이퍼(SOL). 체인이 공개라 "꾸준히 버는 지갑"을 셀 수 있고, 그 지갑의 매수·매도를
@@ -68,6 +68,10 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
       await onChanged()
     } catch (e) { toast.error(e instanceof ApiError ? e.message : "전환 실패") } finally { setBusy(false) }
   }
+  const reconcile = async () => {
+    setBusy(true)
+    try { const r = await pumpfunReconcile(); toast.success(`체인 대조: 편입 ${r.adopted.length}개, 닫힘 ${r.closed.length}개`); await onChanged() } catch (e) { toast.error(e instanceof ApiError ? e.message : "실패") } finally { setBusy(false) }
+  }
   const flatten = async () => {
     if (!confirm("실보유 전량을 시장가로 팔고 정지합니다. 계속?")) return
     setBusy(true)
@@ -94,6 +98,7 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
             {live.error && <p className="font-mono text-[11px] text-destructive">최근 오류: {live.error}</p>}
             <div className="flex flex-wrap gap-2">
               <button type="button" disabled={busy} onClick={() => void go("paper")} className="rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50">페이퍼로 돌아가기 (보유는 유지)</button>
+              <button type="button" disabled={busy} onClick={() => void reconcile()} className="rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50">체인 대조 — 지갑 잔고를 장부에 편입</button>
               <button type="button" disabled={busy} onClick={() => void flatten()} className="rounded-md border border-destructive/60 px-2 py-1 text-[11px] text-destructive disabled:opacity-50">킬스위치 — 전량 청산 + 정지</button>
             </div>
           </>
