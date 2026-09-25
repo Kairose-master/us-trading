@@ -95,7 +95,8 @@ export function scoreWallets(trades: WalletTrade[], th: ScoreThresholds = DEFAUL
     ranked.push({ wallet, trades: list.length, roundTrips: r.length, mints: new Set(list.map((t) => t.mint)).size, winRate: +winRate.toFixed(3), medianPnlPct: +medianPnlPct.toFixed(2), totalPnlSol: +totalPnlSol.toFixed(4), volumeSol: +list.filter((t) => t.side === "buy").reduce((a, t) => a + t.sol, 0).toFixed(3), medianHoldMin: +median(r.map((x) => x.holdMin)).toFixed(1), score, firstSeen: tss[0], lastSeen: tss[tss.length - 1] });
   }
   ranked.sort((a, b) => b.score - a.score || b.totalPnlSol - a.totalPnlSol);
-  const passes = (w: WalletStats, t: ScoreThresholds) => w.roundTrips >= t.minRoundTrips && w.mints >= t.minMints && w.medianPnlPct > t.minMedianPnlPct && w.winRate >= t.minWinRate;
+  // 총 손익도 양수여야 한다 — 실측: 중앙값 +3.7%·승률 69%인데 총 −1.19 SOL 인 지갑이 잠정 자격을 통과했다 (몇 번의 큰 손실)
+  const passes = (w: WalletStats, t: ScoreThresholds) => w.roundTrips >= t.minRoundTrips && w.mints >= t.minMints && w.medianPnlPct > t.minMedianPnlPct && w.winRate >= t.minWinRate && w.totalPnlSol > 0;
   const eligible = ranked.filter((w) => passes(w, th));
   const provisional = ranked.filter((w) => !passes(w, th) && passes(w, prov));
   return { ranked, eligible, provisional };

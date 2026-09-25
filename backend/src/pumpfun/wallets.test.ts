@@ -15,6 +15,12 @@ describe("roundTripsOf", () => {
 });
 
 describe("scoreWallets", () => {
+  it("a positive median with a negative total (a few big losses) is not followed", () => {
+    const trades: WalletTrade[] = [];
+    for (let i = 0; i < 6; i++) { trades.push(t("BLOW", `b${i}`, "buy", 1, 100, i * 2)); trades.push(t("BLOW", `b${i}`, "sell", i < 4 ? 1.05 : 0.2, 100, i * 2 + 1)); }
+    const { eligible, provisional } = scoreWallets(trades);
+    expect(eligible).toHaveLength(0); expect(provisional).toHaveLength(0);
+  });
   it("ignores dust buys — a 0.0002 SOL bot buy sold for 0.03 SOL is not a +15,000% round trip", () => {
     const trades: WalletTrade[] = [];
     for (let i = 0; i < 6; i++) { trades.push(t("DUST", `d${i}`, "buy", 0.0002, 100, i * 2)); trades.push(t("DUST", `d${i}`, "sell", 0.03, 100, i * 2 + 1)); }
