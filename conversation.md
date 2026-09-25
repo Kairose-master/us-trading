@@ -48,3 +48,7 @@ claude/pumpfun-expansion-monetization-3lqu2o: backend/src/pumpfun/* 신규(PumpP
 ## 2026-09-25 11:52 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
 
 claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 실모드 추가 — backend/src/pumpfun/live.ts(PumpPortal Lightning 주문), desk.ts(mode.json/live.json, applyLive, flattenLive, setMode), routes /pumpfun/mode·/pumpfun/live/*. 실모드는 화면 스위치(REAL)로만 켜지고 기본은 paper. 돈 경계: 이 경로가 실SOL을 쓴다 — 건드리기 전에 이 노트 읽을 것. main에 머지 예정.
+
+## 2026-09-25 12:15 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
+
+claude/pumpfun-expansion-monetization-3lqu2o: backend/src/pumpfun/community.ts 신규(커뮤니티 게이트 — pump.fun 공개 API·t.me 스크랩·creator 발행 수, 카피 매수 크기 배수/차단, 개발자 매도 시 청산). desk.ts 매수 경로가 비동기(copyBuy)로 바뀜. pump.fun API 는 초당 1회 전역 슬롯.

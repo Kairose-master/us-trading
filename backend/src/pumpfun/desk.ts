@@ -10,6 +10,7 @@ import { initialStanding, scoreWallets, DEFAULT_THRESHOLDS, type ScoreThresholds
 import { parseTxDeltas, readCurve, waitForTx, walletSol } from "./solana-rpc.js";
 import { progress } from "./curve.js";
 import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
+import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
 
 /**
  * pump.fun 데스크 — 카피 트레이딩 엔진의 **페이퍼** 버전. 실주문 경로는 없다 (지갑도, 서명 키도 없다).
@@ -54,6 +55,8 @@ interface State {
   stats: { creates: number; migrations: number; tradesObserved: number; copies: number; exits: number };
   /** 유료 메시지 카운터 — 재시작해도 오늘 예산이 이어지도록 */
   metered?: { today: string; todayMsgs: number; totalMsgs: number };
+  /** 커뮤니티 게이트 정책 (community.ts) */
+  community?: CommunityPolicy;
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -93,6 +96,7 @@ class PumpfunDesk extends EventEmitter {
     for (const w of seeds) if (!this.st.follows[w]) this.st.follows[w] = { wallet: w, standing: 0.5, since: new Date().toISOString(), source: "manual", closes: 0, wins: 0, cumPct: 0, returns: [] };
     this.loadTradeBuffer();
     if (this.st.metered) this.feed.restoreMetered(this.st.metered);
+    communityDesk.policy = { ...DEFAULT_COMMUNITY_POLICY, ...(this.st.community ?? {}) }; this.st.community = communityDesk.policy;
     // 실모드 상태 복원
     try { if (existsSync(MODE_FILE)) this.modeSt = { ...this.modeSt, ...(JSON.parse(readFileSync(MODE_FILE, "utf-8")) as ModeState) }; } catch (e) { logger.warn("[pumpfun] mode restore failed — paper", { error: (e as Error).message }); }
     if (!this.modeSt.walletPubkey && config.PUMPFUN_WALLET_PUBKEY) this.modeSt.walletPubkey = config.PUMPFUN_WALLET_PUBKEY;
@@ -145,6 +149,7 @@ class PumpfunDesk extends EventEmitter {
     this.timers.push(setInterval(() => this.snapshotEquity(), EQUITY_SNAPSHOT_MS));
     this.timers.push(setInterval(() => this.rescore(), this.st.policy.rescoreMin * 60_000));
     this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.syncWallet(); }, LIVE_SYNC_MS));
+    this.timers.push(setInterval(() => void this.pollHeldCommunity(), 60_000));
     if (this.modeSt.mode === "real") { logger.warn("[pumpfun] REAL mode active", { wallet: this.modeSt.walletPubkey }); void this.syncWallet(); }
     for (const t of this.timers) t.unref();
     logger.info("[pumpfun] desk started (paper, SOL)", { startSol: this.ledger.startSol, follows: Object.keys(this.st.follows).length, seeds: this.st.seeds.length, key: this.feed.hasKey });
@@ -154,7 +159,8 @@ class PumpfunDesk extends EventEmitter {
   /** 추종 지갑·보유 토큰·발견 창 구독을 피드에 맞춘다 (재연결 때도 호출) */
   private syncSubscriptions() {
     if (!this.feed.hasKey) return;
-    const wantAccounts = new Set(Object.keys(this.st.follows));
+    // 추종 지갑 + 보유 토큰의 creator (개발자가 팔면 우리도 판다 — 지갑당 메시지가 적어 싸다)
+    const wantAccounts = new Set([...Object.keys(this.st.follows), ...this.heldCreators()]);
     const haveAccounts = new Set(this.feed.subscribedAccounts());
     this.feed.subscribeAccounts([...wantAccounts].filter((w) => !haveAccounts.has(w)));
     this.feed.unsubscribeAccounts([...haveAccounts].filter((w) => !wantAccounts.has(w)));
@@ -177,6 +183,7 @@ class PumpfunDesk extends EventEmitter {
     this.recent.push(ev); if (this.recent.length > 300) this.recent.shift();
     if (ev.kind === "create") {
       this.st.stats.creates += 1;
+      communityDesk.noteLaunch(ev.creator, Date.parse(ev.ts) || Date.now());
       this.recentCreates.push(ev); if (this.recentCreates.length > 100) this.recentCreates.shift();
       this.appendJsonl(join(DIR, `events-${today()}.jsonl`), { k: "c", ts: ev.ts, mint: ev.mint, sym: ev.symbol, creator: ev.creator, buySol: ev.initialBuySol, vSol: ev.vSol, mcap: ev.marketCapSol });
       return;
@@ -202,11 +209,17 @@ class PumpfunDesk extends EventEmitter {
     const markArg = ev.pool === "pump" && ev.vSol > 0 ? { curve: { vSol: ev.vSol, vTokens: ev.vTokens }, pool: "pump" } : { price: ev.tokens > 0 ? ev.sol / ev.tokens : 0, pool: ev.pool || "pump-amm" };
     if (this.ledger.lotsOf(ev.mint).length) this.ledger.mark(ev.mint, markArg, ev.ts);
     if (this.liveLedger.lotsOf(ev.mint).length) this.liveLedger.mark(ev.mint, markArg, ev.ts);
-    // 추종 지갑이면 카피 규칙
+    // 개발자 매도 — 보유 토큰의 creator 가 그 토큰을 팔면 전량 청산 (밈코인의 "공시": 만든 사람이 나간다)
+    if (ev.side === "sell" && this.heldCreators().has(ev.wallet) && (this.ledger.lotsOf(ev.mint).length || this.liveLedger.lotsOf(ev.mint).length) && communityDesk.cached(ev.mint)?.facts.creator === ev.wallet) {
+      logger.warn("[pumpfun] creator sold a held token — exiting", { mint: ev.mint, sol: ev.sol });
+      for (const l of this.ledger.lotsOf(ev.mint)) this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: `dev sold ${ev.sol.toFixed(3)} SOL` }, ev);
+      if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(ev.mint)) void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: `dev sold ${ev.sol.toFixed(3)} SOL` }, ev);
+    }
+    // 추종 지갑이면 카피 규칙 — 매수는 커뮤니티를 읽은 뒤(비동기), 매도는 즉시
     const follow = this.st.follows[ev.wallet];
     if (follow) {
       const actions = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.ledger.lots.values()], equitySol: this.ledger.equitySol(), cashSol: this.ledger.cashSol, positionsSol: this.ledger.positionsSol(), paused: this.st.paused });
-      for (const a of actions) this.apply(a, ev);
+      for (const a of actions) { if (a.type === "buy") void this.copyBuy(a, ev, "paper"); else this.apply(a, ev); }
     }
     // 마킹 뒤 청산 규칙
     for (const a of lotExits(this.ledger.lotsOf(ev.mint), this.st.policy)) this.apply(a, ev);
@@ -214,10 +227,41 @@ class PumpfunDesk extends EventEmitter {
     if (this.modeSt.mode === "real") {
       if (follow) {
         const acts = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.liveLedger.lots.values()], equitySol: this.liveEquitySol(), cashSol: this.liveSt.walletSol, positionsSol: this.liveLedger.positionsSol(), paused: this.st.paused });
-        for (const a of acts) void this.applyLive(a, ev);
+        for (const a of acts) { if (a.type === "buy") void this.copyBuy(a, ev, "live"); else void this.applyLive(a, ev); }
       }
       for (const a of lotExits(this.liveLedger.lotsOf(ev.mint), this.st.policy)) void this.applyLive(a, ev);
     }
+  }
+
+  /** 보유 토큰(페이퍼·실)의 creator 지갑들 — 커뮤니티 읽기에 creator 가 있을 때만 */
+  private heldCreators(): Set<string> {
+    const out = new Set<string>();
+    for (const m of new Set([...this.ledger.heldMints(), ...this.liveLedger.heldMints()])) { const c = communityDesk.cached(m)?.facts.creator; if (c) out.add(c); }
+    return out;
+  }
+  /** 카피 매수 — 커뮤니티를 읽어(캐시 60s) 크기를 곱하거나 거른다. 데이터가 없으면 ×0.75 (모른다 ≠ 양성) */
+  private async copyBuy(a: Extract<CopyAction, { type: "buy" }>, ev: Extract<FeedEvent, { kind: "trade" }>, target: "paper" | "live") {
+    let read: CommunityRead;
+    try { read = await communityDesk.read(ev.mint); } catch (e) { logger.warn("[pumpfun] community read threw", { error: (e as Error).message }); return; }
+    if (read.block) { if (target === "paper") logger.info("[pumpfun] copy buy skipped by community gate", { mint: ev.mint.slice(0, 8), score: read.score, why: read.reasons.slice(-2) }); return; }
+    const reason = `${a.reason} · community ${read.score}${read.unknown ? "?" : ""} ×${read.multiplier}`;
+    if (target === "paper") { this.apply({ ...a, solIn: +(a.solIn * read.multiplier).toFixed(6), reason }, ev); this.syncSubscriptions(); }
+    else await this.applyLive({ ...a, reason }, ev, read.multiplier);
+  }
+  /** 보유 토큰의 커뮤니티를 60초마다 다시 읽는다 — 댓글 증가율 갱신, 보안 판정이 바뀌면 청산 */
+  private async pollHeldCommunity() {
+    const mints = [...new Set([...this.ledger.heldMints(), ...this.liveLedger.heldMints()])].slice(0, 12);
+    for (const m of mints) {
+      try {
+        const r = await communityDesk.read(m, { force: true, timeoutMs: 4_000 });
+        if (r.facts.ok && r.facts.securityVerdict && r.facts.securityVerdict !== "allow") {
+          logger.warn("[pumpfun] security verdict changed on a held token — exiting", { mint: m, verdict: r.facts.securityVerdict });
+          for (const l of this.ledger.lotsOf(m)) this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: `security verdict ${r.facts.securityVerdict}` });
+          if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(m)) void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: `security verdict ${r.facts.securityVerdict}` });
+        }
+      } catch (e) { this.lastError = (e as Error).message; }
+    }
+    this.syncSubscriptions();
   }
 
   // ===== 실주문 =====
@@ -228,13 +272,13 @@ class PumpfunDesk extends EventEmitter {
     catch (e) { this.liveError = (e as Error).message; }
     return this.liveSt.walletSol;
   }
-  private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>) {
+  private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1) {
     if (a.type === "skip") return;
     const P = this.liveSt.policy;
     if (a.type === "buy") {
       if (!ev || this.inflight.has(`buy:${ev.mint}`)) return;
       const open = [...this.liveLedger.lots.values()];
-      const standing = this.st.follows[a.via]?.standing ?? 0.5;
+      const standing = (this.st.follows[a.via]?.standing ?? 0.5) * mult;
       const { sol, why } = liveBuySize(P, this.liveEquitySol(), standing, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
       if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); return; }
       this.inflight.add(`buy:${ev.mint}`);
@@ -317,7 +361,7 @@ class PumpfunDesk extends EventEmitter {
       startSol: this.liveSt.startSol, liveSince: this.liveSt.since, returnPct: this.liveSt.startSol ? +(((eq - this.liveSt.startSol) / this.liveSt.startSol) * 100).toFixed(2) : null,
       day: this.liveSt.day, dayPct: this.liveSt.day.startEquitySol > 0 ? +(((eq - this.liveSt.day.startEquitySol) / this.liveSt.day.startEquitySol) * 100).toFixed(2) : 0,
       policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError,
-      lots: [...this.liveLedger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1) })),
+      lots: [...this.liveLedger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1), community: this.communityOf(l.mint) })),
       orders: this.liveLedger.orders.slice(-50).reverse(),
     };
   }
@@ -422,9 +466,12 @@ class PumpfunDesk extends EventEmitter {
     this.syncSubscriptions(); this.save();
   }
   removeWallet(wallet: string) { this.st.seeds = this.st.seeds.filter((w) => w !== wallet); delete this.st.follows[wallet]; this.syncSubscriptions(); this.save(); }
-  setPolicy(patch: Partial<CopyPolicy>): CopyPolicy {
+  setPolicy(patch: Partial<CopyPolicy> & { communityMinScore?: number; communityGate?: number }): CopyPolicy {
     const next = { ...this.st.policy };
     for (const [k, v] of Object.entries(patch)) { if (typeof v === "number" && Number.isFinite(v) && k in next) (next as unknown as Record<string, number>)[k] = v; }
+    if (typeof patch.communityMinScore === "number") communityDesk.policy = { ...communityDesk.policy, minScore: patch.communityMinScore };
+    if (typeof patch.communityGate === "number") communityDesk.policy = { ...communityDesk.policy, gate: patch.communityGate };
+    this.st.community = communityDesk.policy;
     this.st.policy = next; this.save(); return next;
   }
   reset(startSol = config.PUMPFUN_PAPER_START_SOL) {
@@ -440,7 +487,7 @@ class PumpfunDesk extends EventEmitter {
   // ===== 조회 =====
   status() {
     const eq = this.ledger.equitySol();
-    const lots = [...this.ledger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1), progress: l.curve ? +progress(l.curve).toFixed(3) : null }));
+    const lots = [...this.ledger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1), progress: l.curve ? +progress(l.curve).toFixed(3) : null, community: this.communityOf(l.mint) }));
     return {
       enabled: this.enabled, mode: this.modeSt.mode, unit: "SOL",
       live: this.liveStatus(),
@@ -453,6 +500,7 @@ class PumpfunDesk extends EventEmitter {
       discovery: Object.entries(this.st.discovery).map(([mint, d]) => ({ mint, until: d.until })),
       tradeBuffer: { trades: this.trades.length, hours: TRADE_BUFFER_H, wallets: this.lastScore?.ranked.length ?? null, eligible: this.lastScore?.eligible.length ?? null, lastRescoreAt: this.st.lastRescoreAt },
       budget: { msgsPerDay: this.st.policy.meteredBudgetMsgsPerDay, solPerDay: +(this.st.policy.meteredBudgetMsgsPerDay * 0.01 / 10_000).toFixed(4), overBudget: this.overBudget() },
+      community: { policy: communityDesk.policy, stats: communityDesk.stats, recent: communityDesk.recentReads(12).map((r) => ({ mint: r.facts.mint, symbol: r.facts.symbol, score: r.score, multiplier: r.multiplier, block: r.block, unknown: r.unknown, reasons: r.reasons, at: r.facts.fetchedAt, replyCount: r.facts.replyCount, telegramMembers: r.facts.telegramMembers, isLive: r.facts.isLive })) },
       stats: this.st.stats,
       recentCreates: this.recentCreates.slice(-20).reverse(),
       recentMigrations: this.recentMigrations.slice(-20).reverse(),
@@ -460,6 +508,7 @@ class PumpfunDesk extends EventEmitter {
       lastError: this.lastError,
     };
   }
+  private communityOf(mint: string) { const r = communityDesk.cached(mint); return r ? { score: r.score, multiplier: r.multiplier, unknown: r.unknown, reasons: r.reasons, replyCount: r.facts.replyCount, telegramMembers: r.facts.telegramMembers, isLive: r.facts.isLive, creator: r.facts.creator } : null; }
   candidates(limit = 50) { const s = this.lastScore ?? this.rescoreView(); return { at: s.at, ranked: s.ranked.slice(0, limit), eligible: s.eligible.slice(0, limit), thresholds: this.st.thresholds, trades: this.trades.length }; }
   private rescoreView() { const r = scoreWallets(this.trades, this.st.thresholds); return { ...r, at: new Date().toISOString() }; }
   orders(limit = 200) { return this.ledger.orders.slice(-limit).reverse(); }

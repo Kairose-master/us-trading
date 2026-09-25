@@ -890,7 +890,8 @@ export async function getUniverse(): Promise<CryptoUniverse> {
 }
 
 // ===== pump.fun 카피 트레이딩 데스크 (페이퍼, SOL) — docs/pumpfun.md =====
-export interface PumpLot { id: string; mint: string; symbol: string; via: string; tokens: number; costSol: number; openedAt: string; pool: string; markSol: number; markAt: string; peakMarkSol: number; lastPrice: number; pnlPct: number; holdMin: number; progress: number | null }
+export interface PumpCommunity { score: number; multiplier: number; unknown: boolean; reasons: string[]; replyCount: number | null; telegramMembers: number | null; isLive: boolean; creator: string | null }
+export interface PumpLot { id: string; mint: string; symbol: string; via: string; tokens: number; costSol: number; openedAt: string; pool: string; markSol: number; markAt: string; peakMarkSol: number; lastPrice: number; pnlPct: number; holdMin: number; progress: number | null; community?: PumpCommunity | null }
 export interface PumpOrder { id: string; ts: string; lotId: string; mint: string; symbol: string; side: "buy" | "sell"; tokens: number; sol: number; feeSol: number; priorityFeeSol: number; impactPct: number; slipPct: number; pool: string; via: string; reason: string; pnlSol?: number; pnlPct?: number; holdMin?: number; signature?: string }
 export interface PumpFollow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; hitRate: number | null; openLots: number }
 export interface PumpPolicy { maxPositionSol: number; riskPct: number; grossMaxPct: number; cashFloorPct: number; maxLots: number; minLeaderSol: number; maxHoldMin: number; stopLossPct: number; trailingPct: number; followMax: number; eta: number; dropAtPct: number; dropAfterCloses: number; dailyStopPct: number; discoveryWindowMin: number; discoveryMaxMints: number; rescoreMin: number; meteredBudgetMsgsPerDay: number; subscribeHeldTokens: number }
@@ -899,6 +900,7 @@ export interface PumpStatus {
   live: PumpLive
   feed: { url: string; connected: boolean; since: string | null; reconnects: number; messages: number; events: { create: number; trade: number; migrate: number }; lastMessageAt: string | null; lastError: string | null; metered: { hasKey: boolean; ok: boolean | null; note: string | null; today: string; todayMsgs: number; todaySol: number; totalMsgs: number; totalSol: number }; subscriptions: { tokens: number; accounts: number; newToken: boolean; migration: boolean } }
   budget: { msgsPerDay: number; solPerDay: number; overBudget: boolean }
+  community: { policy: { minScore: number; gate: number }; stats: { reads: number; blocked: number; unknown: number }; recent: Array<{ mint: string; symbol: string | null; score: number; multiplier: number; block: boolean; unknown: boolean; reasons: string[]; at: string; replyCount: number | null; telegramMembers: number | null; isLive: boolean }> }
   ledger: { startSol: number; since: string; cashSol: number; positionsSol: number; equitySol: number; returnPct: number; lots: PumpLot[]; day: { date: string; startEquitySol: number }; dayPct: number }
   follows: PumpFollow[]
   seeds: string[]

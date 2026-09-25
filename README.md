@@ -128,4 +128,6 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 PumpPortal 거래 스트림은 0.02 SOL 충전 API 키가 필요하고(`PUMPFUN_API_KEY`), 없으면 신규·이주 관측만 돈다.
 유료 메시지는 하루 예산(기본 0.02 SOL)으로 묶인다. **실모드**는 `/pumpfun` 카드에서 owner가 지갑 공개키 + `REAL` 타이핑으로
 켜고(환경변수로는 못 켠다), 같은 규칙이 PumpPortal Lightning으로 체인에 나가며 체결은 트랜잭션에서 읽는다 — 지갑 전체가
-자본(포지션 = 에쿼티 25% × standing, 총 100%)·일 손실 20% 정지·전량 청산 킬스위치. 평가·설계·비용은 `docs/pumpfun.md`.
+자본(포지션 = 에쿼티 25% × standing, 총 100%)·일 손실 20% 정지·전량 청산 킬스위치. **커뮤니티 게이트**: 매수 직전 pump.fun 댓글·KOTH·라이브·소셜 링크,
+텔레그램 구독자, creator 48h 발행 수, 보안 판정, ATH 대비를 읽어 크기를 곱하거나 거르고, 개발자가 팔면 우리도 판다.
+평가·설계·비용은 `docs/pumpfun.md`.

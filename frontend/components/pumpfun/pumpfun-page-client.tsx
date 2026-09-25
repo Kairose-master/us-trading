@@ -37,6 +37,11 @@ function Stat({ label, value, sub, valueClass }: { label: string; value: string;
   )
 }
 const pnlClass = (v: number) => (v > 0 ? "text-chart-1" : v < 0 ? "text-destructive" : "text-muted-foreground")
+const scoreClass = (s: number) => (s >= 80 ? "text-chart-1" : s >= 60 ? "" : s >= 40 ? "text-muted-foreground" : "text-destructive")
+function CommunityCell({ c }: { c?: { score: number; multiplier: number; unknown: boolean; reasons: string[]; replyCount: number | null; telegramMembers: number | null; isLive: boolean } | null }) {
+  if (!c) return <span className="text-muted-foreground">—</span>
+  return <span className={cn("font-bold", scoreClass(c.score))} title={c.reasons.join("\n")}>{c.score}{c.unknown ? "?" : ""} <span className="font-normal text-muted-foreground">×{c.multiplier}{c.replyCount !== null ? ` · 💬${c.replyCount}` : ""}{c.telegramMembers !== null ? ` · tg ${c.telegramMembers}` : ""}{c.isLive ? " · LIVE" : ""}</span></span>
+}
 
 function FeedBadge({ s }: { s: PumpStatus }) {
   const f = s.feed
@@ -162,12 +167,12 @@ export function PumpfunPageClient() {
             <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">실보유 로트 (체인)</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">진행 중 {data.live.inflight.length}</span></div>
             <div className="overflow-x-auto">
               <table className="w-full font-mono text-[11px]">
-                <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">via</th><th className="px-3 py-1.5 font-medium">풀</th><th className="px-3 py-1.5 font-medium">비용</th><th className="px-3 py-1.5 font-medium">평가</th><th className="px-3 py-1.5 font-medium">손익</th><th className="px-3 py-1.5 font-medium">보유</th></tr></thead>
+                <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">via</th><th className="px-3 py-1.5 font-medium">풀</th><th className="px-3 py-1.5 font-medium">비용</th><th className="px-3 py-1.5 font-medium">평가</th><th className="px-3 py-1.5 font-medium">손익</th><th className="px-3 py-1.5 font-medium">보유</th><th className="px-3 py-1.5 font-medium">커뮤니티</th></tr></thead>
                 <tbody className="divide-y divide-border/50">
                   {data.live.lots.map((l) => (
-                    <tr key={l.id}><td className="px-3 py-1" title={l.mint}>{short(l.mint)}</td><td className="px-3 py-1 text-muted-foreground" title={l.via}>{short(l.via)}</td><td className="px-3 py-1">{l.pool}</td><td className="px-3 py-1">{l.costSol.toFixed(4)}</td><td className="px-3 py-1">{l.markSol.toFixed(4)} <span className="text-muted-foreground">{ago(l.markAt)}</span></td><td className={cn("px-3 py-1 font-bold", pnlClass(l.pnlPct))}>{signed(l.pnlPct)}</td><td className="px-3 py-1">{l.holdMin.toFixed(0)}분</td></tr>
+                    <tr key={l.id}><td className="px-3 py-1" title={l.mint}>{short(l.mint)}</td><td className="px-3 py-1 text-muted-foreground" title={l.via}>{short(l.via)}</td><td className="px-3 py-1">{l.pool}</td><td className="px-3 py-1">{l.costSol.toFixed(4)}</td><td className="px-3 py-1">{l.markSol.toFixed(4)} <span className="text-muted-foreground">{ago(l.markAt)}</span></td><td className={cn("px-3 py-1 font-bold", pnlClass(l.pnlPct))}>{signed(l.pnlPct)}</td><td className="px-3 py-1">{l.holdMin.toFixed(0)}분</td><td className="px-3 py-1"><CommunityCell c={l.community} /></td></tr>
                   ))}
-                  {data.live.lots.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">실보유 없음</td></tr>}
+                  {data.live.lots.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">실보유 없음</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -218,7 +223,7 @@ export function PumpfunPageClient() {
         <Card>
           <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">정책</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">POST /pumpfun/policy</span></div>
           <dl className="grid grid-cols-2 gap-x-3 gap-y-1 p-4 font-mono text-[11px]">
-            {([["포지션 상한", `${data.policy.maxPositionSol} SOL`], ["1회 위험", `${data.policy.riskPct}% × standing`], ["총노출 / 현금 하한", `${data.policy.grossMaxPct}% / ${data.policy.cashFloorPct}%`], ["리더 최소 매수", `${data.policy.minLeaderSol} SOL`], ["시간 정지", `${data.policy.maxHoldMin}분`], ["손절 / 되돌림", `−${data.policy.stopLossPct}% / −${data.policy.trailingPct}%`], ["추종 해제", `${data.policy.dropAfterCloses}회 뒤 누적 ${data.policy.dropAtPct}%`], ["발견 창", `이주 후 ${data.policy.discoveryWindowMin}분 × ${data.policy.discoveryMaxMints}개`], ["유료 예산", `${data.policy.meteredBudgetMsgsPerDay.toLocaleString()}건/일 · 보유 토큰 구독 ${data.policy.subscribeHeldTokens ? "ON" : "OFF (RPC 폴링)"}`], ["재채점", `${data.policy.rescoreMin}분`], ["자격", `왕복 ≥${data.thresholds.minRoundTrips} · 토큰 ≥${data.thresholds.minMints} · 중앙값 >${data.thresholds.minMedianPnlPct}% · 승률 ≥${data.thresholds.minWinRate}`]] as Array<[string, string]>).map(([k, v]) => (<div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd>{v}</dd></div>))}
+            {([["포지션 상한", `${data.policy.maxPositionSol} SOL`], ["1회 위험", `${data.policy.riskPct}% × standing`], ["총노출 / 현금 하한", `${data.policy.grossMaxPct}% / ${data.policy.cashFloorPct}%`], ["리더 최소 매수", `${data.policy.minLeaderSol} SOL`], ["시간 정지", `${data.policy.maxHoldMin}분`], ["손절 / 되돌림", `−${data.policy.stopLossPct}% / −${data.policy.trailingPct}%`], ["추종 해제", `${data.policy.dropAfterCloses}회 뒤 누적 ${data.policy.dropAtPct}%`], ["발견 창", `이주 후 ${data.policy.discoveryWindowMin}분 × ${data.policy.discoveryMaxMints}개`], ["유료 예산", `${data.policy.meteredBudgetMsgsPerDay.toLocaleString()}건/일 · 보유 토큰 구독 ${data.policy.subscribeHeldTokens ? "ON" : "OFF (RPC 폴링)"}`], ["커뮤니티 게이트", `${data.community.policy.gate ? `점수 < ${data.community.policy.minScore} 거름` : "OFF"} · 40~59 ×0.5 · 60~79 ×1 · ≥80 ×1.25 · 읽음 ${data.community.stats.reads} / 거름 ${data.community.stats.blocked}`], ["재채점", `${data.policy.rescoreMin}분`], ["자격", `왕복 ≥${data.thresholds.minRoundTrips} · 토큰 ≥${data.thresholds.minMints} · 중앙값 >${data.thresholds.minMedianPnlPct}% · 승률 ≥${data.thresholds.minWinRate}`]] as Array<[string, string]>).map(([k, v]) => (<div key={k} className="contents"><dt className="text-muted-foreground">{k}</dt><dd>{v}</dd></div>))}
           </dl>
         </Card>
       </div>
@@ -282,7 +287,7 @@ export function PumpfunPageClient() {
           <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">보유 로트</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">마킹 = 스트림 체결의 준비금, 끊기면 RPC로 커브 계정</span></div>
           <div className="overflow-x-auto">
             <table className="w-full font-mono text-[11px]">
-              <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">via</th><th className="px-3 py-1.5 font-medium">풀</th><th className="px-3 py-1.5 font-medium">비용</th><th className="px-3 py-1.5 font-medium">평가</th><th className="px-3 py-1.5 font-medium">손익</th><th className="px-3 py-1.5 font-medium">보유</th><th className="px-3 py-1.5 font-medium">커브</th></tr></thead>
+              <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">via</th><th className="px-3 py-1.5 font-medium">풀</th><th className="px-3 py-1.5 font-medium">비용</th><th className="px-3 py-1.5 font-medium">평가</th><th className="px-3 py-1.5 font-medium">손익</th><th className="px-3 py-1.5 font-medium">보유</th><th className="px-3 py-1.5 font-medium">커브</th><th className="px-3 py-1.5 font-medium">커뮤니티</th></tr></thead>
               <tbody className="divide-y divide-border/50">
                 {L.lots.map((l) => (
                   <tr key={l.id}>
@@ -294,9 +299,10 @@ export function PumpfunPageClient() {
                     <td className={cn("px-3 py-1 font-bold", pnlClass(l.pnlPct))}>{signed(l.pnlPct)}</td>
                     <td className="px-3 py-1">{l.holdMin.toFixed(0)}분 / {data.policy.maxHoldMin}</td>
                     <td className="px-3 py-1 text-muted-foreground">{l.progress === null ? "—" : `${Math.round(l.progress * 100)}%`}</td>
+                    <td className="px-3 py-1"><CommunityCell c={l.community} /></td>
                   </tr>
                 ))}
-                {L.lots.length === 0 && <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">보유 없음 — 100% 현금이 정식 답이다.</td></tr>}
+                {L.lots.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">보유 없음 — 100% 현금이 정식 답이다.</td></tr>}
               </tbody>
             </table>
           </div>
@@ -324,6 +330,27 @@ export function PumpfunPageClient() {
           </div>
         </Card>
       </div>
+
+      <Card>
+        <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">커뮤니티 읽기 — 밈코인은 커뮤니티가 가격이다</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">pump.fun 댓글·KOTH·라이브·소셜 링크 · 텔레그램 구독자 · creator 48h 발행 수 · 보안 판정 · ATH 대비 · (RPC 있으면) 상위10 홀더</span></div>
+        <div className="overflow-x-auto">
+          <table className="w-full font-mono text-[11px]">
+            <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">시각</th><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">점수</th><th className="px-3 py-1.5 font-medium">배수</th><th className="px-3 py-1.5 font-medium">근거</th></tr></thead>
+            <tbody className="divide-y divide-border/50">
+              {data.community.recent.map((r) => (
+                <tr key={r.mint + r.at} className={cn(r.block && "opacity-60")}>
+                  <td className="px-3 py-1 text-muted-foreground">{t(r.at)}</td>
+                  <td className="px-3 py-1" title={r.mint}>{r.symbol ?? short(r.mint)}</td>
+                  <td className={cn("px-3 py-1 font-bold", scoreClass(r.score))}>{r.score}{r.unknown ? "?" : ""}</td>
+                  <td className="px-3 py-1">{r.block ? "거름" : `×${r.multiplier}`}</td>
+                  <td className="max-w-[520px] truncate px-3 py-1 text-muted-foreground" title={r.reasons.join("\n")}>{r.reasons.join(" · ")}</td>
+                </tr>
+              ))}
+              {data.community.recent.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">아직 읽은 토큰 없음 — 추종 지갑이 사는 순간 읽는다</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
