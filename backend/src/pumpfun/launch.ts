@@ -23,11 +23,11 @@ export interface LaunchMeta { name: string; symbol: string; description: string;
 export const DEFAULT_META: LaunchMeta = {
   name: "SCAM",
   symbol: "SCAM",
-  description: "Smart Contract Attack Museum. Every scam contract we could prove exploitable, archived with its proof-of-concept — reentrancy, open vaults, bad accounting, naive oracles, delegatecall hijacks, weak randomness, open initializers. Launched by a trading bot as an honest meme: creator holds 0, no bundle, no fake volume. Archive: trust404-prover.vercel.app",
+  description: "Smart Contract Attack Museum. Every scam contract we could prove exploitable, archived with its proof-of-concept — reentrancy, open vaults, bad accounting, naive oracles, delegatecall hijacks, weak randomness, open initializers. Launched by a trading bot as an honest meme: creator holds 0 (launch buy burned), no bundle, no fake volume, and the bot never trades this coin. No intrinsic value. Can go to zero. Museum: scam-museum.vercel.app",
   twitter: "",
   telegram: "",
-  website: "https://trust404-prover.vercel.app",
-  image: `${config.DASHBOARD_URL}/scam/scam.png`,
+  website: config.SCAM_SITE_URL,
+  image: `${config.SCAM_SITE_URL}/assets/scam.png`,
 };
 
 export interface LaunchRecord { mint: string; signature: string; ts: string; by: string; devBuySol: number; uri: string; meta: LaunchMeta }
@@ -66,7 +66,7 @@ export class LaunchDesk {
   ownMint() { return this.st.launched?.mint ?? null; }
 
   metadataJson(meta: LaunchMeta) { return { name: meta.name, symbol: meta.symbol, description: meta.description, image: meta.image, showName: true, createdOn: "https://pump.fun", twitter: meta.twitter || undefined, telegram: meta.telegram || undefined, website: meta.website || undefined }; }
-  private metadataUri() { return `${config.DASHBOARD_URL}/scam/metadata.json`; }
+  private metadataUri() { return `${config.SCAM_SITE_URL}/metadata.json`; }
 
   /** Pinata 가 있으면 IPFS 에 올린다. 없으면 대시보드 정적 파일 URI */
   async uploadMetadata(meta: LaunchMeta): Promise<{ uri: string; via: "pinata" | "dashboard" }> {

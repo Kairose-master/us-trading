@@ -71,8 +71,10 @@ const Env = z.object({
   PUMPFUN_RPC_URL: z.string().default(""),
   // SCAM 발행 — 메타데이터 IPFS 업로드(Pinata JWT). 비우면 대시보드 정적 파일 URI 를 쓴다
   PINATA_JWT: z.string().default(""),
-  // 대시보드 공개 주소 — 토큰 이미지·메타데이터 정적 파일의 기준
+  // 대시보드 공개 주소
   DASHBOARD_URL: z.string().default("https://us-trading-dashboard.vercel.app"),
+  // SCAM 박물관 사이트 (Kairose-master/MemeCoin, Vercel) — 토큰 이미지·메타데이터의 기준
+  SCAM_SITE_URL: z.string().default("https://scam-museum.vercel.app"),
   // ===== 거래소 아웃바운드 고정 IP 프록시 (src/core/egress.ts) =====
   // Fixie 등 HTTP 프록시 URL(http://user:pw@host:port). 비우면 전부 직접 호출.
   EXCHANGE_PROXY_URL: z.string().default(""),
