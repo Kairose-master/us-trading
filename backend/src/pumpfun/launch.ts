@@ -23,7 +23,7 @@ export interface LaunchMeta { name: string; symbol: string; description: string;
 export const DEFAULT_META: LaunchMeta = {
   name: "SCAM",
   symbol: "SCAM",
-  description: "Smart Contract Attack Museum. Every scam contract we could prove exploitable, archived with its proof-of-concept — reentrancy, open vaults, bad accounting, naive oracles, delegatecall hijacks, weak randomness, open initializers. Launched by a trading bot as an honest meme: creator holds 0 (launch buy burned), no bundle, no fake volume, and the bot never trades this coin. No intrinsic value. Can go to zero. Museum: scam-museum.vercel.app",
+  description: "Smart Contract Attack Museum. Every scam contract we could prove exploitable, archived with its proof-of-concept — reentrancy, open vaults, bad accounting, naive oracles, delegatecall hijacks, weak randomness, open initializers. Launched by a trading bot as an honest meme: creator holds 0 (launch buy burned), no bundle, no fake volume, and the bot never trades this coin. No intrinsic value. Can go to zero. Museum: scam-museum-snowy.vercel.app",
   twitter: "",
   telegram: "",
   website: config.SCAM_SITE_URL,

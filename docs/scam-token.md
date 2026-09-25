@@ -1,4 +1,4 @@
-> 이 문서의 최신본과 사이트·발행 스크립트·홍보 원고는 **`Kairose-master/MemeCoin`** 저장소에 있다 (사이트 scam-museum.vercel.app). 여기는 트레이딩 봇 쪽 기록만 남긴다.
+> 이 문서의 최신본과 사이트·발행 스크립트·홍보 원고는 **`Kairose-master/MemeCoin`** 저장소에 있다 (사이트 scam-museum-snowy.vercel.app). 여기는 트레이딩 봇 쪽 기록만 남긴다.
 
 # SCAM — 토크노믹스 · 합법 홍보 창구 · 사용처 (제안, 2026-09-25)
 
