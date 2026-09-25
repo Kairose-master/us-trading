@@ -15,6 +15,13 @@ describe("roundTripsOf", () => {
 });
 
 describe("scoreWallets", () => {
+  it("a skilled HFT wallet with a tiny median edge and 1-minute holds is not copyable", () => {
+    const trades: WalletTrade[] = [];
+    for (let i = 0; i < 30; i++) { trades.push(t("HFT", `h${i}`, "buy", 1, 100, i * 2)); trades.push(t("HFT", `h${i}`, "sell", i % 2 ? 1.02 : 0.99, 100, i * 2 + 1)); }
+    const { eligible, provisional, ranked } = scoreWallets(trades);
+    expect(ranked[0].totalPnlSol).toBeGreaterThan(0);
+    expect(eligible).toHaveLength(0); expect(provisional).toHaveLength(0);
+  });
   it("a positive median with a negative total (a few big losses) is not followed", () => {
     const trades: WalletTrade[] = [];
     for (let i = 0; i < 6; i++) { trades.push(t("BLOW", `b${i}`, "buy", 1, 100, i * 2)); trades.push(t("BLOW", `b${i}`, "sell", i < 4 ? 1.05 : 0.2, 100, i * 2 + 1)); }
@@ -33,7 +40,7 @@ describe("scoreWallets", () => {
     // 지갑 LUCKY: 1번 100배, 9번 -50%
     for (let i = 0; i < 10; i++) { trades.push(t("LUCKY", `l${i}`, "buy", 1, 100, i * 2)); trades.push(t("LUCKY", `l${i}`, "sell", i === 0 ? 100 : 0.5, 100, i * 2 + 1)); }
     // 지갑 STEADY: 10번 +15%, 3번 -10%
-    for (let i = 0; i < 13; i++) { trades.push(t("STEADY", `s${i}`, "buy", 1, 100, i * 2)); trades.push(t("STEADY", `s${i}`, "sell", i < 10 ? 1.15 : 0.9, 100, i * 2 + 1)); }
+    for (let i = 0; i < 13; i++) { trades.push(t("STEADY", `s${i}`, "buy", 1, 100, i * 2)); trades.push(t("STEADY", `s${i}`, "sell", i < 10 ? 1.15 : 0.9, 100, i * 2 + 5)); }
     const { ranked, eligible } = scoreWallets(trades);
     expect(ranked[0].wallet).toBe("STEADY");
     expect(eligible.map((w) => w.wallet)).toEqual(["STEADY"]);
@@ -43,7 +50,7 @@ describe("scoreWallets", () => {
   });
   it("requires a sample: too few round trips or too few mints is not eligible — but a small positive sample is provisional", () => {
     const trades: WalletTrade[] = [];
-    for (let i = 0; i < 3; i++) { trades.push(t("FEW", `f${i}`, "buy", 1, 100, i * 2)); trades.push(t("FEW", `f${i}`, "sell", 1.5, 100, i * 2 + 1)); }
+    for (let i = 0; i < 3; i++) { trades.push(t("FEW", `f${i}`, "buy", 1, 100, i * 2)); trades.push(t("FEW", `f${i}`, "sell", 1.5, 100, i * 2 + 5)); }
     for (let i = 0; i < 12; i++) { trades.push(t("ONE", "same", "buy", 1, 100, i * 2)); trades.push(t("ONE", "same", "sell", 1.5, 100, i * 2 + 1)); }
     const { eligible, provisional } = scoreWallets(trades);
     expect(eligible).toHaveLength(0);

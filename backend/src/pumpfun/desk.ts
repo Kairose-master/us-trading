@@ -11,6 +11,7 @@ import { parseTxDeltas, readCurve, tokenBalance, waitForTx, walletSol, walletTok
 import { progress } from "./curve.js";
 import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
 import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
+import { CURATED_SEEDS, isBlockedWallet } from "./curated.js";
 
 /**
  * pump.fun 데스크 — 카피 트레이딩 엔진의 **페이퍼** 버전. 실주문 경로는 없다 (지갑도, 서명 키도 없다).
@@ -87,7 +88,7 @@ class PumpfunDesk extends EventEmitter {
   constructor() {
     super();
     const restored = this.readState();
-    const seeds = [...new Set([...(restored?.seeds ?? []), ...config.PUMPFUN_SEED_WALLETS])];
+    const seeds = [...new Set([...(restored?.seeds ?? []), ...config.PUMPFUN_SEED_WALLETS, ...CURATED_SEEDS.map((c) => c.wallet)])].filter((w) => !isBlockedWallet(w));
     this.st = restored ?? { ledger: new PumpLedger(config.PUMPFUN_PAPER_START_SOL).snapshot(), follows: {}, seeds, paused: false, pausedAt: null, pausedReason: null, policy: DEFAULT_COPY_POLICY, thresholds: DEFAULT_THRESHOLDS, costs: DEFAULT_LEDGER_COSTS, discovery: {}, day: { date: today(), startEquitySol: config.PUMPFUN_PAPER_START_SOL }, lastRescoreAt: null, stats: { creates: 0, migrations: 0, tradesObserved: 0, copies: 0, exits: 0 } };
     this.st.seeds = seeds;
     this.st.policy = { ...DEFAULT_COPY_POLICY, ...this.st.policy };
@@ -95,6 +96,8 @@ class PumpfunDesk extends EventEmitter {
     this.st.costs = { ...DEFAULT_LEDGER_COSTS, ...this.st.costs };
     this.ledger = PumpLedger.restore(this.st.ledger, this.st.costs);
     for (const w of seeds) if (!this.st.follows[w]) this.st.follows[w] = { wallet: w, standing: 0.5, since: new Date().toISOString(), source: "manual", closes: 0, wins: 0, cumPct: 0, returns: [] };
+    // 큐레이션 차단 — 이미 추종 중이어도 뺀다 (코드가 화면보다 우선)
+    for (const w of Object.keys(this.st.follows)) if (isBlockedWallet(w)) { delete this.st.follows[w]; logger.warn("[pumpfun] curated block removed a followed wallet", { wallet: w.slice(0, 8) }); }
     this.loadTradeBuffer();
     if (this.st.metered) this.feed.restoreMetered(this.st.metered);
     communityDesk.policy = { ...DEFAULT_COMMUNITY_POLICY, ...(this.st.community ?? {}) }; this.st.community = communityDesk.policy;
@@ -370,11 +373,13 @@ class PumpfunDesk extends EventEmitter {
         if (c) { pool = c.complete ? "pump-amm" : "pump"; curveKey = c.bondingCurve; price = c.marketCapSol / 1_000_000_000; }
       } catch { /* unknown */ }
       if (!(price > 0) && curveKey) { try { const cv = await readCurve(curveKey); if (cv) price = cv.vSol / cv.vTokens; } catch { /* unknown */ } }
-      const costSol = Math.max(0.000001, amount * price);
-      const r = this.liveLedger.openFromFill({ mint, symbol: mint.slice(0, 4), pool, bondingCurveKey: curveKey, curve: null, tokens: amount, costSol, via: "chain:adopted", reason: `adopted from wallet balance (${amount.toFixed(0)} tokens, cost unknown → marked at ${costSol.toFixed(4)} SOL)`, signature: "" });
+      const costSol = price > 0 ? amount * price : 0; // 0 = 원가 모름 → 첫 마킹이 원가
+      const r = this.liveLedger.openFromFill({ mint, symbol: mint.slice(0, 4), pool, bondingCurveKey: curveKey, curve: null, tokens: amount, costSol, via: "chain:adopted", reason: `adopted from wallet balance (${amount.toFixed(0)} tokens, cost unknown → ${costSol > 0 ? `marked at ${costSol.toFixed(4)} SOL` : "first mark becomes cost"})`, signature: "" });
       if (!("error" in r)) { out.adopted.push(mint); logger.warn("[pumpfun] adopted untracked position from chain", { mint, amount, costSol }); }
     }
     for (const lot of [...this.liveLedger.lots.values()]) {
+      // 이전 빌드가 적은 가짜 원가(1e-6) 복구 — 원가 모름으로 되돌려 첫 마킹이 원가가 되게
+      if (lot.via === "chain:adopted" && lot.costSol > 0 && lot.costSol <= 0.00001) { lot.costSol = 0; lot.lastPrice = 0; lot.markSol = 0; }
       if (lot.pool && !onChain.has(lot.mint) && !this.inflight.has(`sell:${lot.id}`)) {
         const c = this.liveLedger.closeFromFill(lot.id, lot.tokens, 0, "not in wallet anymore (closed outside the desk)", "");
         if (!("error" in c)) out.closed.push(lot.mint);
@@ -509,11 +514,11 @@ class PumpfunDesk extends EventEmitter {
     this.st.lastRescoreAt = this.lastScore.at;
     const manual = new Set(this.st.seeds);
     const room = Math.max(0, this.st.policy.followMax - manual.size);
-    const top = r.eligible.slice(0, room);
+    const top = r.eligible.filter((w) => !isBlockedWallet(w.wallet)).slice(0, room);
     const topScore = top[0]?.score ?? 0;
     // 정식 자격이 모자라면 잠정 지갑으로 절반까지 채운다 — 작게 시작하고 실기록이 결정한다
     const provRoom = Math.max(0, Math.min(Math.floor(this.st.policy.followMax / 2), room - top.length));
-    const prov = r.provisional.slice(0, provRoom);
+    const prov = r.provisional.filter((w) => !isBlockedWallet(w.wallet)).slice(0, provRoom);
     const keep = new Set<string>([...manual, ...top.map((w) => w.wallet), ...prov.map((w) => w.wallet)]);
     // 이미 추종 중이고 실기록이 있는 지갑은 채점에서 빠졌어도 유지 — 실기록(standing)이 판단한다. 굶으면 applyOutcome이 뺀다
     // 실기록이 있는 지갑은 채점에서 빠졌어도 유지 — 단 누적이 양수일 때만. 실측: 누적 −47% 지갑이 이 규칙으로 살아남아 11번을 더 따라갔다
@@ -532,6 +537,7 @@ class PumpfunDesk extends EventEmitter {
   resume() { this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; this.st.day = { date: today(), startEquitySol: this.ledger.equitySol() }; this.save(); }
   addSeed(wallet: string) {
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) throw new Error("not a Solana address");
+    if (isBlockedWallet(wallet)) throw new Error("curated block list — see backend/src/pumpfun/curated.ts");
     if (!this.st.seeds.includes(wallet)) this.st.seeds.push(wallet);
     if (!this.st.follows[wallet]) this.st.follows[wallet] = { wallet, standing: 0.5, since: new Date().toISOString(), source: "manual", closes: 0, wins: 0, cumPct: 0, returns: [] };
     else this.st.follows[wallet].source = "manual";

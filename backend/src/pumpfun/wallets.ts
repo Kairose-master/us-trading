@@ -44,13 +44,17 @@ export interface WalletStats {
   lastSeen: string;
 }
 
-export interface ScoreThresholds { minRoundTrips: number; minMints: number; minMedianPnlPct: number; minWinRate: number }
-export const DEFAULT_THRESHOLDS: ScoreThresholds = { minRoundTrips: 8, minMints: 5, minMedianPnlPct: 0, minWinRate: 0.4 };
+export interface ScoreThresholds { minRoundTrips: number; minMints: number; minMedianPnlPct: number; minWinRate: number; /** 보유 시간 중앙값(분) — 짧으면 우리가 살 때 이미 팔고 없다 */ minHoldMin: number }
+/**
+ * **카피 가능성**이 자격의 핵심이다 (실측 2026-09-25): 왕복 347·토큰 138·총 +46 SOL 인 HFT 지갑은 중앙값 +0.4%·보유 2.7분이라
+ * 따라가면 우리 왕복 비용(~3.5%)에 구조적으로 진다 — 11회 연속 손실. 그래서 중앙값은 비용을 넉넉히 넘어야 하고 보유는 3분 이상.
+ */
+export const DEFAULT_THRESHOLDS: ScoreThresholds = { minRoundTrips: 8, minMints: 5, minMedianPnlPct: 5, minWinRate: 0.4, minHoldMin: 3 };
 /**
  * 잠정 자격 — 관측 창이 짧아(졸업 토큰 20분×3) 정식 자격(왕복 8·토큰 5)이 첫날 안 나온다. 그래서 표본이 작아도 중앙값이 양수이고
  * 승률이 절반을 넘으면 **작게(standing 0.25)** 추종을 시작하고, 실기록이 standing 을 키우거나 굶겨 죽인다.
  */
-export const PROVISIONAL_THRESHOLDS: ScoreThresholds = { minRoundTrips: 3, minMints: 2, minMedianPnlPct: 0, minWinRate: 0.5 };
+export const PROVISIONAL_THRESHOLDS: ScoreThresholds = { minRoundTrips: 3, minMints: 2, minMedianPnlPct: 8, minWinRate: 0.5, minHoldMin: 3 };
 export const PROVISIONAL_STANDING = 0.25;
 
 const median = (xs: number[]) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -96,7 +100,7 @@ export function scoreWallets(trades: WalletTrade[], th: ScoreThresholds = DEFAUL
   }
   ranked.sort((a, b) => b.score - a.score || b.totalPnlSol - a.totalPnlSol);
   // 총 손익도 양수여야 한다 — 실측: 중앙값 +3.7%·승률 69%인데 총 −1.19 SOL 인 지갑이 잠정 자격을 통과했다 (몇 번의 큰 손실)
-  const passes = (w: WalletStats, t: ScoreThresholds) => w.roundTrips >= t.minRoundTrips && w.mints >= t.minMints && w.medianPnlPct > t.minMedianPnlPct && w.winRate >= t.minWinRate && w.totalPnlSol > 0;
+  const passes = (w: WalletStats, t: ScoreThresholds) => w.roundTrips >= t.minRoundTrips && w.mints >= t.minMints && w.medianPnlPct > t.minMedianPnlPct && w.winRate >= t.minWinRate && w.totalPnlSol > 0 && w.medianHoldMin >= t.minHoldMin;
   const eligible = ranked.filter((w) => passes(w, th));
   const provisional = ranked.filter((w) => !passes(w, th) && passes(w, prov));
   return { ranked, eligible, provisional };

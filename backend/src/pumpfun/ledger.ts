@@ -153,8 +153,9 @@ export class PumpLedger {
    */
   openFromFill(p: { mint: string; symbol: string; pool: string; bondingCurveKey: string | null; curve: CurveState | null; tokens: number; costSol: number; via: string; reason: string; signature: string; ts?: string }): { lot: Lot; order: PaperOrder } | { error: string } {
     const ts = p.ts ?? new Date().toISOString();
-    if (!(p.tokens > 0) || !(p.costSol > 0)) return { error: `fill without tokens/cost: ${p.tokens} / ${p.costSol}` };
-    const price = p.costSol / p.tokens;
+    if (!(p.tokens > 0) || p.costSol < 0) return { error: `fill without tokens/cost: ${p.tokens} / ${p.costSol}` };
+    // costSol 0 = 원가 모름(체인 편입) — 첫 마킹이 원가가 된다 (mark 참조). 가짜 원가 1e-6 을 적으면 손익이 400만% 로 나온다 (실측)
+    const price = p.costSol > 0 ? p.costSol / p.tokens : 0;
     const markSol = p.pool === "pump" && p.curve && p.curve.vSol > 0 ? liquidationValue(p.curve, p.tokens, CURVE_FEE_PCT) : p.tokens * price * (1 - (this.costs.ammImpactPct + AMM_FEE_PCT) / 100);
     const lot: Lot = { id: `L${++this.seq}`, mint: p.mint, symbol: p.symbol, via: p.via, tokens: p.tokens, costSol: p.costSol, openedAt: ts, pool: p.pool, bondingCurveKey: p.bondingCurveKey, markSol, markAt: ts, peakMarkSol: markSol, curve: p.pool === "pump" ? p.curve : null, lastPrice: price };
     this.lots.set(lot.id, lot);
@@ -179,15 +180,18 @@ export class PumpLedger {
     return { order, closed };
   }
 
-  /** 시세 마킹 — 커브 상태(정확) 또는 가격(AMM) */
+  /** 시세 마킹 — 커브 상태(정확) 또는 가격(AMM). 원가를 모른 채 편입된 로트(costSol 0)는 첫 마킹이 원가가 된다 */
   mark(mint: string, m: { curve?: CurveState | null; price?: number; pool?: string }, ts = new Date().toISOString()) {
     for (const lot of this.lots.values()) {
       if (lot.mint !== mint) continue;
+      const costUnknown = !(lot.costSol > 0);
       if (m.pool && m.pool !== lot.pool) { lot.pool = m.pool; if (m.pool !== "pump") lot.curve = null; } // 졸업: 커브 → AMM
       if (lot.pool === "pump" && m.curve && m.curve.vSol > 0) { lot.curve = m.curve; lot.markSol = liquidationValue(m.curve, lot.tokens, CURVE_FEE_PCT); lot.lastPrice = m.curve.vSol / m.curve.vTokens; }
       else if (m.price && m.price > 0) { lot.lastPrice = m.price; lot.markSol = lot.tokens * m.price * (1 - (this.costs.ammImpactPct + AMM_FEE_PCT) / 100); }
       else continue;
-      lot.markAt = ts; lot.peakMarkSol = Math.max(lot.peakMarkSol, lot.markSol);
+      lot.markAt = ts;
+      if (costUnknown && lot.markSol > 0) { lot.costSol = lot.markSol; lot.peakMarkSol = lot.markSol; lot.openedAt = ts; }
+      lot.peakMarkSol = Math.max(lot.peakMarkSol, lot.markSol);
     }
   }
 }
