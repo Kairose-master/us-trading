@@ -208,13 +208,13 @@ export function PumpfunPageClient() {
           {data.paused ? (
             <button type="button" disabled={busy} onClick={() => void run(pumpfunResume, "재개")} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50"><Play className="size-3" aria-hidden="true" /> 재개</button>
           ) : (
-            <button type="button" disabled={busy} onClick={() => void run(pumpfunPause, "신규 진입 정지 (청산은 계속)")} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50"><Pause className="size-3" aria-hidden="true" /> 정지</button>
+            <button type="button" disabled={busy} onClick={() => void run(pumpfunPause, "정지 — 신규 진입과 유료 구독 중단, 보유분 청산은 계속")} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50"><Pause className="size-3" aria-hidden="true" /> 정지</button>
           )}
           <button type="button" disabled={busy} onClick={() => void run(pumpfunRescore, "지갑 재채점")} className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50"><RefreshCw className="size-3" aria-hidden="true" /> 재채점</button>
         </div>
       </div>
 
-      {data.paused && <Card className="p-3 text-xs text-destructive">정지됨 — {data.pausedReason} ({data.pausedAt ? t(data.pausedAt) : ""}). 신규 진입 없음, 보유 로트의 청산 규칙만 돈다.</Card>}
+      {data.paused && <Card className="p-3 text-xs text-destructive">정지됨 — {data.pausedReason} ({data.pausedAt ? t(data.pausedAt) : ""}). 신규 진입 없음, 유료 구독(토큰·지갑 거래 스트림) 중단. 보유 로트의 청산 규칙은 무료 마킹(RPC·시총)으로 계속 돈다.</Card>}
       {!data.feed.metered.hasKey && <Card className="p-3 text-xs text-muted-foreground">관측 전용: PUMPFUN_API_KEY 가 없어 거래 스트림(토큰·지갑)이 없다. 신규 토큰·이주만 기록 중 — 카피는 키(PumpPortal, 0.02 SOL 이상 충전)를 넣어야 시작된다. 수동 시드 지갑도 키 없이는 체결을 볼 수 없다.</Card>}
       {data.feed.metered.hasKey && data.feed.metered.ok === false && <Card className="p-3 text-xs text-destructive">거래 스트림 거부: {data.feed.metered.note}</Card>}
 

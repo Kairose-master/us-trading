@@ -199,6 +199,14 @@ class PumpfunDesk extends EventEmitter {
   /** 추종 지갑·보유 토큰·발견 창 구독을 피드에 맞춘다 (재연결 때도 호출) */
   private syncSubscriptions() {
     if (!this.feed.hasKey) return;
+    // 정지 중에는 유료 구독(토큰·지갑 거래 스트림)을 전부 끊는다 — 돈이 타지 않게. 무료 스트림(신규·이주)은 유지.
+    // 보유분 청산은 계속 돈다: 커브 토큰은 15초 RPC 마킹, AMM 토큰은 60초 pump.fun 시총 마킹(pollHeldCommunity)
+    if (this.st.paused) {
+      const accts = this.feed.subscribedAccounts(), toks = this.feed.subscribedTokens();
+      if (accts.length || toks.length) logger.warn("[pumpfun] paused — dropping metered subscriptions", { accounts: accts.length, tokens: toks.length });
+      this.feed.unsubscribeAccounts(accts); this.feed.unsubscribeTokens(toks); this.st.discovery = {};
+      return;
+    }
     // 추종 지갑 + 보유 토큰의 creator (개발자가 팔면 우리도 판다 — 지갑당 메시지가 적어 싸다)
     const wantAccounts = new Set([...Object.keys(this.st.follows), ...this.heldCreators()]);
     const haveAccounts = new Set(this.feed.subscribedAccounts());
@@ -236,7 +244,7 @@ class PumpfunDesk extends EventEmitter {
       this.appendJsonl(join(DIR, `events-${today()}.jsonl`), { k: "m", ts: ev.ts, mint: ev.mint, pool: ev.pool });
       this.screen.noteMigration(ev.mint, Date.parse(ev.ts) || Date.now());
       // 지갑 발견 창 — 졸업 토큰의 거래를 잠시 관측한다 (유료 스트림이라 창·개수·일 예산으로 제한). 복합 엔진 후보 구독은 syncSubscriptions 가 따로 건다
-      if (this.feed.hasKey && !this.overBudget() && Object.keys(this.st.discovery).length < this.st.policy.discoveryMaxMints) {
+      if (this.feed.hasKey && !this.st.paused && !this.overBudget() && Object.keys(this.st.discovery).length < this.st.policy.discoveryMaxMints) {
         this.st.discovery[ev.mint] = { until: new Date(Date.now() + this.st.policy.discoveryWindowMin * 60_000).toISOString(), symbol: "" };
         this.feed.subscribeTokens([ev.mint]);
       }
@@ -368,7 +376,9 @@ class PumpfunDesk extends EventEmitter {
     for (const m of mints) {
       try {
         // AMM(졸업) 토큰은 거래가 뜸하면 마킹이 안 온다 — pump.fun 시총(SOL)으로 60초마다 폴백 마킹 (원가 모름 로트는 이게 첫 원가가 된다)
-        const stale = [...this.ledger.lotsOf(m), ...this.liveLedger.lotsOf(m)].some((l) => l.pool !== "pump" && (!(l.markSol > 0) || Date.now() - Date.parse(l.markAt) > 3 * 60_000));
+        // 정지 중엔 스트림이 없으니 매 폴링(60초)마다 마킹한다
+        const staleMs = this.st.paused ? 50_000 : 3 * 60_000;
+        const stale = [...this.ledger.lotsOf(m), ...this.liveLedger.lotsOf(m)].some((l) => l.pool !== "pump" && (!(l.markSol > 0) || Date.now() - Date.parse(l.markAt) > staleMs));
         if (stale) { const b = await communityDesk.coinBasics(m).catch(() => null); if (b && b.marketCapSol > 0) { const arg = { price: b.marketCapSol / 1_000_000_000, pool: b.complete ? "pump-amm" : "pump" }; this.ledger.mark(m, arg); this.liveLedger.mark(m, arg); } }
         const r = await communityDesk.read(m, { force: true, timeoutMs: 4_000 });
         if (r.facts.ok && r.facts.securityVerdict && r.facts.securityVerdict !== "allow") {
@@ -531,7 +541,7 @@ class PumpfunDesk extends EventEmitter {
     // 잘못 울린 일 손실 정지 — 편입·마킹 뒤 진짜 드로다운이 정지선보다 5%p 이상 여유면 자동 재개 (실측: 확인 실패로 두 번 잘못 울렸다)
     if (this.st.paused && this.st.pausedReason?.startsWith("LIVE daily stop")) {
       const eq = this.liveEquitySol(); const d = this.liveSt.day; const dd = d.startEquitySol > 0 ? ((d.startEquitySol - eq) / d.startEquitySol) * 100 : 0;
-      if (dd < this.liveSt.policy.dailyStopPct - 5) { logger.warn("[pumpfun] daily stop was a false alarm after reconcile — resuming", { ddPct: +dd.toFixed(2) }); this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; this.save(); }
+      if (dd < this.liveSt.policy.dailyStopPct - 5) { logger.warn("[pumpfun] daily stop was a false alarm after reconcile — resuming", { ddPct: +dd.toFixed(2) }); this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; this.syncSubscriptions(); this.save(); }
     }
     if (out.adopted.length || out.closed.length) { this.syncSubscriptions(); this.saveLive(); }
     return out;
@@ -695,8 +705,8 @@ class PumpfunDesk extends EventEmitter {
   }
 
   // ===== 운영 =====
-  pause(reason: string) { this.st.paused = true; this.st.pausedAt = new Date().toISOString(); this.st.pausedReason = reason; logger.warn("[pumpfun] paused", { reason }); this.save(); }
-  resume() { this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; this.st.day = { date: today(), startEquitySol: this.ledger.equitySol() }; this.save(); }
+  pause(reason: string) { this.st.paused = true; this.st.pausedAt = new Date().toISOString(); this.st.pausedReason = reason; logger.warn("[pumpfun] paused", { reason }); this.syncSubscriptions(); this.save(); }
+  resume() { this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; this.st.day = { date: today(), startEquitySol: this.ledger.equitySol() }; this.syncSubscriptions(); this.save(); }
   addSeed(wallet: string) {
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(wallet)) throw new Error("not a Solana address");
     if (isBlockedWallet(wallet)) throw new Error("curated block list — see backend/src/pumpfun/curated.ts");
