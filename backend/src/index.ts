@@ -19,6 +19,7 @@ import { cryptoUniverse } from "./crypto/universe.js";
 import { startYahooTicks } from "./data/yahoo.js";
 import { officeLoop } from "./office/loop.js";
 import { evolution } from "./evolution/population.js";
+import { pumpfunDesk } from "./pumpfun/desk.js";
 import { benchmarkStore } from "./control/benchmark-store.js";
 import { controlPlane } from "./control/plane.js";
 
@@ -67,6 +68,8 @@ scannerServer.startAutoLoop();
 cryptoUniverse.startAutoRefresh();
 officeLoop.startAutoLoop();
 evolution.startAutoLoop();
+// pump.fun 카피 트레이딩 데스크 — 페이퍼(SOL). 실주문 경로 없음. docs/pumpfun.md
+pumpfunDesk.start();
 // 제어 평면: 가격은 크립토 데스크 티커(보유분 폴백 포함), 귀속은 하루 한 번 일봉으로
 controlPlane.attachSentiment(() => cryptoDesk.pipeline.tracker.bySymbol().map((x) => ({ market: x.symbol.startsWith("KRW-") ? x.symbol : `KRW-${x.symbol}`, score: x.score, label: x.label, mentions: x.mentions, driver: x.topDriver })));
 controlPlane.attachDrawdown(() => { const s = cryptoDesk.status(); const rows = cryptoDesk.paperEquity(5000); const peak = Math.max(s.paperStartKrw, ...rows.map((r) => r.equityKrw)); return peak > 0 ? Math.max(0, ((peak - s.equityKrw) / peak) * 100) : 0; });

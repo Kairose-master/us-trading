@@ -17,6 +17,9 @@ import { scannerServer } from "../crypto/scanner-server.js";
 import { contractDesk } from "../onchain/contract-desk.js";
 import { verifyDesk } from "../onchain/timelock-verify.js";
 import { cryptoUniverse } from "../crypto/universe.js";
+import { pumpfunDesk } from "../pumpfun/desk.js";
+import { readCurve } from "../pumpfun/solana-rpc.js";
+import { quoteBuy, marketCapSol, progress } from "../pumpfun/curve.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
 import { supervisor, type Market as SupMarket } from "../core/supervisor.js";
@@ -479,6 +482,31 @@ router.post("/crypto/paper/reset", (req, res) => {
 });
 
 router.get("/crypto/universe", (_req, res) => { res.json(cryptoUniverse.status()); });
+// ===== pump.fun 카피 트레이딩 데스크 (페이퍼, SOL) — docs/pumpfun.md =====
+router.get("/pumpfun", (_req, res) => { res.json(pumpfunDesk.status()); });
+router.get("/pumpfun/wallets", (req, res) => { res.json(pumpfunDesk.candidates(Number(req.query.limit ?? 50))); });
+router.get("/pumpfun/orders", (req, res) => { res.json(pumpfunDesk.orders(Number(req.query.limit ?? 200))); });
+router.get("/pumpfun/equity", (req, res) => { res.json(pumpfunDesk.equity(Number(req.query.limit ?? 2000))); });
+router.get("/pumpfun/events", (req, res) => { const k = req.query.kind; res.json(pumpfunDesk.events(Number(req.query.limit ?? 100), k === "create" || k === "trade" || k === "migrate" ? k : undefined)); });
+// 본딩커브 견적 — 계정을 읽어 "지금 이 SOL을 넣으면" 을 수식으로 답한다 (읽기 전용)
+router.get("/pumpfun/quote", async (req, res) => {
+  const key = String(req.query.curve ?? ""); const sol = Number(req.query.sol ?? 0.1);
+  if (!key) return res.status(400).json({ error: "curve 필요 (bondingCurveKey)" });
+  try { const c = await readCurve(key); if (!c) return res.status(404).json({ error: "커브 계정 없음 — 이주됐거나 잘못된 키" }); const f = quoteBuy(c, sol); res.json({ curve: c, marketCapSol: marketCapSol(c), progress: progress(c), quote: { solIn: sol, tokens: f.tokens, feeSol: f.feeSol, avgPrice: f.avgPrice, impactPct: f.impactPct } }); }
+  catch (e) { res.status(502).json({ error: (e as Error).message }); }
+});
+router.post("/pumpfun/wallets", requireSession, requireOwner, (req, res) => {
+  const wallet = String(req.body?.wallet ?? "").trim(); const action = req.body?.action === "remove" ? "remove" : "add";
+  try { if (action === "add") pumpfunDesk.addSeed(wallet); else pumpfunDesk.removeWallet(wallet); } catch (e) { return res.status(400).json({ error: (e as Error).message }); }
+  res.json({ ok: true, seeds: pumpfunDesk.status().seeds });
+});
+router.post("/pumpfun/rescore", requireSession, requireOwner, (_req, res) => { const r = pumpfunDesk.rescore(); res.json({ at: r.at, wallets: r.ranked.length, eligible: r.eligible.length, following: pumpfunDesk.status().follows.length }); });
+router.post("/pumpfun/pause", requireSession, requireOwner, (req, res) => { pumpfunDesk.pause(String(req.body?.reason ?? "operator")); res.json({ ok: true }); });
+router.post("/pumpfun/resume", requireSession, requireOwner, (_req, res) => { pumpfunDesk.resume(); res.json({ ok: true }); });
+router.post("/pumpfun/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setPolicy(req.body ?? {}) }); });
+// 장부 초기화 — 운영자 토큰 직접 호출 전용 (대시보드 프록시 허용 목록에 없다)
+router.post("/pumpfun/reset", (req, res) => { const s = req.body?.startSol !== undefined ? Number(req.body.startSol) : undefined; if (s !== undefined && !(s > 0)) return res.status(400).json({ error: "startSol은 양수" }); res.json({ ok: true, ...pumpfunDesk.reset(s) }); });
+
 // 컨트랙트 분석 — 크립토의 "공시". 배포된 바이트코드가 보유자에게 무엇을 할 수 있는지 말한다
 router.get("/crypto/contract/:symbol", async (req, res) => {
   try { res.json(await contractDesk.report(String(req.params.symbol), req.query.force === "1")); }

@@ -888,3 +888,38 @@ export interface CryptoUniverse { markets: string[]; majors: string[]; refreshed
 export async function getUniverse(): Promise<CryptoUniverse> {
   return req("crypto/universe")
 }
+
+// ===== pump.fun 카피 트레이딩 데스크 (페이퍼, SOL) — docs/pumpfun.md =====
+export interface PumpLot { id: string; mint: string; symbol: string; via: string; tokens: number; costSol: number; openedAt: string; pool: string; markSol: number; markAt: string; peakMarkSol: number; lastPrice: number; pnlPct: number; holdMin: number; progress: number | null }
+export interface PumpOrder { id: string; ts: string; lotId: string; mint: string; symbol: string; side: "buy" | "sell"; tokens: number; sol: number; feeSol: number; priorityFeeSol: number; impactPct: number; slipPct: number; pool: string; via: string; reason: string; pnlSol?: number; pnlPct?: number; holdMin?: number }
+export interface PumpFollow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; hitRate: number | null; openLots: number }
+export interface PumpPolicy { maxPositionSol: number; riskPct: number; grossMaxPct: number; cashFloorPct: number; maxLots: number; minLeaderSol: number; maxHoldMin: number; stopLossPct: number; trailingPct: number; followMax: number; eta: number; dropAtPct: number; dropAfterCloses: number; dailyStopPct: number; discoveryWindowMin: number; discoveryMaxMints: number; rescoreMin: number }
+export interface PumpStatus {
+  enabled: boolean; mode: "paper"; unit: "SOL"
+  feed: { url: string; connected: boolean; since: string | null; reconnects: number; messages: number; events: { create: number; trade: number; migrate: number }; lastMessageAt: string | null; lastError: string | null; metered: { hasKey: boolean; ok: boolean | null; note: string | null }; subscriptions: { tokens: number; accounts: number; newToken: boolean; migration: boolean } }
+  ledger: { startSol: number; since: string; cashSol: number; positionsSol: number; equitySol: number; returnPct: number; lots: PumpLot[]; day: { date: string; startEquitySol: number }; dayPct: number }
+  follows: PumpFollow[]
+  seeds: string[]
+  paused: boolean; pausedAt: string | null; pausedReason: string | null
+  policy: PumpPolicy
+  thresholds: { minRoundTrips: number; minMints: number; minMedianPnlPct: number; minWinRate: number }
+  costs: { latencySlipPct: number; ammImpactPct: number; priorityFeeSol: number }
+  discovery: Array<{ mint: string; until: string }>
+  tradeBuffer: { trades: number; hours: number; wallets: number | null; eligible: number | null; lastRescoreAt: string | null }
+  stats: { creates: number; migrations: number; tradesObserved: number; copies: number; exits: number }
+  recentCreates: Array<{ ts: string; mint: string; creator: string; name: string; symbol: string; initialBuySol: number; marketCapSol: number; bondingCurveKey: string }>
+  recentMigrations: Array<{ ts: string; mint: string; pool: string }>
+  orders: PumpOrder[]
+  lastError: string | null
+}
+export interface PumpWalletStats { wallet: string; trades: number; roundTrips: number; mints: number; winRate: number; medianPnlPct: number; totalPnlSol: number; volumeSol: number; medianHoldMin: number; score: number; firstSeen: string; lastSeen: string }
+export async function getPumpfun(): Promise<PumpStatus> { return req("pumpfun") }
+export async function getPumpfunWallets(limit = 50): Promise<{ at: string; ranked: PumpWalletStats[]; eligible: PumpWalletStats[]; thresholds: PumpStatus["thresholds"]; trades: number }> { return req(`pumpfun/wallets?limit=${limit}`) }
+export async function getPumpfunEquity(limit = 2000): Promise<Array<{ ts: string; equitySol: number; cashSol: number; lots: number }>> { return req(`pumpfun/equity?limit=${limit}`) }
+export async function getPumpfunOrders(limit = 200): Promise<PumpOrder[]> { return req(`pumpfun/orders?limit=${limit}`) }
+export async function pumpfunAddWallet(wallet: string): Promise<{ ok: true; seeds: string[] }> { return write("pumpfun/wallets", "POST", { wallet, action: "add" }) }
+export async function pumpfunRemoveWallet(wallet: string): Promise<{ ok: true; seeds: string[] }> { return write("pumpfun/wallets", "POST", { wallet, action: "remove" }) }
+export async function pumpfunRescore(): Promise<{ at: string; wallets: number; eligible: number; following: number }> { return write("pumpfun/rescore", "POST", {}) }
+export async function pumpfunPause(): Promise<{ ok: true }> { return write("pumpfun/pause", "POST", { reason: "operator" }) }
+export async function pumpfunResume(): Promise<{ ok: true }> { return write("pumpfun/resume", "POST", {}) }
+export async function pumpfunSetPolicy(patch: Partial<PumpPolicy>): Promise<{ ok: true; policy: PumpPolicy }> { return write("pumpfun/policy", "POST", patch) }

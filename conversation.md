@@ -40,3 +40,7 @@ claude/railway-deployment-ip-m01okr: council.ts 정족수 = min(2, 켜진 제안
 ## 2026-09-25 08:36 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
 
 claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 확장 타당성 문서만 추가(docs/pumpfun.md). 코드·장부·실돈 스위치 변경 없음. 진행하면 새 venue 장부(state-pumpfun.json)와 backend/src/pumpfun/*를 만들 예정 — 그때 다시 노트.
+
+## 2026-09-25 08:57 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
+
+claude/pumpfun-expansion-monetization-3lqu2o: backend/src/pumpfun/* 신규(PumpPortal WS 피드·SOL 페이퍼 장부·카피 규칙·지갑 채점·Solana 공개 RPC), routes에 /pumpfun/*, index.ts에 pumpfunDesk.start(), config에 PUMPFUN_* 6개, 프론트 /pumpfun 페이지·프록시 허용·사이드바. 기존 Upbit 장부·제어 평면·실돈 스위치는 안 건드림. data/pumpfun/ 에 파일을 쓴다(볼륨). 부팅 시 wss://pumpportal.fun 아웃바운드 연결 하나 늘어남.

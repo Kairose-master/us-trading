@@ -96,7 +96,7 @@ function ApiGauge() {
   )
 }
 
-const CRYPTO_PATHS = ["/crypto", "/scanner", "/office", "/evolution", "/lab", "/quant"]
+const CRYPTO_PATHS = ["/crypto", "/scanner", "/office", "/evolution", "/lab", "/quant", "/pumpfun"]
 
 /** 지금 보는 화면이 크립토 묶음인지 — 헤더의 시장 표시를 그쪽으로 바꾼다 */
 export function useIsCryptoRoute(): boolean {

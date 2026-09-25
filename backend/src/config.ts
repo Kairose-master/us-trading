@@ -57,6 +57,14 @@ const Env = z.object({
     .string()
     .default("true")
     .transform(asBool),
+  // ===== pump.fun 카피 트레이딩 데스크 (페이퍼, SOL 단위 — 실주문 경로 없음) =====
+  PUMPFUN_ENABLED: z.string().default("true").transform(asBool),
+  // PumpPortal 데이터 스트림. 신규 토큰·이주는 무료, 토큰/지갑 거래 스트림은 0.02 SOL 이상 충전된 API 키 필요 (0.01 SOL/1만 메시지)
+  PUMPFUN_WS_URL: z.string().default("wss://pumpportal.fun/api/data"),
+  PUMPFUN_API_KEY: z.string().default(""),
+  PUMPFUN_PAPER_START_SOL: z.string().default("10").transform((v) => Math.max(0.1, Number(v) || 10)),
+  // 항상 추종할 지갑(콤마 구분) — 채점과 무관하게 유지. GMGN/Dune 등에서 고른 주소를 넣는다
+  PUMPFUN_SEED_WALLETS: z.string().default("").transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean)),
   // ===== 거래소 아웃바운드 고정 IP 프록시 (src/core/egress.ts) =====
   // Fixie 등 HTTP 프록시 URL(http://user:pw@host:port). 비우면 전부 직접 호출.
   EXCHANGE_PROXY_URL: z.string().default(""),

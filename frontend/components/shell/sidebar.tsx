@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname, useSearchParams } from "next/navigation"
-import { Bitcoin, Briefcase, Building2, ClipboardList, Cpu, Dna, FlaskConical, Landmark, LayoutDashboard, MessageSquareText, Network, Radar, Settings, ShieldAlert, Sigma, TrendingUp } from "lucide-react"
+import { Bitcoin, Briefcase, Copy, Building2, ClipboardList, Cpu, Dna, FlaskConical, Landmark, LayoutDashboard, MessageSquareText, Network, Radar, Settings, ShieldAlert, Sigma, TrendingUp } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useSettings } from "@/components/settings-provider"
 
@@ -23,6 +23,7 @@ const GROUPS: NavGroup[] = [
       { href: "/scanner", label: "투자 유니버스", icon: Radar },
       { href: "/office", label: "증권 오피스", icon: Building2 },
       { href: "/evolution", label: "진화 캠페인", icon: Dna },
+      { href: "/pumpfun", label: "pump.fun 카피", icon: Copy },
       { href: "/lab", label: "모델 랩", icon: Cpu },
       { href: "/quant", label: "퀀트 코어", icon: Sigma },
       { href: "/pipeline?market=crypto", label: "파이프라인", icon: Network, market: "crypto" },
