@@ -218,13 +218,29 @@ class PumpfunDesk extends EventEmitter {
     if (this.overBudget() && Object.keys(this.st.discovery).length) { logger.warn("[pumpfun] metered budget exceeded — closing discovery windows", { today: this.feed.meteredToday(), budget: this.st.policy.meteredBudgetMsgsPerDay }); this.st.discovery = {}; }
     // 보유 토큰: 커브 토큰은 무료 RPC 폴링(tick)으로 마킹하니 구독하지 않는다(정책 0). AMM 토큰은 무료 시세원이 없어 구독한다
     const held = [...this.ledger.lots.values(), ...this.liveLedger.lots.values()].filter((l) => this.st.policy.subscribeHeldTokens >= 1 || l.pool !== "pump").map((l) => l.mint);
-    // 복합 엔진 후보 — 무료 스냅샷 모멘텀 상위 K 에만 유료 스트림을 건다 (예산 초과면 안 건다)
-    const flowMints = this.overBudget() ? [] : this.flowCandidates().slice(0, this.st.policy.flowMaxMints).map((c) => c.mint);
+    // 폭주 토큰 색출 — 후보로 구독한 토큰이 분당 floodMintPerMin 을 넘으면 신호가 아니라 노이즈다(초당 수 건). 끊고 쿨다운
+    const heldSet = new Set([...held, ...Object.keys(this.st.discovery)]);
+    for (const { mint, perMin } of this.feed.mintRates()) {
+      if (perMin >= this.st.policy.floodMintPerMin && !heldSet.has(mint)) { this.floodBlock.set(mint, now + this.st.policy.floodCooldownMin * 60_000); logger.warn("[pumpfun] flooding token evicted from stream", { mint: mint.slice(0, 8), perMin }); }
+    }
+    for (const [mint, until] of this.floodBlock) if (until < now) this.floodBlock.delete(mint);
+    // 탄력 구독 개수 — 하루 예산을 24시간에 고르게 쓰도록 페이스를 잡고, 최근 분당 소진 속도가 페이스를 넘으면 후보 수를 줄인다
+    const pacePerMin = this.st.policy.meteredBudgetMsgsPerDay / 1440;
+    const rate = this.feed.msgsPerMin();
+    const ratio = pacePerMin > 0 ? rate / pacePerMin : 1;
+    // ratio ≤ 1 이면 최대(flowMaxMints), 2배면 0 — 선형으로 줄이고 최소 0
+    const elasticMax = Math.max(0, Math.round(this.st.policy.flowMaxMints * Math.min(1, Math.max(0, 2 - ratio))));
+    this.elasticFlowMax = elasticMax;
+    // 복합 엔진 후보 — 무료 스냅샷 모멘텀 상위, 폭주·쿨다운 토큰은 빼고, 탄력 개수만큼만 유료 스트림 (예산 초과면 0)
+    const flowMints = this.overBudget() ? [] : this.flowCandidates().filter((c) => !this.floodBlock.has(c.mint)).slice(0, elasticMax).map((c) => c.mint);
     const wantTokens = new Set([...held, ...Object.keys(this.st.discovery), ...flowMints]);
     const haveTokens = new Set(this.feed.subscribedTokens());
     this.feed.subscribeTokens([...wantTokens].filter((m) => !haveTokens.has(m)));
     this.feed.unsubscribeTokens([...haveTokens].filter((m) => !wantTokens.has(m)));
   }
+  /** 폭주로 끊긴 토큰 → 재구독 금지 만료 시각 */
+  private floodBlock = new Map<string, number>();
+  private elasticFlowMax = 0;
 
   private overBudget(): boolean { return this.feed.meteredToday() >= this.st.policy.meteredBudgetMsgsPerDay; }
 
@@ -352,7 +368,7 @@ class PumpfunDesk extends EventEmitter {
   }
   ensembleStatus() {
     const list = [...this.lastEnsemble.values()].sort((a, b) => b.score - a.score).slice(0, 20).map((r) => ({ mint: r.mint, symbol: this.screen.get(r.mint)?.symbol ?? null, score: r.score, action: r.action, why: r.why, blocked: r.blocked, sizeMult: r.sizeMult, votes: r.votes.map((v) => ({ engine: v.engine, score: v.score, abstain: v.abstain, why: v.why.slice(0, 3) })), streamed: this.feed.subscribedTokens().includes(r.mint), held: this.ledger.lotsOf(r.mint).length + this.liveLedger.lotsOf(r.mint).length }));
-    return { weights: this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, policy: this.st.ensemble ?? DEFAULT_ENSEMBLE_POLICY, directCopy: this.st.policy.directCopy, flowMaxMints: this.st.policy.flowMaxMints, screen: { candidates: this.screen.candidates().length, lastPollAt: this.screen.lastPollAt, ...this.screen.stats }, stats: this.ensembleStats, candidates: list };
+    return { weights: this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, policy: this.st.ensemble ?? DEFAULT_ENSEMBLE_POLICY, directCopy: this.st.policy.directCopy, flowMaxMints: this.st.policy.flowMaxMints, elastic: { msgsPerMin: this.feed.msgsPerMin(), pacePerMin: Math.round(this.st.policy.meteredBudgetMsgsPerDay / 1440), activeFlowMax: this.elasticFlowMax, floodBlocked: this.floodBlock.size, topMintRates: this.feed.mintRates().slice(0, 5) }, screen: { candidates: this.screen.candidates().length, lastPollAt: this.screen.lastPollAt, ...this.screen.stats }, stats: this.ensembleStats, candidates: list };
   }
   /** 보유 토큰(페이퍼·실)의 creator 지갑들 — 커뮤니티 읽기에 creator 가 있을 때만 */
   private heldCreators(): Set<string> {

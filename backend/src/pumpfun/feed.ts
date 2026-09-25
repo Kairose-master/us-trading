@@ -122,7 +122,26 @@ export class PumpPortalFeed extends EventEmitter {
     if (!ev) return;
     this.st.events[ev.kind] += 1;
     // 거래 이벤트는 유료 구독(토큰·지갑)에서만 온다 — 그게 과금 단위
-    if (ev.kind === "trade") { this.rollMeteredDay(); const m = this.st.metered; m.todayMsgs += 1; m.totalMsgs += 1; m.todaySol = +(m.todayMsgs * METERED_SOL_PER_MSG).toFixed(5); m.totalSol = +(m.totalMsgs * METERED_SOL_PER_MSG).toFixed(5); }
+    if (ev.kind === "trade") {
+      this.rollMeteredDay(); const m = this.st.metered; m.todayMsgs += 1; m.totalMsgs += 1; m.todaySol = +(m.todayMsgs * METERED_SOL_PER_MSG).toFixed(5); m.totalSol = +(m.totalMsgs * METERED_SOL_PER_MSG).toFixed(5);
+      // 탄력 제어의 재료 — 전역 분당 메시지 수와 토큰별 최근 60초 카운트
+      const now = Date.now(); this.recentMsgTs.push(now); if (this.recentMsgTs.length > 20_000) this.recentMsgTs.splice(0, this.recentMsgTs.length - 20_000);
+      const c = this.perMint.get(ev.mint) ?? []; c.push(now); this.perMint.set(ev.mint, c);
+    }
     this.emit("event", ev);
   }
+
+  // ===== 탄력 제어 (rate) =====
+  private recentMsgTs: number[] = [];
+  private perMint = new Map<string, number[]>();
+  private trim(now: number) { const cut = now - 60_000; while (this.recentMsgTs.length && this.recentMsgTs[0] < cut) this.recentMsgTs.shift(); }
+  /** 최근 60초 유료 메시지 수 = 현재 분당 소진 속도 */
+  msgsPerMin(): number { const now = Date.now(); this.trim(now); return this.recentMsgTs.length; }
+  /** 구독 중 토큰들의 최근 60초 메시지 수 (많은 순) — 폭주 토큰 색출용 */
+  mintRates(): Array<{ mint: string; perMin: number }> {
+    const now = Date.now(), cut = now - 60_000, out: Array<{ mint: string; perMin: number }> = [];
+    for (const [mint, ts] of this.perMint) { while (ts.length && ts[0] < cut) ts.shift(); if (!ts.length) this.perMint.delete(mint); else out.push({ mint, perMin: ts.length }); }
+    return out.sort((a, b) => b.perMin - a.perMin);
+  }
+  mintRate(mint: string): number { const now = Date.now(), cut = now - 60_000; const ts = this.perMint.get(mint); if (!ts) return 0; while (ts.length && ts[0] < cut) ts.shift(); return ts.length; }
 }

@@ -57,8 +57,12 @@ export interface CopyPolicy {
   crashWindowSec: number;
   /** 1 = 추종 지갑 매수를 직접 따라 산다(구 방식). 0 = 표(copy vote)로만 쓴다 — 복합 결정이 산다 */
   directCopy: number;
-  /** 유료 스트림을 걸 후보 토큰 수 (복합 엔진의 흐름 신호용) */
+  /** 유료 스트림을 걸 후보 토큰 수 상한 (복합 엔진의 흐름 신호용) — 탄력 제어가 소진 속도에 맞춰 이 아래로 줄인다 */
   flowMaxMints: number;
+  /** 폭주 토큰 컷 — 구독한 후보가 분당 이 수를 넘으면 노이즈로 보고 끊는다 (초당 4건 = 240) */
+  floodMintPerMin: number;
+  /** 끊은 토큰 재구독 금지 시간(분) */
+  floodCooldownMin: number;
   /** 하루 유료 메시지 예산 — 넘으면 발견 창을 닫고 추종 지갑·보유 토큰만 남긴다 (1만 건 = 0.01 SOL) */
   meteredBudgetMsgsPerDay: number;
   /** 1이면 보유 토큰의 거래 스트림을 구독(빠른 마킹, 유료), 0이면 커브 토큰은 무료 RPC 폴링으로만 마킹하고 AMM 토큰만 구독 */
@@ -67,7 +71,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, crashPct: 50, crashWindowSec: 90 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, floodMintPerMin: 240, floodCooldownMin: 20, crashPct: 50, crashWindowSec: 90 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 

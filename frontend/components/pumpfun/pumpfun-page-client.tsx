@@ -406,6 +406,7 @@ export function PumpfunPageClient() {
         <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5">
           <h2 className="text-sm font-semibold">복합 결정 — 흐름 · 모멘텀 · 카피 표 · 커뮤니티</h2>
           <span className="ml-auto font-mono text-[10px] text-muted-foreground">가중치 flow {data.ensemble.weights.flow} · momentum {data.ensemble.weights.momentum} · copy {data.ensemble.weights.copy} · community {data.ensemble.weights.community} (실현 결과로 움직임) · 진입 ≥{data.ensemble.policy.enterScore} · 청산 &lt;{data.ensemble.policy.exitScore} · 기본 크기 {data.ensemble.policy.basePct}% · 직접 카피 {data.ensemble.directCopy ? "ON" : "OFF"} · 스트림 후보 {data.ensemble.flowMaxMints}개 · 스크린 후보 {data.ensemble.screen.candidates} ({ago(data.ensemble.screen.lastPollAt)}) · 진입 {data.ensemble.stats.entries} / 청산 {data.ensemble.stats.exits}</span>
+          <span className="w-full font-mono text-[10px] text-muted-foreground">탄력 구독: 분당 {data.ensemble.elastic.msgsPerMin} / 페이스 {data.ensemble.elastic.pacePerMin} → 활성 후보 {data.ensemble.elastic.activeFlowMax}/{data.ensemble.flowMaxMints}개 · 폭주 차단 {data.ensemble.elastic.floodBlocked} (분당 ≥{data.policy.floodMintPerMin} 컷){data.ensemble.elastic.topMintRates.length ? " · 상위 " + data.ensemble.elastic.topMintRates.map((r) => `${r.mint.slice(0,4)} ${r.perMin}/m`).join(" · ") : ""}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full font-mono text-[11px]">
