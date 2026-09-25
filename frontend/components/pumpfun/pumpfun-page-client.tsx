@@ -4,10 +4,10 @@ import { useState } from "react"
 import useSWR from "swr"
 import { toast } from "sonner"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Copy, Pause, Play, Plus, Radio, RefreshCw, Trash2 } from "lucide-react"
+import { Copy, Pause, Play, Plus, Radio, RefreshCw, ShieldAlert, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunPause, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, type PumpStatus } from "@/lib/api"
+import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunFlatten, pumpfunPause, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpStatus } from "@/lib/api"
 
 /**
  * pump.fun 카피 트레이딩 데스크 — 페이퍼(SOL). 체인이 공개라 "꾸준히 버는 지갑"을 셀 수 있고, 그 지갑의 매수·매도를
@@ -15,6 +15,10 @@ import { getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured
  * 수식 + 지연 슬리피지 + 우선순위 수수료로 기록된다 — 비용 없는 페이퍼 기록은 자기기만이다.
  *
  * 정직성: PumpPortal API 키(0.02 SOL 충전)가 없으면 거래 스트림이 없어 관측(신규·이주)만 돈다. 그 상태는 배지가 말한다.
+ *
+ * 실모드(REAL): owner가 "REAL"을 타이핑해 켠다. 같은 카피 규칙이 실장부 위에서 한 번 더 돌고 결과가 PumpPortal Lightning으로
+ * 체인에 나간다. 체결 수량·SOL은 트랜잭션에서 읽는다. 포지션 0.1 SOL·총 1 SOL·일 손실 20% 정지·전량 청산 킬스위치.
+ * 페이퍼 장부는 그림자로 계속 돌아 실체결과의 차이가 숫자로 남는다.
  */
 
 const sol = (v: number, d = 4) => `${v.toFixed(d)} SOL`
@@ -44,6 +48,71 @@ function FeedBadge({ s }: { s: PumpStatus }) {
   )
 }
 
+function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Promise<unknown> }) {
+  const [arming, setArming] = useState(false)
+  const [typed, setTyped] = useState("")
+  const [pubkey, setPubkey] = useState(live.walletPubkey ?? "")
+  const [busy, setBusy] = useState(false)
+  const real = live.mode === "real"
+  const go = async (mode: "paper" | "real") => {
+    setBusy(true)
+    try {
+      const r = await setPumpfunMode(mode, mode === "real" ? pubkey.trim() : undefined)
+      setArming(false); setTyped("")
+      toast[mode === "real" ? "warning" : "success"](mode === "real" ? `실주문 ON — 지갑 ${r.walletSol.toFixed(4)} SOL` : "페이퍼로 전환")
+      await onChanged()
+    } catch (e) { toast.error(e instanceof ApiError ? e.message : "전환 실패") } finally { setBusy(false) }
+  }
+  const flatten = async () => {
+    if (!confirm("실보유 전량을 시장가로 팔고 정지합니다. 계속?")) return
+    setBusy(true)
+    try { const r = await pumpfunFlatten(); toast.warning(`전량 청산: ${r.sold}개 매도, ${r.pending}개 미체결`); await onChanged() } catch (e) { toast.error(e instanceof ApiError ? e.message : "실패") } finally { setBusy(false) }
+  }
+  return (
+    <Card className={cn(real && "border-destructive/60")}>
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+        <ShieldAlert className={cn("size-3.5", real ? "text-destructive" : "text-muted-foreground")} aria-hidden="true" />
+        <h2 className="text-sm font-semibold">거래 모드</h2>
+        <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", real ? "bg-destructive/15 text-destructive" : "bg-chart-1/15 text-chart-1")}>{real ? "REAL — PumpPortal 지갑" : "PAPER — 가상 장부"}</span>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground">{live.walletPubkey ? `지갑 ${live.walletPubkey.slice(0, 4)}…${live.walletPubkey.slice(-4)} · ${live.walletSol.toFixed(4)} SOL (${ago(live.syncedAt)})` : "지갑 미지정"}</span>
+      </div>
+      <div className="flex flex-col gap-3 p-4 text-xs">
+        {real ? (
+          <>
+            <div className="grid gap-2 sm:grid-cols-4 font-mono text-[11px]">
+              <div><span className="text-muted-foreground">실 에쿼티</span><br />{live.equitySol.toFixed(4)} SOL</div>
+              <div><span className="text-muted-foreground">실모드 누적</span><br /><span className={pnlClass(live.returnPct ?? 0)}>{live.returnPct === null ? "—" : signed(live.returnPct)}</span></div>
+              <div><span className="text-muted-foreground">오늘</span><br /><span className={pnlClass(live.dayPct)}>{signed(live.dayPct)}</span> (정지 −{live.policy.dailyStopPct}%)</div>
+              <div><span className="text-muted-foreground">매수 / 매도 / 실패</span><br />{live.stats.buys} / {live.stats.sells} / {live.stats.failed}</div>
+            </div>
+            <p className="text-muted-foreground">한도: 포지션 {live.policy.maxPositionSol} SOL · 총 {live.policy.grossMaxSol} SOL · 로트 {live.policy.maxLots} · 슬리피지 {live.policy.slippagePct}% · 우선순위 수수료 {live.policy.priorityFeeSol} SOL · 지갑 예비 {live.policy.reserveSol} SOL. PumpPortal 거래당 0.5% 추가.</p>
+            {live.error && <p className="font-mono text-[11px] text-destructive">최근 오류: {live.error}</p>}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={busy} onClick={() => void go("paper")} className="rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50">페이퍼로 돌아가기 (보유는 유지)</button>
+              <button type="button" disabled={busy} onClick={() => void flatten()} className="rounded-md border border-destructive/60 px-2 py-1 text-[11px] text-destructive disabled:opacity-50">킬스위치 — 전량 청산 + 정지</button>
+            </div>
+          </>
+        ) : !arming ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-muted-foreground">실주문은 PumpPortal API 키({live.hasKey ? "있음" : "없음 — PUMPFUN_API_KEY"})와 그 키에 연결된 지갑 공개키가 필요하다. 켜는 순간 지갑 잔고를 조회해 검증한다.</p>
+            <button type="button" disabled={!live.hasKey} onClick={() => setArming(true)} className="ml-auto rounded-md border border-destructive/60 px-2 py-1 text-[11px] text-destructive disabled:opacity-50">실주문 켜기…</button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <input value={pubkey} onChange={(e) => setPubkey(e.target.value)} placeholder="PumpPortal 거래 지갑 공개키 (wallet public key)" className="rounded-md border border-border bg-transparent px-2 py-1 font-mono text-[11px]" />
+            <div className="flex flex-wrap items-center gap-2">
+              <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder='확인을 위해 REAL 입력' className="w-40 rounded-md border border-destructive/60 bg-transparent px-2 py-1 font-mono text-[11px]" />
+              <button type="button" disabled={busy || typed !== "REAL" || pubkey.trim().length < 32} onClick={() => void go("real")} className="rounded-md bg-destructive px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50">실주문 ON</button>
+              <button type="button" disabled={busy} onClick={() => { setArming(false); setTyped("") }} className="rounded-md border border-border px-2 py-1 text-[11px]">취소</button>
+              <span className="text-muted-foreground">이 지갑의 돈이 실제로 나간다. 지갑에는 거래 한도 + 데이터 요금만 넣어 둔다.</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 export function PumpfunPageClient() {
   const { data, error, isLoading, mutate } = useSWR("pumpfun", getPumpfun, { refreshInterval: 5_000, revalidateOnFocus: false })
   const { data: eq } = useSWR("pumpfun-equity", () => getPumpfunEquity(600), { refreshInterval: 60_000, revalidateOnFocus: false })
@@ -67,8 +136,8 @@ export function PumpfunPageClient() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-lg font-bold">pump.fun 카피 트레이딩 — 페이퍼 (SOL)</h1>
-          <p className="text-xs text-muted-foreground">지갑 = 엔진. 관측한 거래로 지갑을 채점(중앙값 손익·왕복 수·토큰 다양성)해 상위를 추종하고, 실현 결과가 standing(크기)을 움직인다. 체결은 본딩커브 수식 + 지연 슬리피지 {data.costs.latencySlipPct}% + 우선순위 수수료 {data.costs.priorityFeeSol} SOL. 실주문 경로는 없다.</p>
+          <h1 className="text-lg font-bold">pump.fun 카피 트레이딩 — {data.mode === "real" ? "REAL + 페이퍼 그림자" : "페이퍼"} (SOL)</h1>
+          <p className="text-xs text-muted-foreground">지갑 = 엔진. 관측한 거래로 지갑을 채점(중앙값 손익·왕복 수·토큰 다양성)해 상위를 추종하고, 실현 결과가 standing(크기)을 움직인다. 페이퍼 체결은 본딩커브 수식 + 지연 슬리피지 {data.costs.latencySlipPct}% + 우선순위 수수료 {data.costs.priorityFeeSol} SOL. 실모드면 같은 규칙이 실장부 위에서 한 번 더 돌고 체결은 체인에서 읽는다.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <FeedBadge s={data} />
@@ -84,6 +153,41 @@ export function PumpfunPageClient() {
       {data.paused && <Card className="p-3 text-xs text-destructive">정지됨 — {data.pausedReason} ({data.pausedAt ? t(data.pausedAt) : ""}). 신규 진입 없음, 보유 로트의 청산 규칙만 돈다.</Card>}
       {!data.feed.metered.hasKey && <Card className="p-3 text-xs text-muted-foreground">관측 전용: PUMPFUN_API_KEY 가 없어 거래 스트림(토큰·지갑)이 없다. 신규 토큰·이주만 기록 중 — 카피는 키(PumpPortal, 0.02 SOL 이상 충전)를 넣어야 시작된다. 수동 시드 지갑도 키 없이는 체결을 볼 수 없다.</Card>}
       {data.feed.metered.hasKey && data.feed.metered.ok === false && <Card className="p-3 text-xs text-destructive">거래 스트림 거부: {data.feed.metered.note}</Card>}
+
+      <RealModeCard live={data.live} onChanged={() => mutate()} />
+
+      {data.mode === "real" && (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Card className="border-destructive/40">
+            <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">실보유 로트 (체인)</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">진행 중 {data.live.inflight.length}</span></div>
+            <div className="overflow-x-auto">
+              <table className="w-full font-mono text-[11px]">
+                <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">via</th><th className="px-3 py-1.5 font-medium">풀</th><th className="px-3 py-1.5 font-medium">비용</th><th className="px-3 py-1.5 font-medium">평가</th><th className="px-3 py-1.5 font-medium">손익</th><th className="px-3 py-1.5 font-medium">보유</th></tr></thead>
+                <tbody className="divide-y divide-border/50">
+                  {data.live.lots.map((l) => (
+                    <tr key={l.id}><td className="px-3 py-1" title={l.mint}>{short(l.mint)}</td><td className="px-3 py-1 text-muted-foreground" title={l.via}>{short(l.via)}</td><td className="px-3 py-1">{l.pool}</td><td className="px-3 py-1">{l.costSol.toFixed(4)}</td><td className="px-3 py-1">{l.markSol.toFixed(4)} <span className="text-muted-foreground">{ago(l.markAt)}</span></td><td className={cn("px-3 py-1 font-bold", pnlClass(l.pnlPct))}>{signed(l.pnlPct)}</td><td className="px-3 py-1">{l.holdMin.toFixed(0)}분</td></tr>
+                  ))}
+                  {data.live.lots.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">실보유 없음</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+          <Card className="border-destructive/40">
+            <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">실체결 (트랜잭션에서 읽은 값)</h2></div>
+            <div className="overflow-x-auto">
+              <table className="w-full font-mono text-[11px]">
+                <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">시각</th><th className="px-3 py-1.5 font-medium">방향</th><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">SOL</th><th className="px-3 py-1.5 font-medium">손익</th><th className="px-3 py-1.5 font-medium">서명</th><th className="px-3 py-1.5 font-medium">사유</th></tr></thead>
+                <tbody className="divide-y divide-border/50">
+                  {data.live.orders.map((o) => (
+                    <tr key={o.id}><td className="px-3 py-1 text-muted-foreground">{t(o.ts)}</td><td className={cn("px-3 py-1 font-bold", o.side === "buy" ? "text-chart-1" : "text-destructive")}>{o.side === "buy" ? "매수" : "매도"}</td><td className="px-3 py-1" title={o.mint}>{short(o.mint)}</td><td className="px-3 py-1">{o.sol.toFixed(4)}</td><td className={cn("px-3 py-1", o.pnlPct === undefined ? "text-muted-foreground" : pnlClass(o.pnlPct))}>{o.pnlPct === undefined ? "—" : `${signed(o.pnlPct)} (${o.pnlSol?.toFixed(4)})`}</td><td className="px-3 py-1">{o.signature ? <a href={`https://solscan.io/tx/${o.signature}`} target="_blank" rel="noreferrer" className="underline">{o.signature.slice(0, 8)}…</a> : "—"}</td><td className="max-w-[200px] truncate px-3 py-1 text-muted-foreground" title={o.reason}>{o.reason}</td></tr>
+                  ))}
+                  {data.live.orders.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-muted-foreground">실체결 없음</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
 
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <Stat label="에쿼티" value={sol(L.equitySol)} sub={`시작 ${sol(L.startSol, 2)} · ${ago(L.since)}부터`} />

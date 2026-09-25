@@ -891,11 +891,12 @@ export async function getUniverse(): Promise<CryptoUniverse> {
 
 // ===== pump.fun 카피 트레이딩 데스크 (페이퍼, SOL) — docs/pumpfun.md =====
 export interface PumpLot { id: string; mint: string; symbol: string; via: string; tokens: number; costSol: number; openedAt: string; pool: string; markSol: number; markAt: string; peakMarkSol: number; lastPrice: number; pnlPct: number; holdMin: number; progress: number | null }
-export interface PumpOrder { id: string; ts: string; lotId: string; mint: string; symbol: string; side: "buy" | "sell"; tokens: number; sol: number; feeSol: number; priorityFeeSol: number; impactPct: number; slipPct: number; pool: string; via: string; reason: string; pnlSol?: number; pnlPct?: number; holdMin?: number }
+export interface PumpOrder { id: string; ts: string; lotId: string; mint: string; symbol: string; side: "buy" | "sell"; tokens: number; sol: number; feeSol: number; priorityFeeSol: number; impactPct: number; slipPct: number; pool: string; via: string; reason: string; pnlSol?: number; pnlPct?: number; holdMin?: number; signature?: string }
 export interface PumpFollow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; hitRate: number | null; openLots: number }
 export interface PumpPolicy { maxPositionSol: number; riskPct: number; grossMaxPct: number; cashFloorPct: number; maxLots: number; minLeaderSol: number; maxHoldMin: number; stopLossPct: number; trailingPct: number; followMax: number; eta: number; dropAtPct: number; dropAfterCloses: number; dailyStopPct: number; discoveryWindowMin: number; discoveryMaxMints: number; rescoreMin: number; meteredBudgetMsgsPerDay: number; subscribeHeldTokens: number }
 export interface PumpStatus {
   enabled: boolean; mode: "paper" | "real"; unit: "SOL"
+  live: PumpLive
   feed: { url: string; connected: boolean; since: string | null; reconnects: number; messages: number; events: { create: number; trade: number; migrate: number }; lastMessageAt: string | null; lastError: string | null; metered: { hasKey: boolean; ok: boolean | null; note: string | null; today: string; todayMsgs: number; todaySol: number; totalMsgs: number; totalSol: number }; subscriptions: { tokens: number; accounts: number; newToken: boolean; migration: boolean } }
   budget: { msgsPerDay: number; solPerDay: number; overBudget: boolean }
   ledger: { startSol: number; since: string; cashSol: number; positionsSol: number; equitySol: number; returnPct: number; lots: PumpLot[]; day: { date: string; startEquitySol: number }; dayPct: number }
@@ -924,3 +925,15 @@ export async function pumpfunRescore(): Promise<{ at: string; wallets: number; e
 export async function pumpfunPause(): Promise<{ ok: true }> { return write("pumpfun/pause", "POST", { reason: "operator" }) }
 export async function pumpfunResume(): Promise<{ ok: true }> { return write("pumpfun/resume", "POST", {}) }
 export async function pumpfunSetPolicy(patch: Partial<PumpPolicy>): Promise<{ ok: true; policy: PumpPolicy }> { return write("pumpfun/policy", "POST", patch) }
+export interface PumpLivePolicy { maxPositionSol: number; grossMaxSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number }
+export interface PumpLive {
+  mode: "paper" | "real"; since: string | null; by: string | null; walletPubkey: string | null; hasKey: boolean
+  walletSol: number; syncedAt: string | null; equitySol: number; positionsSol: number; startSol: number | null; liveSince: string | null; returnPct: number | null
+  day: { date: string; startEquitySol: number }; dayPct: number
+  policy: PumpLivePolicy; stats: { buys: number; sells: number; failed: number }; inflight: string[]; error: string | null
+  lots: PumpLot[]; orders: PumpOrder[]
+}
+export async function getPumpfunMode(): Promise<PumpLive> { return req("pumpfun/mode") }
+export async function setPumpfunMode(mode: "paper" | "real", walletPubkey?: string): Promise<{ ok: true } & PumpLive> { return write("pumpfun/mode", "POST", mode === "real" ? { mode, confirm: "REAL", walletPubkey } : { mode }) }
+export async function pumpfunFlatten(): Promise<{ ok: true; sold: number; pending: number }> { return write("pumpfun/live/flatten", "POST", {}) }
+export async function pumpfunSetLivePolicy(patch: Partial<PumpLivePolicy>): Promise<{ ok: true; policy: PumpLivePolicy }> { return write("pumpfun/live/policy", "POST", patch) }

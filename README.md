@@ -126,4 +126,6 @@ frontend `/crypto`·`/lab`·`/quant`의 브라우저 계산, Vercel MCP 워커�
 그 지갑의 매수·매도를 따라간다. 지갑 = 엔진: 실현 결과가 standing(크기)을 움직이고 굶주린 지갑은 빠진다.
 체결은 **본딩커브 수식(x·y=k) + 지연 슬리피지 + 우선순위 수수료**, 평가액은 "지금 전부 팔면 받는 SOL".
 PumpPortal 거래 스트림은 0.02 SOL 충전 API 키가 필요하고(`PUMPFUN_API_KEY`), 없으면 신규·이주 관측만 돈다.
-실주문 경로는 없다. 평가·설계·비용은 `docs/pumpfun.md`.
+유료 메시지는 하루 예산(기본 0.02 SOL)으로 묶인다. **실모드**는 `/pumpfun` 카드에서 owner가 지갑 공개키 + `REAL` 타이핑으로
+켜고(환경변수로는 못 켠다), 같은 규칙이 PumpPortal Lightning으로 체인에 나가며 체결은 트랜잭션에서 읽는다 — 포지션 0.1 SOL·
+총 1 SOL·일 손실 20% 정지·전량 청산 킬스위치. 평가·설계·비용은 `docs/pumpfun.md`.

@@ -34,7 +34,7 @@ const ALLOW_GET: RegExp[] = [
   /^ops\/supervisor(\/logs)?$/,
   /^evolution(\/(agents(\/[^/]+)?|log|lineage))?$/,
   /^control$/,
-  /^pumpfun(\/(wallets|orders|equity|events|quote))?$/,
+  /^pumpfun(\/(wallets|orders|equity|events|quote|mode))?$/,
 ]
 const ALLOW_WRITE: Array<{ method: string; re: RegExp }> = [
   { method: "POST", re: /^auth\/(register|login|logout)$/ },
@@ -47,7 +47,7 @@ const ALLOW_WRITE: Array<{ method: string; re: RegExp }> = [
   { method: "POST", re: /^office\/run$/ },
   { method: "POST", re: /^control\/(autopilot|pause|resume|approve|reject|arbitrate|policy|engines\/(scanner|office|evolution|signals))$/ },
   // pump.fun 페이퍼 데스크 — 백엔드에서 owner 세션을 다시 검사한다 (reset은 프록시하지 않는다)
-  { method: "POST", re: /^pumpfun\/(wallets|rescore|pause|resume|policy)$/ },
+  { method: "POST", re: /^pumpfun\/(wallets|rescore|pause|resume|policy|mode|live\/(policy|flatten))$/ },
 ]
 
 async function forward(req: NextRequest, rel: string, method: string, body?: string) {

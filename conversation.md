@@ -44,3 +44,7 @@ claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 확장 타당성 문서�
 ## 2026-09-25 08:57 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
 
 claude/pumpfun-expansion-monetization-3lqu2o: backend/src/pumpfun/* 신규(PumpPortal WS 피드·SOL 페이퍼 장부·카피 규칙·지갑 채점·Solana 공개 RPC), routes에 /pumpfun/*, index.ts에 pumpfunDesk.start(), config에 PUMPFUN_* 6개, 프론트 /pumpfun 페이지·프록시 허용·사이드바. 기존 Upbit 장부·제어 평면·실돈 스위치는 안 건드림. data/pumpfun/ 에 파일을 쓴다(볼륨). 부팅 시 wss://pumpportal.fun 아웃바운드 연결 하나 늘어남.
+
+## 2026-09-25 11:52 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
+
+claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 실모드 추가 — backend/src/pumpfun/live.ts(PumpPortal Lightning 주문), desk.ts(mode.json/live.json, applyLive, flattenLive, setMode), routes /pumpfun/mode·/pumpfun/live/*. 실모드는 화면 스위치(REAL)로만 켜지고 기본은 paper. 돈 경계: 이 경로가 실SOL을 쓴다 — 건드리기 전에 이 노트 읽을 것. main에 머지 예정.

@@ -486,7 +486,19 @@ router.get("/crypto/universe", (_req, res) => { res.json(cryptoUniverse.status()
 router.get("/pumpfun", (_req, res) => { res.json(pumpfunDesk.status()); });
 router.get("/pumpfun/wallets", (req, res) => { res.json(pumpfunDesk.candidates(Number(req.query.limit ?? 50))); });
 router.get("/pumpfun/orders", (req, res) => { res.json(pumpfunDesk.orders(Number(req.query.limit ?? 200))); });
-router.get("/pumpfun/equity", (req, res) => { res.json(pumpfunDesk.equity(Number(req.query.limit ?? 2000))); });
+router.get("/pumpfun/equity", (req, res) => { res.json(pumpfunDesk.equity(Number(req.query.limit ?? 2000), req.query.live === "1")); });
+// 실모드 — Upbit 거래 모드와 같은 절차: owner 세션 + confirm:"REAL". 켜는 순간 키·지갑 잔고를 검증한다
+router.get("/pumpfun/mode", (_req, res) => { res.json(pumpfunDesk.liveStatus()); });
+router.post("/pumpfun/mode", requireSession, requireOwner, async (req, res) => {
+  const mode = req.body?.mode === "real" ? "real" : "paper";
+  if (mode === "real" && req.body?.confirm !== "REAL") return res.status(400).json({ error: "실주문을 켜려면 confirm:\"REAL\" 이 필요합니다", code: "CONFIRM_REQUIRED" });
+  const r = await pumpfunDesk.setMode(mode, (req as AuthedRequest).user?.email ?? "owner", typeof req.body?.walletPubkey === "string" ? req.body.walletPubkey : undefined);
+  if (r.error) return res.status(422).json({ error: r.error });
+  res.json({ ok: true, ...pumpfunDesk.liveStatus() });
+});
+router.post("/pumpfun/live/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setLivePolicy(req.body ?? {}) }); });
+// 킬스위치 — 실보유 전량 매도 + 정지
+router.post("/pumpfun/live/flatten", requireSession, requireOwner, async (_req, res) => { res.json({ ok: true, ...(await pumpfunDesk.flattenLive()) }); });
 router.get("/pumpfun/events", (req, res) => { const k = req.query.kind; res.json(pumpfunDesk.events(Number(req.query.limit ?? 100), k === "create" || k === "trade" || k === "migrate" ? k : undefined)); });
 // 본딩커브 견적 — 계정을 읽어 "지금 이 SOL을 넣으면" 을 수식으로 답한다 (읽기 전용)
 router.get("/pumpfun/quote", async (req, res) => {

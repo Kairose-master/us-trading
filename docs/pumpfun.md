@@ -176,9 +176,33 @@ owner: `POST /pumpfun/wallets {wallet, action}` · `/pumpfun/rescore` · `/pumpf
 운영자 토큰 직접: `POST /pumpfun/reset`. env: `PUMPFUN_ENABLED`(기본 true) `PUMPFUN_WS_URL` `PUMPFUN_API_KEY`
 `PUMPFUN_PAPER_START_SOL`(10) `PUMPFUN_SEED_WALLETS`(콤마).
 
+### 실모드 (REAL) — 2026-09-25 저녁
+
+`/pumpfun` 거래 모드 카드에서 owner가 **PumpPortal 거래 지갑 공개키**를 넣고 `REAL`을 타이핑해 켠다. Upbit 실주문과 같은
+절차다: 환경변수로는 못 켜고(`PUMPFUN_WALLET_PUBKEY`는 기본값일 뿐), 켜는 순간 API 키 존재와 지갑 잔고(≥ 0.05 SOL)를 검증하며,
+`data/pumpfun/mode.json`에 영속되어 재배포를 견딘다. 키 없이 실모드로 복원되면 페이퍼로 내려온다.
+
+```
+추종 지갑 거래 ─→ copy.ts (같은 규칙) ─┬→ 페이퍼 장부 (항상, 그림자)
+                                       └→ 실모드면 liveBuySize 로 다시 깎아 → PumpPortal Lightning POST /api/trade
+                                            → 서명 → waitForTx → parseTxDeltas (지갑의 실제 SOL·토큰 변화) → 실장부 로트
+보유 실로트 ─→ 마킹(스트림·RPC) → 손절·되돌림·시간 정지 → Lightning sell "100%" → 트랜잭션에서 받은 SOL 읽어 로트 닫기
+```
+
+- **체결은 추정하지 않는다.** 나간 SOL과 받은 토큰은 확정 트랜잭션의 pre/post 잔고에서 읽는다(`solana-rpc.ts parseTxDeltas`, 실물 형태로 테스트).
+  45초 안에 확정이 안 되거나 온체인에서 실패하면 로트를 만들지 않고 `live.error`·`stats.failed`에 남긴다.
+- **한도** (`live.ts DEFAULT_LIVE_POLICY`, `POST /pumpfun/live/policy`): 포지션 0.1 SOL · 열린 비용 합 1.0 SOL · 로트 5 · 슬리피지 15% ·
+  우선순위 수수료 0.0005 SOL · 지갑 예비 0.02 SOL · 일 손실 20%면 정지(신규 진입만, 청산은 계속). PumpPortal은 거래당 0.5%를 더 뗀다.
+- **킬스위치** `POST /pumpfun/live/flatten` — 실보유 전량 시장가 매도 + 정지. 카드의 버튼.
+- **귀속은 페이퍼 장부가 한다.** standing은 페이퍼 청산으로 움직인다 — 실장부는 한도 때문에 부분집합이라 신호가 성기다.
+  실장부 vs 페이퍼의 차이(실제 슬리피지·미체결)는 두 장부의 수익률 차이로 화면에 남는다.
+- 실현 결과 파일: `data/pumpfun/live.json`, `live-equity.jsonl`. `GET /pumpfun/mode`가 실장부 전체를 준다.
+- 정직하게: 실모드를 켜는 시점에 채점된 지갑이 없으면 시드 지갑만 따라간다. 그 지갑이 버는 지갑인지는 아직 우리 숫자로 증명되지
+  않았으므로 한도가 작다. 밈코인 시장이라 백테스트가 의미 없다는 판단은 owner의 것이고, 그래서 실기록이 검증을 대신한다.
+
 ### 아직 없는 것 (다음)
 
 - ④ KOTH · ⑤ 졸업 직후 모멘텀 규칙 엔진 — 같은 장부 위에 `via: "rule:…"` 로트로 붙인다.
 - 사건 백테스트 — 관측 기록(`events-*.jsonl`, `trades.jsonl`)이 쌓이면 지갑 채점의 **아웃오브샘플** 검증
   (채점 창 이후의 왕복으로 채점이 예측력이 있었는지, 사건 부트스트랩 p값). 이게 음수면 카피는 여기서 끝이다.
-- 실돈 — 전용 지갑·서명 키·Jito 팁·전체 에쿼티 2% 이하. 페이퍼 실기록이 비용 차감 후 양수일 때만.
+- 직접 서명(Local API)으로 PumpPortal 0.5%를 없애는 것 — 서명 키를 서버 금고에 두는 대가가 있어 지금은 안 한다.
