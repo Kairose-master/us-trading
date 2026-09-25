@@ -127,6 +127,8 @@ class PumpfunDesk extends EventEmitter {
     communityDesk.policy = { ...DEFAULT_COMMUNITY_POLICY, ...(this.st.community ?? {}) }; this.st.community = communityDesk.policy;
     this.st.engineWeights = { ...DEFAULT_ENGINE_WEIGHTS, ...(this.st.engineWeights ?? {}) };
     this.st.ensemble = { ...DEFAULT_ENSEMBLE_POLICY, ...(this.st.ensemble ?? {}) };
+    if (this.st.ensemble.enterScore === 65) this.st.ensemble.enterScore = DEFAULT_ENSEMBLE_POLICY.enterScore;
+    if (this.st.ensemble.exitScore === 35) this.st.ensemble.exitScore = DEFAULT_ENSEMBLE_POLICY.exitScore;
     this.st.entryVotes ??= {};
     // 실모드 상태 복원
     try { if (existsSync(MODE_FILE)) this.modeSt = { ...this.modeSt, ...(JSON.parse(readFileSync(MODE_FILE, "utf-8")) as ModeState) }; } catch (e) { logger.warn("[pumpfun] mode restore failed — paper", { error: (e as Error).message }); }
@@ -466,10 +468,10 @@ class PumpfunDesk extends EventEmitter {
     if (a.ladderAt !== undefined) { if ((lot.ladderDone ?? []).includes(a.ladderAt)) return; lot.ladderDone = [...(lot.ladderDone ?? []), a.ladderAt]; }
     const bo = this.sellBackoff.get(lot.id);
     if (bo && Date.now() < bo.nextAt) return;
-    // 먼지 — 팔아 봐야 수수료가 더 든다. 장부에서 지우고 기록만 남긴다
-    if (lot.markSol > 0 && lot.markSol < P.dustSol) {
+    // 먼지·유령(평가액 0 포함) — 팔아 봐야 수수료가 더 든다. 체인에 안 보내고 장부에서만 지운다
+    if (lot.markSol < P.dustSol) {
       const c = this.liveLedger.closeFromFill(lot.id, lot.tokens, 0, `dust write-off (${lot.markSol.toFixed(5)} SOL < ${P.dustSol}) — ${a.reason}`, "");
-      if (!("error" in c)) logger.warn("[pumpfun] dust lot written off", { mint: lot.mint, markSol: lot.markSol });
+      if (!("error" in c)) logger.warn("[pumpfun] dust lot written off", { mint: lot.mint.slice(0,8), markSol: lot.markSol, tokens: lot.tokens });
       this.saveLive(); return;
     }
     this.inflight.add(`sell:${lot.id}`);

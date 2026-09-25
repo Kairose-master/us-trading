@@ -28,7 +28,7 @@ export interface EnsemblePolicy {
   /** 흐름 표본 최소 거래 수 — 이 아래면 flow 는 기권 */
   minFlowTrades: number;
 }
-export const DEFAULT_ENSEMBLE_POLICY: EnsemblePolicy = { enterScore: 65, exitScore: 35, basePct: 15, flowReversalSol: 0.5, fadeFromPeakPct: -25, minFlowTrades: 8 };
+export const DEFAULT_ENSEMBLE_POLICY: EnsemblePolicy = { enterScore: 58, exitScore: 32, basePct: 15, flowReversalSol: 0.5, fadeFromPeakPct: -25, minFlowTrades: 8 };
 
 export interface Vote { engine: EngineId; score: number; abstain: boolean; why: string[] }
 export interface EnsembleRead {
