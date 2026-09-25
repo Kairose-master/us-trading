@@ -36,3 +36,7 @@ claude/railway-deployment-ip-m01okr: 제어 평면에 기대 엣지 게이트 �
 ## 2026-09-10 03:41 · agent (claude/railway-deployment-ip-m01okr)
 
 claude/railway-deployment-ip-m01okr: council.ts 정족수 = min(2, 켜진 제안 매니저 수), 신호 단독 매수 금지는 다른 제안 매니저가 켜져 있을 때만. plane.setEngine이 참여 변경 시 보류 결정을 superseded로 버리고 즉시 재중재.
+
+## 2026-09-25 08:36 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
+
+claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 확장 타당성 문서만 추가(docs/pumpfun.md). 코드·장부·실돈 스위치 변경 없음. 진행하면 새 venue 장부(state-pumpfun.json)와 backend/src/pumpfun/*를 만들 예정 — 그때 다시 노트.
