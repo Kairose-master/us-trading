@@ -20,6 +20,12 @@ export interface WalletTrade {
   ts: string;
 }
 
+/**
+ * 먼지 거래 — 실측(2026-09-25): 졸업 토큰 거래의 절반 이상이 0.0002 SOL짜리 봇 매수(볼륨 봇·워시)다. 그걸 왕복으로 세면
+ * "0.0002 SOL 사서 0.03 SOL 판" 지갑이 +3,600만%로 1등이 된다. 매수가 이 아래면 포지션이 아니라 노이즈 — 채점에서 뺀다.
+ */
+export const MIN_TRADE_SOL = 0.01;
+
 export interface RoundTrip { mint: string; costSol: number; proceedsSol: number; pnlSol: number; pnlPct: number; openedAt: string; closedAt: string; holdMin: number }
 
 export interface WalletStats {
@@ -53,7 +59,7 @@ const median = (xs: number[]) => { if (!xs.length) return 0; const s = [...xs].s
 export function roundTripsOf(trades: WalletTrade[]): Map<string, RoundTrip[]> {
   const out = new Map<string, RoundTrip[]>();
   const open = new Map<string, { tokens: number; costSol: number; openedAt: string }>();
-  const sorted = [...trades].sort((a, b) => a.ts.localeCompare(b.ts));
+  const sorted = trades.filter((t) => t.side === "sell" || t.sol >= MIN_TRADE_SOL).sort((a, b) => a.ts.localeCompare(b.ts));
   for (const t of sorted) {
     const key = `${t.wallet}|${t.mint}`;
     if (t.side === "buy") {
@@ -76,7 +82,7 @@ export function roundTripsOf(trades: WalletTrade[]): Map<string, RoundTrip[]> {
 export function scoreWallets(trades: WalletTrade[], th: ScoreThresholds = DEFAULT_THRESHOLDS, prov: ScoreThresholds = PROVISIONAL_THRESHOLDS): { ranked: WalletStats[]; eligible: WalletStats[]; provisional: WalletStats[] } {
   const rts = roundTripsOf(trades);
   const byWallet = new Map<string, WalletTrade[]>();
-  for (const t of trades) { const l = byWallet.get(t.wallet) ?? []; l.push(t); byWallet.set(t.wallet, l); }
+  for (const t of trades) { if (t.side === "buy" && t.sol < MIN_TRADE_SOL) continue; const l = byWallet.get(t.wallet) ?? []; l.push(t); byWallet.set(t.wallet, l); }
   const ranked: WalletStats[] = [];
   for (const [wallet, list] of byWallet) {
     const r = rts.get(wallet) ?? [];

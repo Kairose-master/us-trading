@@ -15,6 +15,13 @@ describe("roundTripsOf", () => {
 });
 
 describe("scoreWallets", () => {
+  it("ignores dust buys — a 0.0002 SOL bot buy sold for 0.03 SOL is not a +15,000% round trip", () => {
+    const trades: WalletTrade[] = [];
+    for (let i = 0; i < 6; i++) { trades.push(t("DUST", `d${i}`, "buy", 0.0002, 100, i * 2)); trades.push(t("DUST", `d${i}`, "sell", 0.03, 100, i * 2 + 1)); }
+    const { ranked, provisional } = scoreWallets(trades);
+    expect(ranked.find((w) => w.wallet === "DUST")?.roundTrips ?? 0).toBe(0);
+    expect(provisional).toHaveLength(0);
+  });
   it("ranks by median — one 100x with nine losers is not a copy target", () => {
     const trades: WalletTrade[] = [];
     // 지갑 LUCKY: 1번 100배, 9번 -50%
