@@ -21,9 +21,15 @@ export interface CopyPolicy {
   /** 0 = 제한 없음 (총노출·현금 하한이 크기를 잡는다) */
   maxLots: number;
   minLeaderSol: number;
+  /** 시간 정지 — 단, 이익이 timeStopExemptPct 를 넘는 로트는 시간으로 안 판다 (승자는 시간이 아니라 흐름이 판다) */
   maxHoldMin: number;
+  timeStopExemptPct: number;
   stopLossPct: number;
+  /** 고점 대비 되돌림 청산 폭(%) 과 그것이 켜지는 이익(%) — 밈코인은 +100% 도 30% 씩 흔들린다. 일찍 켜면 +15% 에서 다 판다 */
   trailingPct: number;
+  trailingActivatePct: number;
+  /** 익절 사다리 — 이익 % 에 도달하면 로트의 fraction 만 판다. 기본: +100% 에서 1/3 (원금 회수, 나머지는 공짜 승차) */
+  ladder: Array<{ atPct: number; fraction: number }>;
   /** 추종 지갑 수 상한 */
   followMax: number;
   /** standing 갱신 학습률 — standing ← standing × e^(eta × clamp(r, ±25%)). 한 방(+300%)이 standing을 단번에 최대로 못 올린다 */
@@ -61,13 +67,13 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, crashPct: 50, crashWindowSec: 90 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, crashPct: 50, crashWindowSec: 90 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 
 export type CopyAction =
   | { type: "buy"; mint: string; solIn: number; via: string; reason: string }
-  | { type: "sell"; lotId: string; fraction: number; reason: string }
+  | { type: "sell"; lotId: string; fraction: number; reason: string; ladderAt?: number }
   | { type: "skip"; reason: string };
 
 export function sizeFor(p: CopyPolicy, equitySol: number, standing: number): number {
@@ -123,10 +129,14 @@ export function lotExits(lots: Lot[], p: CopyPolicy, now = Date.now()): CopyActi
     // 러그 감시 — 짧은 창 안의 급락은 손절선보다 먼저 본다
     const ref = (l.marks ?? []).find((m) => now - m.ts <= p.crashWindowSec * 1000 && now - m.ts >= 5_000);
     const crash = ref && ref.markSol > 0 ? ((l.markSol - ref.markSol) / ref.markSol) * 100 : 0;
+    // 비대칭을 뒤집는다: 손실은 작게·빨리, 이익은 사다리로 원금만 회수하고 나머지는 넓은 되돌림으로 달리게 둔다
+    const done = l.ladderDone ?? [];
+    const rung = [...p.ladder].sort((a, b) => a.atPct - b.atPct).find((r) => pnlPct >= r.atPct && !done.includes(r.atPct));
     if (crash <= -p.crashPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG WATCH: ${crash.toFixed(0)}% in ${((now - ref!.ts) / 1000).toFixed(0)}s` });
     else if (pnlPct <= -p.stopLossPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `stop-loss ${pnlPct.toFixed(1)}%` });
-    else if (peakPct >= 20 && fromPeak <= -p.trailingPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `trailing: ${fromPeak.toFixed(1)}% from peak (+${peakPct.toFixed(0)}%)` });
-    else if (holdMin >= p.maxHoldMin) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `time stop ${holdMin.toFixed(0)}m` });
+    else if (rung) out.push({ type: "sell", lotId: l.id, fraction: rung.fraction, reason: `ladder +${rung.atPct}%: sell ${(rung.fraction * 100).toFixed(0)}% (now +${pnlPct.toFixed(0)}%)`, ladderAt: rung.atPct });
+    else if (peakPct >= p.trailingActivatePct && fromPeak <= -p.trailingPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `trailing: ${fromPeak.toFixed(1)}% from peak (+${peakPct.toFixed(0)}%)` });
+    else if (holdMin >= p.maxHoldMin && pnlPct < p.timeStopExemptPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `time stop ${holdMin.toFixed(0)}m at ${pnlPct.toFixed(0)}%` });
   }
   return out;
 }

@@ -84,7 +84,7 @@ export function communityVote(c: CommunityRead | null): Vote {
   return { engine: "community", score: c.score, abstain: false, why: c.reasons.slice(0, 4) };
 }
 
-export function ensemble(mint: string, votes: Vote[], w: EngineWeights, p: EnsemblePolicy, held: boolean, community: CommunityRead | null, flow: FlowRead | null, mom: MomentumRead | null): EnsembleRead {
+export function ensemble(mint: string, votes: Vote[], w: EngineWeights, p: EnsemblePolicy, held: boolean, community: CommunityRead | null, flow: FlowRead | null, mom: MomentumRead | null, heldPnlPct = 0): EnsembleRead {
   const active = votes.filter((v) => !v.abstain);
   // 커뮤니티는 게이트·배수이지 진입 근거가 아니다 — 흐름·모멘텀·카피 중 둘 이상이 말해야 산다 (실측: "이주 직후 +15" 하나와 중립 커뮤니티로 진입이 났다)
   const core = active.filter((v) => v.engine !== "community");
@@ -95,8 +95,9 @@ export function ensemble(mint: string, votes: Vote[], w: EngineWeights, p: Ensem
   let action: EnsembleRead["action"] = "none"; let why = `score ${score} (${active.length}/${votes.length} engines)`;
   if (held) {
     if (flow && flow.rankedNet60 <= -p.flowReversalSol) { action = "exit"; why = `flow reversal: ranked net ${flow.rankedNet60} SOL/60s`; }
-    else if (mom && mom.fromPeak5mPct !== null && mom.fromPeak5mPct <= p.fadeFromPeakPct) { action = "exit"; why = `momentum fade ${mom.fromPeak5mPct}% from 5m peak`; }
-    else if (score < p.exitScore && core.length >= 2) { action = "exit"; why = `score ${score} < exit ${p.exitScore}`; }
+    // 승자는 흔들린다 — +100% 넘긴 로트는 페이드·점수 청산을 넓게 (되돌림 −40%, 점수 청산 없음). 흐름 반전(랭킹 지갑 순매도)만 남긴다
+    else if (mom && mom.fromPeak5mPct !== null && mom.fromPeak5mPct <= (heldPnlPct >= 100 ? -40 : p.fadeFromPeakPct)) { action = "exit"; why = `momentum fade ${mom.fromPeak5mPct}% from 5m peak`; }
+    else if (heldPnlPct < 100 && score < p.exitScore && core.length >= 2) { action = "exit"; why = `score ${score} < exit ${p.exitScore}`; }
     else action = "hold";
   } else if (!blocked && score >= p.enterScore && core.length >= 2) { action = "enter"; why = `score ${score} ≥ ${p.enterScore} with ${core.length} core engines`; }
   else if (!blocked && score >= p.enterScore) why = `score ${score} but only ${core.length} core engine — need 2 (flow/momentum/copy)`;

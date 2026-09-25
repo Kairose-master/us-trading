@@ -324,7 +324,9 @@ class PumpfunDesk extends EventEmitter {
       const promising = (!fv.abstain && fv.score >= 65) || (!mv.abstain && mv.score >= 65) || !cv.abstain;
       if (!comm && (held || promising) && reads < 3) { reads += 1; try { comm = await communityDesk.read(mint, { timeoutMs: 4_000 }); } catch { comm = null; } }
       const votes = [fv, mv, cv, communityVote(comm)];
-      const r = ensemble(mint, votes, W, P, held, comm, flow, mom);
+      const heldLots = [...this.ledger.lotsOf(mint), ...this.liveLedger.lotsOf(mint)];
+      const heldPnl = heldLots.length ? Math.max(...heldLots.map((l) => (l.costSol > 0 ? ((l.markSol - l.costSol) / l.costSol) * 100 : 0))) : 0;
+      const r = ensemble(mint, votes, W, P, held, comm, flow, mom, heldPnl);
       this.lastEnsemble.set(mint, r); this.ensembleStats.evaluations += 1;
       if (r.action === "enter" && !this.st.paused) {
         const solIn = +(this.ledger.equitySol() * (P.basePct / 100) * r.sizeMult).toFixed(6);
@@ -432,6 +434,7 @@ class PumpfunDesk extends EventEmitter {
     }
     const lot = this.liveLedger.lots.get(a.lotId);
     if (!lot || this.inflight.has(`sell:${lot.id}`)) return;
+    if (a.ladderAt !== undefined) { if ((lot.ladderDone ?? []).includes(a.ladderAt)) return; lot.ladderDone = [...(lot.ladderDone ?? []), a.ladderAt]; }
     const bo = this.sellBackoff.get(lot.id);
     if (bo && Date.now() < bo.nextAt) return;
     // 먼지 — 팔아 봐야 수수료가 더 든다. 장부에서 지우고 기록만 남긴다
@@ -606,6 +609,7 @@ class PumpfunDesk extends EventEmitter {
     }
     const lot = this.ledger.lots.get(a.lotId);
     if (!lot) return;
+    if (a.ladderAt !== undefined) lot.ladderDone = [...(lot.ladderDone ?? []), a.ladderAt];
     const r = this.ledger.sell(a.lotId, a.fraction, a.reason, ev?.ts);
     if ("error" in r) { logger.warn("[pumpfun] sell refused", { lotId: a.lotId, error: r.error }); return; }
     this.st.stats.exits += 1;

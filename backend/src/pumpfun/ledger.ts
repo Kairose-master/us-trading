@@ -32,6 +32,8 @@ export interface Lot {
   lastPrice: number;
   /** 최근 마킹 이력 (러그 감시 — 90초 안의 급락을 본다) */
   marks?: Array<{ ts: number; markSol: number }>;
+  /** 익절 사다리에서 이미 판 단계 (%) — 같은 단계를 두 번 팔지 않게 */
+  ladderDone?: number[];
 }
 
 export interface PaperOrder {

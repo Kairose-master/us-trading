@@ -40,15 +40,28 @@ describe("anti-flip rules", () => {
   });
 });
 
-describe("lotExits", () => {
-  it("stop-loss, trailing from a real peak, and time stop", () => {
-    const sl = lotExits([lot({ markSol: 0.12 })], P);
-    expect(sl[0]).toMatchObject({ type: "sell", reason: expect.stringMatching(/stop-loss/) });
-    const tr = lotExits([lot({ markSol: 0.3, peakMarkSol: 0.5 })], P);
-    expect(tr[0]).toMatchObject({ type: "sell", reason: expect.stringMatching(/trailing/) });
-    const ts = lotExits([lot({ openedAt: new Date(Date.now() - 200 * 60_000).toISOString() })], P);
-    expect(ts[0]).toMatchObject({ type: "sell", reason: expect.stringMatching(/time stop/) });
-    expect(lotExits([lot({ markSol: 0.25, peakMarkSol: 0.26 })], P)).toHaveLength(0);
+describe("lotExits — losses small, winners run", () => {
+  it("stop-loss still cuts losers", () => {
+    expect(lotExits([lot({ markSol: 0.12 })], P)[0]).toMatchObject({ type: "sell", reason: expect.stringMatching(/stop-loss/) });
+  });
+  it("a +50% winner is NOT sold on a 30% pullback any more — trailing only arms after +100%", () => {
+    expect(lotExits([lot({ markSol: 0.21, peakMarkSol: 0.3 })], P)).toHaveLength(0); // peak +50%, now −30% from peak: 옛 규칙이면 팔았다
+  });
+  it("ladder: at +100% sell a third (cost recovered), at +400% another quarter; each rung once", () => {
+    const l = lot({ markSol: 0.42, peakMarkSol: 0.42 }); // +110%
+    const r = lotExits([l], P);
+    expect(r[0]).toMatchObject({ type: "sell", fraction: 0.34, ladderAt: 100, reason: expect.stringMatching(/ladder \+100%/) });
+    expect(lotExits([lot({ markSol: 0.42, peakMarkSol: 0.42, ladderDone: [100] })], P)).toHaveLength(0);
+    expect(lotExits([lot({ markSol: 1.1, peakMarkSol: 1.1, ladderDone: [100] })], P)[0]).toMatchObject({ fraction: 0.25, ladderAt: 400 });
+  });
+  it("after +100% the trailing stop is wide (−40% from peak) so a runner can breathe", () => {
+    expect(lotExits([lot({ markSol: 0.36, peakMarkSol: 0.5, ladderDone: [100] })], P)).toHaveLength(0); // −28% from peak: hold
+    expect(lotExits([lot({ markSol: 0.29, peakMarkSol: 0.5, ladderDone: [100] })], P)[0]).toMatchObject({ reason: expect.stringMatching(/trailing/) }); // −42%
+  });
+  it("time stop kills flat/losing lots but not winners", () => {
+    const old = new Date(Date.now() - 200 * 60_000).toISOString();
+    expect(lotExits([lot({ openedAt: old })], P)[0]).toMatchObject({ reason: expect.stringMatching(/time stop/) });
+    expect(lotExits([lot({ openedAt: old, markSol: 0.3, peakMarkSol: 0.3 })], P)).toHaveLength(0); // +50%: 시간으로 안 판다
   });
 });
 
