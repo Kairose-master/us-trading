@@ -38,6 +38,7 @@ export interface CopyPolicy {
   dropAtPct: number;
   dropAfterCloses: number;
   /** 일 손실 정지 (에쿼티 % ) */
+  /** 일 손실 정지 % — 0 이면 끔. 감시하며 직접 돌릴 때는 방해만 되므로 기본 끔 */
   dailyStopPct: number;
   /** 졸업 토큰의 거래를 관측하는 창(분) — 지갑 발견용. 유료 스트림이라 여기가 돈이 타는 곳이다 */
   discoveryWindowMin: number;
@@ -71,7 +72,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, floodMintPerMin: 240, floodCooldownMin: 20, crashPct: 50, crashWindowSec: 90 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 0, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, floodMintPerMin: 240, floodCooldownMin: 20, crashPct: 50, crashWindowSec: 90 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 

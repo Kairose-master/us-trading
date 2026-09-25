@@ -368,6 +368,12 @@ trust404-prover.vercel.app) — 취약 컨트랙트 12개(재진입·접근제�
 
 화면 복합 카드에 "분당 N / 페이스 M → 활성 후보 x/5 · 폭주 차단 k · 상위 토큰 레이트"가 나온다. 정책 `floodMintPerMin`·`floodCooldownMin`·`flowMaxMints`·`meteredBudgetMsgsPerDay` 로 조절.
 
+### 일 손실 정지 폐지 (2026-09-25 밤, owner 결정)
+
+일 손실 정지는 확인 실패로 두 번 잘못 울렸고(−24%·−27%가 실제로는 −13%), owner 가 감시하며 직접 돌리는 운용이라 방해만 됐다. 그래서 **기본 끔**(`dailyStopPct: 0`).
+0 이면 `checkDailyStop`·`checkLiveDailyStop` 이 아무것도 안 한다. 저장된 옛 값(15·20)은 부팅 때 0 으로 이전하고, 그 사유로 정지돼 있던 상태도 부팅 때 해제한다.
+다시 켜려면 정책에서 `dailyStopPct` 를 양수로. 손실 방어는 이제 포지션 크기(8%)·손절(−35%)·러그 감시(90초 −50%)·수동 정지·킬스위치가 맡는다.
+
 ### 아직 없는 것 (다음)
 
 - (완료 → 복합 결정의 momentum 엔진) ④ KOTH · ⑤ 졸업 직후 모멘텀.

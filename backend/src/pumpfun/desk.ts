@@ -136,7 +136,10 @@ class PumpfunDesk extends EventEmitter {
     this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, syncedAt: null, startSol: null, since: null, stats: { buys: 0, sells: 0, failed: 0 } };
     this.liveSt.policy = { ...DEFAULT_LIVE_POLICY, ...this.liveSt.policy };
     // 저장된 옛 기본값(25/100/20) → 러그 시장용 기본값으로 이전
-    if (this.liveSt.policy.maxPositionPct === 25 && this.liveSt.policy.grossMaxPct === 100) { this.liveSt.policy.maxPositionPct = DEFAULT_LIVE_POLICY.maxPositionPct; this.liveSt.policy.grossMaxPct = DEFAULT_LIVE_POLICY.grossMaxPct; if (this.liveSt.policy.dailyStopPct === 20) this.liveSt.policy.dailyStopPct = DEFAULT_LIVE_POLICY.dailyStopPct; }
+    if (this.liveSt.policy.maxPositionPct === 25 && this.liveSt.policy.grossMaxPct === 100) { this.liveSt.policy.maxPositionPct = DEFAULT_LIVE_POLICY.maxPositionPct; this.liveSt.policy.grossMaxPct = DEFAULT_LIVE_POLICY.grossMaxPct; }
+    // 일 손실 정지 폐지 — 저장된 옛 기본값(15·20)은 끔(0)으로, 그 사유로 정지돼 있으면 해제 (owner 가 직접 감시)
+    if (this.liveSt.policy.dailyStopPct === 15 || this.liveSt.policy.dailyStopPct === 20) this.liveSt.policy.dailyStopPct = 0;
+    if (this.st.paused && (this.st.pausedReason?.includes("daily stop") ?? false)) { this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; logger.warn("[pumpfun] daily stop removed — clearing that paused state on boot"); }
     this.liveLedger = PumpLedger.restore(this.liveSt.ledger, this.st.costs);
     if (this.modeSt.mode === "real" && !this.feed.hasKey) { logger.warn("[pumpfun] real mode restored without PUMPFUN_API_KEY — falling back to paper"); this.modeSt.mode = "paper"; }
     // 이벤트 핸들러는 기동 여부와 무관하게 건다 — 피드 연결만 start()가 한다 (테스트에서 합성 이벤트를 넣을 수 있게)
@@ -563,11 +566,11 @@ class PumpfunDesk extends EventEmitter {
     return out;
   }
   private checkLiveDailyStop() {
-    if (this.st.paused || this.modeSt.mode !== "real") return;
+    if (this.st.paused || this.modeSt.mode !== "real" || !(this.liveSt.policy.dailyStopPct > 0)) return;
     const eq = this.liveEquitySol(); const d = this.liveSt.day;
     if (d.date !== today()) { this.liveSt.day = { date: today(), startEquitySol: eq }; return; }
     const dd = d.startEquitySol > 0 ? ((d.startEquitySol - eq) / d.startEquitySol) * 100 : 0;
-    if (dd >= this.liveSt.policy.dailyStopPct) this.pause(`LIVE daily stop: -${dd.toFixed(1)}% since ${d.date}`);
+    if (this.liveSt.policy.dailyStopPct > 0 && dd >= this.liveSt.policy.dailyStopPct) this.pause(`LIVE daily stop: -${dd.toFixed(1)}% since ${d.date}`);
   }
   /** 실모드 전환 — owner가 화면에서 "REAL"을 타이핑. 켜는 순간 키·지갑을 검증한다 */
   async setMode(mode: PumpMode, by: string, walletPubkey?: string): Promise<{ error?: string; walletSol?: number }> {
@@ -684,7 +687,7 @@ class PumpfunDesk extends EventEmitter {
     if (this.st.paused) return;
     const eq = this.ledger.equitySol();
     const dd = this.st.day.startEquitySol > 0 ? ((this.st.day.startEquitySol - eq) / this.st.day.startEquitySol) * 100 : 0;
-    if (dd >= this.st.policy.dailyStopPct) { this.pause(`daily stop: -${dd.toFixed(1)}% since ${this.st.day.date}`); }
+    if (this.st.policy.dailyStopPct > 0 && dd >= this.st.policy.dailyStopPct) { this.pause(`daily stop: -${dd.toFixed(1)}% since ${this.st.day.date}`); }
   }
   private snapshotEquity() {
     const eq = this.ledger.equitySol();

@@ -28,7 +28,7 @@ export interface LivePolicy {
   dustSol: number;
 }
 // 러그가 기본값인 시장 — 살아남는 건 손절이 아니라 크기다 (owner 합의, 2026-09-25 저녁). 포지션당 8% × standing(최대 16%), 총 60%, 일 손실 15%
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 15, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003 };
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 0, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 
