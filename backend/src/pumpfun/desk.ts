@@ -493,7 +493,8 @@ class PumpfunDesk extends EventEmitter {
     if (!this.modeSt.walletPubkey) return out;
     let held: Array<{ mint: string; amount: number }>;
     try { held = await walletTokenBalances(this.modeSt.walletPubkey); } catch (e) { this.liveError = `reconcile: ${(e as Error).message}`; return out; }
-    const onChain = new Map(held.filter((h) => h.mint.endsWith("pump") && h.amount > 1).map((h) => [h.mint, h.amount]));
+    // 접미사로 거르지 않는다 — pump.fun 토큰이 전부 "…pump" 로 끝나지는 않는다 (실측: CvUX… 가 편입에서 빠졌다). 잔고 1 초과면 전부 본다
+    const onChain = new Map(held.filter((h) => h.amount > 1).map((h) => [h.mint, h.amount]));
     for (const [mint, amount] of onChain) {
       const lots = this.liveLedger.lotsOf(mint);
       if (lots.length) continue;
