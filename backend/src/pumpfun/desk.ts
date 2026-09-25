@@ -542,6 +542,8 @@ class PumpfunDesk extends EventEmitter {
       } catch { /* unknown */ }
       if (!(price > 0) && curveKey) { try { const cv = await readCurve(curveKey); if (cv) price = cv.vSol / cv.vTokens; } catch { /* unknown */ } }
       const costSol = price > 0 ? amount * price : 0; // 0 = 원가 모름 → 첫 마킹이 원가
+      // 먼지는 편입하지 않는다 — 팔면 수수료가 받는 SOL 보다 커서 −100%대가 찍히고, 같은 토큰이 계속 재편입된다 (실측: qFr43n 20318 토큰 = 0.0004 SOL)
+      if (price > 0 && costSol < this.liveSt.policy.dustSol) { logger.info("[pumpfun] skip adopting dust", { mint: mint.slice(0, 8), costSol }); continue; }
       const r = this.liveLedger.openFromFill({ mint, symbol: mint.slice(0, 4), pool, bondingCurveKey: curveKey, curve: null, tokens: amount, costSol, via: "chain:adopted", reason: `adopted from wallet balance (${amount.toFixed(0)} tokens, cost unknown → ${costSol > 0 ? `marked at ${costSol.toFixed(4)} SOL` : "first mark becomes cost"})`, signature: "" });
       if (!("error" in r)) { out.adopted.push(mint); logger.warn("[pumpfun] adopted untracked position from chain", { mint, amount, costSol }); }
     }
