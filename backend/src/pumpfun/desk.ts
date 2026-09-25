@@ -96,6 +96,8 @@ class PumpfunDesk extends EventEmitter {
   liveError: string | null = null;
   /** 진행 중인 실주문 — 같은 토큰에 두 번 사거나 같은 로트를 두 번 팔지 않게 */
   private inflight = new Set<string>();
+  /** 매도 실패 백오프 — 로트별 실패 횟수와 다음 시도 가능 시각 (매 틱 재시도 폭주 방지) */
+  private sellBackoff = new Map<string, { fails: number; nextAt: number }>();
   /** 복합 엔진 재료 — 토큰별 최근 10분 거래 링, 추종 지갑 활동, 마지막 견적, 후보 스크린 */
   private flowTrades = new Map<string, FlowTrade[]>();
   private followActivity = new Map<string, Array<{ wallet: string; side: "buy" | "sell"; standing: number; ts: number }>>();
@@ -423,14 +425,24 @@ class PumpfunDesk extends EventEmitter {
     }
     const lot = this.liveLedger.lots.get(a.lotId);
     if (!lot || this.inflight.has(`sell:${lot.id}`)) return;
+    const bo = this.sellBackoff.get(lot.id);
+    if (bo && Date.now() < bo.nextAt) return;
+    // 먼지 — 팔아 봐야 수수료가 더 든다. 장부에서 지우고 기록만 남긴다
+    if (lot.markSol > 0 && lot.markSol < P.dustSol) {
+      const c = this.liveLedger.closeFromFill(lot.id, lot.tokens, 0, `dust write-off (${lot.markSol.toFixed(5)} SOL < ${P.dustSol}) — ${a.reason}`, "");
+      if (!("error" in c)) logger.warn("[pumpfun] dust lot written off", { mint: lot.mint, markSol: lot.markSol });
+      this.saveLive(); return;
+    }
     this.inflight.add(`sell:${lot.id}`);
     const sellSolBefore = this.liveSt.walletSol;
     const sellBalanceBefore = await tokenBalance(this.modeSt.walletPubkey!, lot.mint).catch(() => lot.tokens);
+    let sentSignature: string | null = null;
     try {
       const all = a.fraction >= 0.999;
       const tokens = all ? lot.tokens : lot.tokens * a.fraction;
       // 전량이면 "100%" — 먼지가 남지 않게 지갑의 실제 잔고 전부를 판다
       const { signature } = await lightningTrade(config.PUMPFUN_API_KEY, { action: "sell", mint: lot.mint, amount: all ? "100%" : Math.floor(tokens), denominatedInSol: false, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: lot.pool === "pump" ? "pump" : "auto" });
+      sentSignature = signature;
       const tx = await waitForTx(signature, TX_TIMEOUT_MS);
       let sold = 0, received = 0, ts = new Date().toISOString();
       if (tx) {
@@ -443,15 +455,29 @@ class PumpfunDesk extends EventEmitter {
         const solAfter = await this.syncWallet();
         sold = Math.max(0, sellBalanceBefore - balAfter); received = Math.max(0, solAfter - sellSolBefore);
         logger.warn("[pumpfun] live sell confirmed by balance, not by tx", { signature, sold, received });
-        if (!(sold > 0)) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)}: unconfirmed and no balance change (${signature.slice(0, 12)})`; return; }
+        if (!(sold > 0)) { this.noteSellFail(lot.id); this.liveError = `sell ${lot.mint.slice(0, 8)}: unconfirmed and no balance change (${signature.slice(0, 12)})`; return; }
       }
       const r = this.liveLedger.closeFromFill(lot.id, all ? lot.tokens : sold, received, a.reason, signature, ts);
       if ("error" in r) { logger.warn("[pumpfun] live lot close refused", { error: r.error }); return; }
+      this.sellBackoff.delete(lot.id);
       this.liveSt.stats.sells += 1;
       logger.warn("[pumpfun] LIVE SELL", { mint: lot.mint, sol: received, pnlSol: r.order.pnlSol, pnlPct: r.order.pnlPct, reason: a.reason, signature });
       this.emit("live-order", r.order);
-    } catch (e) { this.liveSt.stats.failed += 1; this.liveError = `sell ${lot.mint.slice(0, 8)}: ${(e as Error).message}`; logger.warn("[pumpfun] live sell error", { error: this.liveError }); }
+    } catch (e) {
+      // 주문 호출이 실패로 답해도 체결됐을 수 있다 — 잔고로 한 번 더 본다
+      this.noteSellFail(lot.id); this.liveError = `sell ${lot.mint.slice(0, 8)}: ${(e as Error).message}`; logger.warn("[pumpfun] live sell error", { error: this.liveError, signature: sentSignature });
+      try {
+        await new Promise((r) => setTimeout(r, 4_000));
+        const balAfter = await tokenBalance(this.modeSt.walletPubkey!, lot.mint);
+        if (balAfter < sellBalanceBefore * 0.5) { const solAfter = await this.syncWallet(); const r = this.liveLedger.closeFromFill(lot.id, sellBalanceBefore - balAfter, Math.max(0, solAfter - sellSolBefore), `${a.reason} (confirmed by balance after an error response)`, sentSignature ?? ""); if (!("error" in r)) { this.liveSt.stats.sells += 1; this.sellBackoff.delete(lot.id); logger.warn("[pumpfun] LIVE SELL (balance-confirmed after error)", { mint: lot.mint, pnlSol: r.order.pnlSol }); } }
+      } catch { /* leave for reconcile */ }
+    }
     finally { this.inflight.delete(`sell:${lot.id}`); await this.syncWallet(); this.syncSubscriptions(); this.checkLiveDailyStop(); this.saveLive(); }
+  }
+  private noteSellFail(lotId: string) {
+    const b = this.sellBackoff.get(lotId) ?? { fails: 0, nextAt: 0 };
+    b.fails += 1; b.nextAt = Date.now() + (b.fails >= 3 ? 5 * 60_000 : 60_000);
+    this.sellBackoff.set(lotId, b); this.liveSt.stats.failed += 1;
   }
   /**
    * 체인 대조 — 지갑이 실제로 든 토큰 중 장부에 없는 것을 로트로 **편입**한다 (via "chain:adopted", 원가 = 지금 평가액).
@@ -483,9 +509,18 @@ class PumpfunDesk extends EventEmitter {
       // 이전 빌드가 적은 가짜 원가(1e-6) 복구 — 원가 모름으로 되돌려 첫 마킹이 원가가 되게
       if (lot.via === "chain:adopted" && lot.costSol > 0 && lot.costSol <= 0.00001) { lot.costSol = 0; lot.lastPrice = 0; lot.markSol = 0; }
       if (lot.pool && !onChain.has(lot.mint) && !this.inflight.has(`sell:${lot.id}`)) {
-        const c = this.liveLedger.closeFromFill(lot.id, lot.tokens, 0, "not in wallet anymore (closed outside the desk)", "");
-        if (!("error" in c)) out.closed.push(lot.mint);
+        // 목록에 없다고 바로 닫지 않는다 — 그 mint 잔고를 한 번 더 직접 묻는다 (RPC 가 빈 목록을 줄 수 있다)
+        let bal = 0; try { bal = await tokenBalance(this.modeSt.walletPubkey, lot.mint); } catch { continue; }
+        if (bal > 1) continue;
+        // 체인에서 팔렸는데 우리가 확인을 놓친 것 — 받은 SOL 은 모른다. 마지막 평가액으로 추정해 적고 그렇게 표시한다 (−100% 로 적으면 귀속이 망가진다)
+        const c = this.liveLedger.closeFromFill(lot.id, lot.tokens, lot.markSol, "sold on-chain outside confirmation — proceeds estimated at last mark", "");
+        if (!("error" in c)) { out.closed.push(lot.mint); this.liveSt.stats.sells += 1; }
       }
+    }
+    // 잘못 울린 일 손실 정지 — 편입·마킹 뒤 진짜 드로다운이 정지선보다 5%p 이상 여유면 자동 재개 (실측: 확인 실패로 두 번 잘못 울렸다)
+    if (this.st.paused && this.st.pausedReason?.startsWith("LIVE daily stop")) {
+      const eq = this.liveEquitySol(); const d = this.liveSt.day; const dd = d.startEquitySol > 0 ? ((d.startEquitySol - eq) / d.startEquitySol) * 100 : 0;
+      if (dd < this.liveSt.policy.dailyStopPct - 5) { logger.warn("[pumpfun] daily stop was a false alarm after reconcile — resuming", { ddPct: +dd.toFixed(2) }); this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; this.save(); }
     }
     if (out.adopted.length || out.closed.length) { this.syncSubscriptions(); this.saveLive(); }
     return out;

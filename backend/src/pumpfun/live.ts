@@ -24,9 +24,11 @@ export interface LivePolicy {
   minWalletSol: number;
   /** 지갑에 항상 남겨 둘 SOL (매도 트랜잭션 비용·데이터 요금) */
   reserveSol: number;
+  /** 평가액이 이 아래인 로트는 팔지 않고 먼지로 지운다 — 수수료보다 싸다 (실측: 0.0007 SOL 짜리 매도가 시뮬레이션 실패로 219번 재시도됐다) */
+  dustSol: number;
 }
 // 지갑에 든 돈 전부가 거래 자본이다 (owner 결정, 2026-09-25). 포지션당 25% × standing, 총 100%, 예비 0.02 SOL만 남긴다
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 25, grossMaxPct: 100, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02 };
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 25, grossMaxPct: 100, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 
@@ -39,11 +41,15 @@ export async function lightningTrade(apiKey: string, req: TradeRequest): Promise
   const text = await res.text();
   let json: { signature?: string; errors?: unknown; error?: unknown } = {};
   try { json = JSON.parse(text) as typeof json; } catch { /* non-json */ }
+  // 실측(2026-09-25 13:0x): 400 "Simulation failed" 응답에도 signature 가 실려 오고, 그 매도가 체인에서 체결된 경우가 있었다.
+  // 그래서 signature 가 있으면 오류로 던지지 않고 돌려준다 — 체결 여부는 확정 조회·잔고 대조가 판단한다
+  if (json.signature && typeof json.signature === "string") {
+    if (!res.ok || json.errors || json.error) logger.warn("[pumpfun] pumpportal returned a signature with an error — will verify on-chain", { status: res.status, note: String(JSON.stringify(json.errors ?? json.error ?? "")).slice(0, 160) });
+    return { signature: json.signature };
+  }
   if (!res.ok) throw new Error(`pumpportal ${res.status}: ${text.slice(0, 200)}`);
   if (json.errors || json.error) throw new Error(`pumpportal refused: ${JSON.stringify(json.errors ?? json.error).slice(0, 200)}`);
-  if (!json.signature || typeof json.signature !== "string") throw new Error(`pumpportal: no signature in response ${text.slice(0, 120)}`);
-  logger.info("[pumpfun] live order sent", { action: req.action, mint: req.mint.slice(0, 8), amount: req.amount, pool: req.pool, signature: json.signature.slice(0, 12) });
-  return { signature: json.signature };
+  throw new Error(`pumpportal: no signature in response ${text.slice(0, 120)}`);
 }
 
 /** 실매수 크기 — 실 에쿼티(지갑 SOL + 실보유 평가) 비율 × standing. 총노출·지갑 예비·로트 수로 깎는다 */
