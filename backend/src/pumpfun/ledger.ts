@@ -53,6 +53,8 @@ export interface PaperOrder {
   pnlSol?: number;
   pnlPct?: number;
   holdMin?: number;
+  /** 실주문 — 온체인 트랜잭션 서명 */
+  signature?: string;
 }
 
 export interface LedgerCosts { latencySlipPct: number; ammImpactPct: number; priorityFeeSol: number }
@@ -141,6 +143,38 @@ export class PumpLedger {
     const closed = lot.tokens <= 1e-9;
     if (closed) this.lots.delete(lot.id); else { lot.markSol = lot.curve ? liquidationValue(lot.curve, lot.tokens, CURVE_FEE_PCT) : lot.tokens * lot.lastPrice * (1 - (this.costs.ammImpactPct + AMM_FEE_PCT) / 100); lot.markAt = ts; }
     const order: PaperOrder = { id: `O${++this.seq}`, ts, lotId: lot.id, mint: lot.mint, symbol: lot.symbol, side: "sell", tokens, sol, feeSol, priorityFeeSol: this.costs.priorityFeeSol, impactPct, slipPct: slip, pool: lot.pool, via: lot.via, reason, pnlSol: +pnl.toFixed(6), pnlPct: costPart > 0 ? +((pnl / costPart) * 100).toFixed(2) : 0, holdMin: +((Date.parse(ts) - Date.parse(lot.openedAt)) / 60_000).toFixed(1) };
+    this.orders.push(order); if (this.orders.length > 5000) this.orders.splice(0, this.orders.length - 5000);
+    return { order, closed };
+  }
+
+  /**
+   * 실체결로 로트를 연다 — 체인이 말한 토큰 수와 나간 SOL(수수료·우선순위 수수료 전부 포함)을 그대로 적는다. 추정치 없음.
+   * cashSol은 여기서 건드리지 않는다 — 실장부의 현금은 지갑 잔고 동기화가 정한다.
+   */
+  openFromFill(p: { mint: string; symbol: string; pool: string; bondingCurveKey: string | null; curve: CurveState | null; tokens: number; costSol: number; via: string; reason: string; signature: string; ts?: string }): { lot: Lot; order: PaperOrder } | { error: string } {
+    const ts = p.ts ?? new Date().toISOString();
+    if (!(p.tokens > 0) || !(p.costSol > 0)) return { error: `fill without tokens/cost: ${p.tokens} / ${p.costSol}` };
+    const price = p.costSol / p.tokens;
+    const markSol = p.pool === "pump" && p.curve && p.curve.vSol > 0 ? liquidationValue(p.curve, p.tokens, CURVE_FEE_PCT) : p.tokens * price * (1 - (this.costs.ammImpactPct + AMM_FEE_PCT) / 100);
+    const lot: Lot = { id: `L${++this.seq}`, mint: p.mint, symbol: p.symbol, via: p.via, tokens: p.tokens, costSol: p.costSol, openedAt: ts, pool: p.pool, bondingCurveKey: p.bondingCurveKey, markSol, markAt: ts, peakMarkSol: markSol, curve: p.pool === "pump" ? p.curve : null, lastPrice: price };
+    this.lots.set(lot.id, lot);
+    const order: PaperOrder = { id: `O${this.seq}`, ts, lotId: lot.id, mint: p.mint, symbol: p.symbol, side: "buy", tokens: p.tokens, sol: p.costSol, feeSol: 0, priorityFeeSol: 0, impactPct: 0, slipPct: 0, pool: p.pool, via: p.via, reason: p.reason, signature: p.signature };
+    this.orders.push(order); if (this.orders.length > 5000) this.orders.splice(0, this.orders.length - 5000);
+    return { lot, order };
+  }
+
+  /** 실체결로 로트(의 일부)를 닫는다 — 받은 SOL은 체인이 말한 값 */
+  closeFromFill(lotId: string, tokensSold: number, solReceived: number, reason: string, signature: string, ts = new Date().toISOString()): { order: PaperOrder; closed: boolean } | { error: string } {
+    const lot = this.lots.get(lotId);
+    if (!lot) return { error: `no lot ${lotId}` };
+    const tokens = Math.min(lot.tokens, Math.max(0, tokensSold));
+    if (!(tokens > 0)) return { error: "fill sold no tokens" };
+    const costPart = lot.costSol * (tokens / lot.tokens);
+    const pnl = solReceived - costPart;
+    lot.tokens -= tokens; lot.costSol -= costPart;
+    const closed = lot.tokens <= 1e-9 || lot.tokens / (lot.tokens + tokens) < 0.01;
+    if (closed) this.lots.delete(lot.id); else { lot.markSol = lot.curve ? liquidationValue(lot.curve, lot.tokens, CURVE_FEE_PCT) : lot.tokens * lot.lastPrice * (1 - (this.costs.ammImpactPct + AMM_FEE_PCT) / 100); lot.markAt = ts; }
+    const order: PaperOrder = { id: `O${++this.seq}`, ts, lotId: lot.id, mint: lot.mint, symbol: lot.symbol, side: "sell", tokens, sol: solReceived, feeSol: 0, priorityFeeSol: 0, impactPct: 0, slipPct: 0, pool: lot.pool, via: lot.via, reason, pnlSol: +pnl.toFixed(6), pnlPct: costPart > 0 ? +((pnl / costPart) * 100).toFixed(2) : 0, holdMin: +((Date.parse(ts) - Date.parse(lot.openedAt)) / 60_000).toFixed(1), signature };
     this.orders.push(order); if (this.orders.length > 5000) this.orders.splice(0, this.orders.length - 5000);
     return { order, closed };
   }
