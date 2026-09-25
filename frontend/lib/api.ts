@@ -943,3 +943,10 @@ export async function setPumpfunMode(mode: "paper" | "real", walletPubkey?: stri
 export async function pumpfunFlatten(): Promise<{ ok: true; sold: number; pending: number }> { return write("pumpfun/live/flatten", "POST", {}) }
 export async function pumpfunSetLivePolicy(patch: Partial<PumpLivePolicy>): Promise<{ ok: true; policy: PumpLivePolicy }> { return write("pumpfun/live/policy", "POST", patch) }
 export async function pumpfunReconcile(): Promise<{ ok: true; adopted: string[]; closed: string[] }> { return write("pumpfun/live/reconcile", "POST", {}) }
+
+// ===== SCAM 발행 (정직한 버전만 — launch.ts) =====
+export interface PumpLaunchMeta { name: string; symbol: string; description: string; twitter: string; telegram: string; website: string; image: string }
+export interface PumpLaunchStatus { launched: { mint: string; signature: string; ts: string; by: string; devBuySol: number; uri: string; meta: PumpLaunchMeta } | null; attempts: Array<{ ts: string; ok: boolean; note: string }>; defaults: PumpLaunchMeta; maxDevBuySol: number; pinata: boolean; metadataUri: string; imageUrl: string }
+export async function getPumpfunLaunch(): Promise<PumpLaunchStatus> { return req("pumpfun/launch") }
+export async function pumpfunLaunchPreview(meta: Partial<PumpLaunchMeta>, devBuySol: number): Promise<{ meta: PumpLaunchMeta; metadata: Record<string, unknown>; devBuySol: number; uri: string; pinata: boolean }> { return write("pumpfun/launch/preview", "POST", { meta, devBuySol }) }
+export async function pumpfunLaunch(meta: Partial<PumpLaunchMeta>, devBuySol: number): Promise<{ ok: true; launched: PumpLaunchStatus["launched"] }> { return write("pumpfun/launch", "POST", { meta, devBuySol, confirm: "LAUNCH" }) }

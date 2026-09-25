@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import { Copy, Pause, Play, Plus, Radio, RefreshCw, ShieldAlert, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunFlatten, pumpfunPause, pumpfunReconcile, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpStatus } from "@/lib/api"
+import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunLaunch, getPumpfunWallets, isBackendNotConfigured, pumpfunLaunch, pumpfunLaunchPreview, type PumpLaunchMeta, pumpfunAddWallet, pumpfunFlatten, pumpfunPause, pumpfunReconcile, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpStatus } from "@/lib/api"
 
 /**
  * pump.fun 카피 트레이딩 데스크 — 페이퍼(SOL). 체인이 공개라 "꾸준히 버는 지갑"을 셀 수 있고, 그 지갑의 매수·매도를
@@ -123,6 +123,60 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
   )
 }
 
+/** SCAM 발행 카드 — 정직한 버전만. 미리보기는 체인에 아무것도 안 보내고, 발행은 LAUNCH 타이핑 */
+function LaunchCard() {
+  const { data, mutate } = useSWR("pumpfun-launch", getPumpfunLaunch, { refreshInterval: 60_000, revalidateOnFocus: false })
+  const [meta, setMeta] = useState<Partial<PumpLaunchMeta>>({})
+  const [devBuy, setDevBuy] = useState(0.01)
+  const [typed, setTyped] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<Record<string, unknown> | null>(null)
+  if (!data) return null
+  const m = { ...data.defaults, ...meta }
+  const field = (k: keyof PumpLaunchMeta, label: string, rows = 1) => (
+    <label key={k} className="flex flex-col gap-0.5 text-[10px] text-muted-foreground">{label}
+      {rows > 1 ? <textarea value={m[k]} onChange={(e) => setMeta({ ...meta, [k]: e.target.value })} rows={rows} className="rounded-md border border-border bg-transparent px-2 py-1 font-mono text-[11px] text-foreground" /> : <input value={m[k]} onChange={(e) => setMeta({ ...meta, [k]: e.target.value })} className="rounded-md border border-border bg-transparent px-2 py-1 font-mono text-[11px] text-foreground" />}
+    </label>
+  )
+  const doPreview = async () => { setBusy(true); try { setPreview((await pumpfunLaunchPreview(meta, devBuy)).metadata) } catch (e) { toast.error(e instanceof ApiError ? e.message : "실패") } finally { setBusy(false) } }
+  const doLaunch = async () => {
+    if (!confirm(`SCAM 을 pump.fun 에 발행합니다. dev buy ${devBuy} SOL. 되돌릴 수 없습니다. 계속?`)) return
+    setBusy(true)
+    try { const r = await pumpfunLaunch(meta, devBuy); toast.warning(`발행됨: ${r.launched?.mint}`); setTyped(""); await mutate() } catch (e) { toast.error(e instanceof ApiError ? e.message : "발행 실패") } finally { setBusy(false) }
+  }
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">SCAM — Smart Contract Attack Museum (우리 코인, 정직한 버전만)</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">creator 물량 0 · 번들 없음 · 볼륨 조작 없음 · 우리 봇은 이 코인을 사고팔지 않는다 · 수입은 creator 수수료뿐 · 메타데이터 {data.pinata ? "Pinata IPFS" : "대시보드 정적 파일"}</span></div>
+      <div className="grid gap-4 p-4 md:grid-cols-[200px_1fr]">
+        <div className="flex flex-col gap-2"><img src={data.imageUrl} alt="SCAM" className="w-[200px] rounded-md border border-border" /><a href="https://trust404-prover.vercel.app" target="_blank" rel="noreferrer" className="text-[11px] underline">trust404-prover.vercel.app</a></div>
+        {data.launched ? (
+          <div className="flex flex-col gap-2 font-mono text-[11px]">
+            <p className="text-sm font-semibold">발행됨 {t(data.launched.ts)}</p>
+            <p>mint <a href={`https://pump.fun/coin/${data.launched.mint}`} target="_blank" rel="noreferrer" className="underline">{data.launched.mint}</a></p>
+            <p>tx <a href={`https://solscan.io/tx/${data.launched.signature}`} target="_blank" rel="noreferrer" className="underline">{data.launched.signature.slice(0, 16)}…</a> · dev buy {data.launched.devBuySol} SOL · by {data.launched.by}</p>
+            <p className="text-muted-foreground">홍보는 여기서부터가 사람 몫이다. 우리 봇은 이 mint 를 차단 목록처럼 취급한다.</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <div className="grid gap-2 sm:grid-cols-2">{field("name", "이름")}{field("symbol", "심볼")}{field("twitter", "트위터 (선택)")}{field("telegram", "텔레그램 (선택)")}{field("website", "웹사이트")}
+              <label className="flex flex-col gap-0.5 text-[10px] text-muted-foreground">dev buy (SOL, 상한 {data.maxDevBuySol} — 창설 수수료 몫, 물량 목적 아님)<input type="number" step="0.005" min={0} max={data.maxDevBuySol} value={devBuy} onChange={(e) => setDevBuy(Math.min(data.maxDevBuySol, Math.max(0, Number(e.target.value) || 0)))} className="rounded-md border border-border bg-transparent px-2 py-1 font-mono text-[11px] text-foreground" /></label>
+            </div>
+            {field("description", "설명", 4)}
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" disabled={busy} onClick={() => void doPreview()} className="rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50">미리보기 (체인에 안 보냄)</button>
+              <input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="확인을 위해 LAUNCH 입력" className="w-44 rounded-md border border-destructive/60 bg-transparent px-2 py-1 font-mono text-[11px]" />
+              <button type="button" disabled={busy || typed !== "LAUNCH"} onClick={() => void doLaunch()} className="rounded-md bg-destructive px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-50">발행</button>
+              <span className="text-[10px] text-muted-foreground">PumpPortal 지갑에서 dev buy + 수수료가 나간다. 되돌릴 수 없다.</span>
+            </div>
+            {preview && <pre className="max-h-40 overflow-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[10px]">{JSON.stringify(preview, null, 1)}</pre>}
+            {data.attempts.length > 0 && <p className="font-mono text-[10px] text-muted-foreground">시도 {data.attempts.length}회 · 마지막 {data.attempts[data.attempts.length - 1].ok ? "성공" : `실패: ${data.attempts[data.attempts.length - 1].note.slice(0, 80)}`}</p>}
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 export function PumpfunPageClient() {
   const { data, error, isLoading, mutate } = useSWR("pumpfun", getPumpfun, { refreshInterval: 5_000, revalidateOnFocus: false })
   const { data: eq } = useSWR("pumpfun-equity", () => getPumpfunEquity(600), { refreshInterval: 60_000, revalidateOnFocus: false })
@@ -165,6 +219,7 @@ export function PumpfunPageClient() {
       {data.feed.metered.hasKey && data.feed.metered.ok === false && <Card className="p-3 text-xs text-destructive">거래 스트림 거부: {data.feed.metered.note}</Card>}
 
       <RealModeCard live={data.live} onChanged={() => mutate()} />
+      <LaunchCard />
 
       {data.mode === "real" && (
         <div className="grid gap-4 xl:grid-cols-2">

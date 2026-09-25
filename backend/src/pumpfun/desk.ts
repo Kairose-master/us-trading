@@ -15,6 +15,7 @@ import { CURATED_SEEDS, isBlockedWallet } from "./curated.js";
 import { flowRead, momentumRead, type FlowTrade } from "./flow.js";
 import { attribute, communityVote, copyVote, ensemble, flowVote, momentumVote, DEFAULT_ENGINE_WEIGHTS, DEFAULT_ENSEMBLE_POLICY, type EngineWeights, type EnsemblePolicy, type EnsembleRead, type Vote } from "./ensemble.js";
 import { CandidateScreen } from "./screen.js";
+import { launchDesk } from "./launch.js";
 import type { CurveState } from "./curve.js";
 
 /** 매수 견적 — 이벤트(스트림)에서 오든 후보 스냅샷(무료)에서 오든 같은 모양으로 장부에 넘긴다 */
@@ -310,6 +311,7 @@ class PumpfunDesk extends EventEmitter {
     const mints = [...new Set([...this.flowCandidates().slice(0, 20).map((c) => c.mint), ...heldMints])];
     let reads = 0;
     for (const mint of mints) {
+      if (launchDesk.isOwnMint(mint)) continue; // 우리 코인은 복합 결정에서도 제외 — 이해충돌
       const cand = this.screen.get(mint);
       const flow = this.flowTrades.has(mint) ? flowRead(mint, this.flowTrades.get(mint)!, now, rankedScore) : null;
       const mom = cand ? momentumRead(mint, cand.snaps, now, cand.migratedAt) : null;
@@ -350,6 +352,7 @@ class PumpfunDesk extends EventEmitter {
   }
   /** 카피 매수 — 커뮤니티를 읽어(캐시 60s) 크기를 곱하거나 거른다. 데이터가 없으면 ×0.75 (모른다 ≠ 양성) */
   private async copyBuy(a: Extract<CopyAction, { type: "buy" }>, ev: Extract<FeedEvent, { kind: "trade" }>, target: "paper" | "live") {
+    if (launchDesk.isOwnMint(ev.mint)) return; // 우리가 만든 코인은 우리가 사지 않는다
     let read: CommunityRead;
     try { read = await communityDesk.read(ev.mint); } catch (e) { logger.warn("[pumpfun] community read threw", { error: (e as Error).message }); return; }
     if (read.block) { if (target === "paper") logger.info("[pumpfun] copy buy skipped by community gate", { mint: ev.mint.slice(0, 8), score: read.score, why: read.reasons.slice(-2) }); return; }

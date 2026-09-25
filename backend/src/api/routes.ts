@@ -19,6 +19,7 @@ import { verifyDesk } from "../onchain/timelock-verify.js";
 import { cryptoUniverse } from "../crypto/universe.js";
 import { pumpfunDesk } from "../pumpfun/desk.js";
 import { readCurve } from "../pumpfun/solana-rpc.js";
+import { launchDesk, DEFAULT_META } from "../pumpfun/launch.js";
 import { quoteBuy, marketCapSol, progress } from "../pumpfun/curve.js";
 import { officeLoop } from "../office/loop.js";
 import { OFFICE_ROSTER, OFFICE_TEMPLATE_ID, rosterEdges } from "../office/roster.js";
@@ -499,6 +500,17 @@ router.post("/pumpfun/mode", requireSession, requireOwner, async (req, res) => {
 router.post("/pumpfun/live/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setLivePolicy(req.body ?? {}) }); });
 // 체인 대조 — 지갑의 실제 토큰 잔고와 장부를 맞춘다 (확정 조회 실패로 빠진 체결 편입)
 router.post("/pumpfun/live/reconcile", requireSession, requireOwner, async (_req, res) => { res.json({ ok: true, ...(await pumpfunDesk.reconcileLive()), live: pumpfunDesk.liveStatus() }); });
+// SCAM 발행 — 정직한 버전만 (launch.ts). 미리보기는 체인에 아무것도 안 보낸다. 발행은 owner + confirm:"LAUNCH"
+router.get("/pumpfun/launch", (_req, res) => { res.json(launchDesk.status()); });
+router.post("/pumpfun/launch/preview", requireSession, requireOwner, (req, res) => {
+  const meta = { ...DEFAULT_META, ...(req.body?.meta ?? {}) };
+  res.json({ meta, metadata: launchDesk.metadataJson(meta), devBuySol: Math.min(0.05, Number(req.body?.devBuySol) || 0), uri: launchDesk.status().metadataUri, pinata: launchDesk.status().pinata });
+});
+router.post("/pumpfun/launch", requireSession, requireOwner, async (req, res) => {
+  if (req.body?.confirm !== "LAUNCH") return res.status(400).json({ error: "발행하려면 confirm:\"LAUNCH\" 가 필요합니다", code: "CONFIRM_REQUIRED" });
+  try { res.json({ ok: true, launched: await launchDesk.launch({ meta: { ...DEFAULT_META, ...(req.body?.meta ?? {}) }, devBuySol: Number(req.body?.devBuySol) || 0, by: (req as AuthedRequest).user?.email ?? "owner" }) }); }
+  catch (e) { res.status(422).json({ error: (e as Error).message }); }
+});
 // 킬스위치 — 실보유 전량 매도 + 정지
 router.post("/pumpfun/live/flatten", requireSession, requireOwner, async (_req, res) => { res.json({ ok: true, ...(await pumpfunDesk.flattenLive()) }); });
 router.get("/pumpfun/events", (req, res) => { const k = req.query.kind; res.json(pumpfunDesk.events(Number(req.query.limit ?? 100), k === "create" || k === "trade" || k === "migrate" ? k : undefined)); });

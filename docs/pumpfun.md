@@ -315,6 +315,25 @@ owner: `POST /pumpfun/wallets {wallet, action}` · `/pumpfun/rescore` · `/pumpf
 세 큰 손실 중 둘(J141 4중 매수, 러그를 살 때 크기 0.15)은 코드 결함이고, 하나(qFr4)는 시장이다. 셋 다 지금 규칙(확인 실패 ≠ 실패, 8% 크기,
 러그 감시, 직접 카피 OFF)에서는 같은 크기로 못 난다. 하지만 러그 자체는 앞으로도 난다 — 그래서 크기다.
 
+### SCAM — 우리 코인 (2026-09-25 밤, 정직한 버전만)
+
+owner 제안: 코인 하나를 만들어 프로젝트 홍보에 쓰자. 이름은 SCAM. 엮을 프로젝트는 **TRUST404**(`Kairose-master/404-temp`, 라이브
+trust404-prover.vercel.app) — 취약 컨트랙트 12개(재진입·접근제어·언더플로·오라클·delegatecall·약한 난수·initializer)를 재현 가능한 PoC 로
+자동 증명하는 에이전트. 그래서 SCAM = **Smart Contract Attack Museum**, "우리가 증명한 모든 사기 컨트랙트의 박물관".
+
+만든 사람이 버는 길은 둘뿐이고 하나는 하지 않는다:
+| | 하나 |
+|---|---|
+| creator 수수료 (커브 0.3% · PumpSwap 최대 0.95%) | 한다 — 진짜 거래량이 있어야 나온다 |
+| 내 물량을 홍보로 끌어온 매수자에게 넘기기 (번들·볼륨 봇·개발자 덤프) | **안 한다** — 오늘 우리가 당한 러그가 이것이고, 시세조종이다 |
+
+규칙(`launch.ts`): creator 물량 0(dev buy 상한 0.05 SOL, 수수료 몫), 번들 없음, 볼륨 조작 없음, 메타데이터에 봇이 만든 밈코인임과 아카이브를 공개,
+**우리 봇은 이 mint 를 절대 사고팔지 않는다**(카피·복합·커뮤니티 전부 `isOwnMint` 차단 — 아니면 우리 러그 감시가 우리 코인을 러그로 분류한다).
+발행: `/pumpfun` 카드에서 owner 가 미리보기 → `LAUNCH` 타이핑 → PumpPortal Lightning `action:"create"` (mint 키쌍은 서버가 ed25519 로 생성,
+15초 안에 `…pump` 접미사 그라인딩). 메타데이터 URI 는 `PINATA_JWT` 가 있으면 Pinata IPFS, 없으면 대시보드 정적 파일
+`/scam/metadata.json`(이미지 `/scam/scam.png`, Chromium 으로 렌더). 기록 `data/pumpfun/launch.json`, `GET /pumpfun/launch`.
+기대값은 0 에 가깝다 — 305개 중 11개 졸업이 오늘의 기저율이다. 이건 실험이지 수익 계획이 아니다.
+
 ### 아직 없는 것 (다음)
 
 - (완료 → 복합 결정의 momentum 엔진) ④ KOTH · ⑤ 졸업 직후 모멘텀.
