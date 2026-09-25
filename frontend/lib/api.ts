@@ -925,7 +925,7 @@ export async function pumpfunRescore(): Promise<{ at: string; wallets: number; e
 export async function pumpfunPause(): Promise<{ ok: true }> { return write("pumpfun/pause", "POST", { reason: "operator" }) }
 export async function pumpfunResume(): Promise<{ ok: true }> { return write("pumpfun/resume", "POST", {}) }
 export async function pumpfunSetPolicy(patch: Partial<PumpPolicy>): Promise<{ ok: true; policy: PumpPolicy }> { return write("pumpfun/policy", "POST", patch) }
-export interface PumpLivePolicy { maxPositionSol: number; grossMaxSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number }
+export interface PumpLivePolicy { maxPositionPct: number; grossMaxPct: number; maxPositionSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number }
 export interface PumpLive {
   mode: "paper" | "real"; since: string | null; by: string | null; walletPubkey: string | null; hasKey: boolean
   walletSol: number; syncedAt: string | null; equitySol: number; positionsSol: number; startSol: number | null; liveSince: string | null; returnPct: number | null

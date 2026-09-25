@@ -85,7 +85,7 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
               <div><span className="text-muted-foreground">오늘</span><br /><span className={pnlClass(live.dayPct)}>{signed(live.dayPct)}</span> (정지 −{live.policy.dailyStopPct}%)</div>
               <div><span className="text-muted-foreground">매수 / 매도 / 실패</span><br />{live.stats.buys} / {live.stats.sells} / {live.stats.failed}</div>
             </div>
-            <p className="text-muted-foreground">한도: 포지션 {live.policy.maxPositionSol} SOL · 총 {live.policy.grossMaxSol} SOL · 로트 {live.policy.maxLots} · 슬리피지 {live.policy.slippagePct}% · 우선순위 수수료 {live.policy.priorityFeeSol} SOL · 지갑 예비 {live.policy.reserveSol} SOL. PumpPortal 거래당 0.5% 추가.</p>
+            <p className="text-muted-foreground">크기: 실 에쿼티 × {live.policy.maxPositionPct}% × standing (절대 상한 {live.policy.maxPositionSol > 0 ? `${live.policy.maxPositionSol} SOL` : "없음"}) · 총노출 {live.policy.grossMaxPct}% · 로트 {live.policy.maxLots} · 슬리피지 {live.policy.slippagePct}% · 우선순위 수수료 {live.policy.priorityFeeSol} SOL · 지갑 예비 {live.policy.reserveSol} SOL. PumpPortal 거래당 0.5% 추가.</p>
             {live.error && <p className="font-mono text-[11px] text-destructive">최근 오류: {live.error}</p>}
             <div className="flex flex-wrap gap-2">
               <button type="button" disabled={busy} onClick={() => void go("paper")} className="rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50">페이퍼로 돌아가기 (보유는 유지)</button>

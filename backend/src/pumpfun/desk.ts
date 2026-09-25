@@ -234,7 +234,8 @@ class PumpfunDesk extends EventEmitter {
     if (a.type === "buy") {
       if (!ev || this.inflight.has(`buy:${ev.mint}`)) return;
       const open = [...this.liveLedger.lots.values()];
-      const { sol, why } = liveBuySize(P, a.solIn, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
+      const standing = this.st.follows[a.via]?.standing ?? 0.5;
+      const { sol, why } = liveBuySize(P, this.liveEquitySol(), standing, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
       if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); return; }
       this.inflight.add(`buy:${ev.mint}`);
       try {

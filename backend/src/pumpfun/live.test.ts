@@ -4,11 +4,14 @@ import { parseTxDeltas, type ParsedTx } from "./solana-rpc.js";
 import { PumpLedger } from "./ledger.js";
 
 describe("liveBuySize", () => {
-  it("caps by position, gross and wallet reserve, and refuses when the book is full", () => {
-    expect(liveBuySize(P, 0.3, 2.5, 0, 0)).toEqual({ sol: 0.1, why: null });
-    expect(liveBuySize(P, 0.3, 2.5, 0.95, 2).sol).toBeCloseTo(0.05);
-    expect(liveBuySize(P, 0.3, 0.03, 0, 0).sol).toBe(0); // 0.03 − 예비 0.02 − 수수료 < 최소 0.01
-    expect(liveBuySize(P, 0.3, 2.5, 0, 5).why).toMatch(/maxLots/);
+  it("sizes from the whole wallet: equity × pct × standing, capped by gross, wallet reserve and lot count", () => {
+    expect(liveBuySize(P, 2.5, 1, 2.5, 0, 0)).toEqual({ sol: 0.625, why: null }); // 2.5 × 25%
+    expect(liveBuySize(P, 2.5, 0.5, 2.5, 0, 0).sol).toBeCloseTo(0.3125); // standing 0.5
+    expect(liveBuySize(P, 2.5, 2, 2.5, 0, 0).sol).toBeCloseTo(1.25); // standing 2 → 50%
+    expect(liveBuySize(P, 2.5, 1, 0.5, 2.0, 3).sol).toBeCloseTo(0.4795); // 지갑 0.5 − 예비 0.02 − 수수료
+    expect(liveBuySize(P, 2.5, 1, 0.03, 0, 0).sol).toBe(0); // 예비 아래
+    expect(liveBuySize({ ...P, maxPositionSol: 0.1 }, 2.5, 1, 2.5, 0, 0).sol).toBe(0.1); // 절대 상한을 켜면 그것
+    expect(liveBuySize(P, 2.5, 1, 2.5, 0, 8).why).toMatch(/maxLots/);
   });
 });
 

@@ -9,20 +9,23 @@ import { logger } from "../core/logger.js";
  */
 
 export interface LivePolicy {
-  /** 포지션당 상한 (SOL) */
+  /** 포지션당 크기 = 실 에쿼티 × maxPositionPct% × standing — 고정 SOL이 아니라 지갑 전체를 기준으로 */
+  maxPositionPct: number;
+  /** 열린 포지션 비용 합 상한 (실 에쿼티 %) */
+  grossMaxPct: number;
+  /** 선택적 절대 상한 (SOL). 0이면 없음 */
   maxPositionSol: number;
-  /** 열린 포지션 비용 합 상한 (SOL) */
-  grossMaxSol: number;
   maxLots: number;
   slippagePct: number;
   priorityFeeSol: number;
   dailyStopPct: number;
   /** 실모드를 켜려면 지갑에 이만큼은 있어야 한다 */
   minWalletSol: number;
-  /** 매수 뒤 지갑에 남겨 둘 SOL (수수료·매도 트랜잭션 비용) */
+  /** 지갑에 항상 남겨 둘 SOL (매도 트랜잭션 비용·데이터 요금) */
   reserveSol: number;
 }
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionSol: 0.1, grossMaxSol: 1.0, maxLots: 5, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02 };
+// 지갑에 든 돈 전부가 거래 자본이다 (owner 결정, 2026-09-25). 포지션당 25% × standing, 총 100%, 예비 0.02 SOL만 남긴다
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 25, grossMaxPct: 100, maxPositionSol: 0, maxLots: 8, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 
@@ -42,12 +45,16 @@ export async function lightningTrade(apiKey: string, req: TradeRequest): Promise
   return { signature: json.signature };
 }
 
-/** 실매수 크기 — 페이퍼 규칙의 크기를 실돈 상한과 지갑 잔고로 다시 깎는다 */
-export function liveBuySize(p: LivePolicy, wantSol: number, walletSol: number, openCostSol: number, openLots: number): { sol: number; why: string | null } {
+/** 실매수 크기 — 실 에쿼티(지갑 SOL + 실보유 평가) 비율 × standing. 총노출·지갑 예비·로트 수로 깎는다 */
+export function liveBuySize(p: LivePolicy, equitySol: number, standing: number, walletSol: number, openCostSol: number, openLots: number): { sol: number; why: string | null } {
   if (openLots >= p.maxLots) return { sol: 0, why: `live maxLots ${p.maxLots}` };
-  let sol = Math.min(wantSol, p.maxPositionSol, p.grossMaxSol - openCostSol, walletSol - p.reserveSol - p.priorityFeeSol);
+  let sol = equitySol * (p.maxPositionPct / 100) * Math.max(0, standing);
+  if (p.maxPositionSol > 0) sol = Math.min(sol, p.maxPositionSol);
+  const grossRoom = equitySol * (p.grossMaxPct / 100) - openCostSol;
+  const walletRoom = walletSol - p.reserveSol - p.priorityFeeSol;
+  sol = Math.min(sol, grossRoom, walletRoom);
   sol = Math.floor(sol * 1e4) / 1e4;
-  if (sol < 0.01) return { sol: 0, why: `live: no room (want ${wantSol.toFixed(3)}, gross ${(p.grossMaxSol - openCostSol).toFixed(3)}, wallet ${walletSol.toFixed(3)})` };
+  if (sol < 0.01) return { sol: 0, why: `live: no room (size ${(equitySol * (p.maxPositionPct / 100) * standing).toFixed(3)}, gross ${grossRoom.toFixed(3)}, wallet ${walletRoom.toFixed(3)})` };
   return { sol, why: null };
 }
 
