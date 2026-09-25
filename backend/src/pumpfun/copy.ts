@@ -46,6 +46,10 @@ export interface CopyPolicy {
   minLeaderHoldMin: number;
   /** 우리가 같은 토큰을 청산한 뒤 재진입 금지(분) */
   reentryCooldownMin: number;
+  /** 1 = 추종 지갑 매수를 직접 따라 산다(구 방식). 0 = 표(copy vote)로만 쓴다 — 복합 결정이 산다 */
+  directCopy: number;
+  /** 유료 스트림을 걸 후보 토큰 수 (복합 엔진의 흐름 신호용) */
+  flowMaxMints: number;
   /** 하루 유료 메시지 예산 — 넘으면 발견 창을 닫고 추종 지갑·보유 토큰만 남긴다 (1만 건 = 0.01 SOL) */
   meteredBudgetMsgsPerDay: number;
   /** 1이면 보유 토큰의 거래 스트림을 구독(빠른 마킹, 유료), 0이면 커브 토큰은 무료 RPC 폴링으로만 마킹하고 AMM 토큰만 구독 */
@@ -54,7 +58,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 

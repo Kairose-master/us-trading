@@ -52,3 +52,7 @@ claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 실모드 추가 — back
 ## 2026-09-25 12:15 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
 
 claude/pumpfun-expansion-monetization-3lqu2o: backend/src/pumpfun/community.ts 신규(커뮤니티 게이트 — pump.fun 공개 API·t.me 스크랩·creator 발행 수, 카피 매수 크기 배수/차단, 개발자 매도 시 청산). desk.ts 매수 경로가 비동기(copyBuy)로 바뀜. pump.fun API 는 초당 1회 전역 슬롯.
+
+## 2026-09-25 13:12 · agent (claude/pumpfun-expansion-monetization-3lqu2o)
+
+claude/pumpfun-expansion-monetization-3lqu2o: pump.fun 복합 결정 엔진 — flow.ts/ensemble.ts/screen.ts 신규, desk.ts evaluateEnsemble(15초)·pump.fun 공개 API 30초 폴링, directCopy 기본 OFF(추종 지갑 매수는 표), 유료 예산 기본 6만 건/일. 실주문 경로는 그대로(ensemble 로트도 applyLive).

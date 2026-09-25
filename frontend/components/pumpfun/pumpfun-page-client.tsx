@@ -348,6 +348,35 @@ export function PumpfunPageClient() {
       </div>
 
       <Card>
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5">
+          <h2 className="text-sm font-semibold">복합 결정 — 흐름 · 모멘텀 · 카피 표 · 커뮤니티</h2>
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground">가중치 flow {data.ensemble.weights.flow} · momentum {data.ensemble.weights.momentum} · copy {data.ensemble.weights.copy} · community {data.ensemble.weights.community} (실현 결과로 움직임) · 진입 ≥{data.ensemble.policy.enterScore} · 청산 &lt;{data.ensemble.policy.exitScore} · 기본 크기 {data.ensemble.policy.basePct}% · 직접 카피 {data.ensemble.directCopy ? "ON" : "OFF"} · 스트림 후보 {data.ensemble.flowMaxMints}개 · 스크린 후보 {data.ensemble.screen.candidates} ({ago(data.ensemble.screen.lastPollAt)}) · 진입 {data.ensemble.stats.entries} / 청산 {data.ensemble.stats.exits}</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full font-mono text-[11px]">
+            <thead><tr className="border-b border-border bg-muted/40 text-left text-muted-foreground"><th className="px-3 py-1.5 font-medium">토큰</th><th className="px-3 py-1.5 font-medium">합성</th><th className="px-3 py-1.5 font-medium">결정</th><th className="px-3 py-1.5 font-medium">flow</th><th className="px-3 py-1.5 font-medium">momentum</th><th className="px-3 py-1.5 font-medium">copy</th><th className="px-3 py-1.5 font-medium">community</th><th className="px-3 py-1.5 font-medium">스트림</th><th className="px-3 py-1.5 font-medium">근거</th></tr></thead>
+            <tbody className="divide-y divide-border/50">
+              {data.ensemble.candidates.map((c) => {
+                const v = (e: string) => c.votes.find((x) => x.engine === e)
+                const cell = (e: string) => { const x = v(e); return x ? <span className={cn(x.abstain ? "text-muted-foreground" : scoreClass(x.score))} title={x.why.join("\n")}>{x.abstain ? "기권" : x.score}</span> : "—" }
+                return (
+                  <tr key={c.mint} className={cn(c.held > 0 && "bg-chart-1/5", c.action === "enter" && "bg-chart-2/10")}>
+                    <td className="px-3 py-1" title={c.mint}>{c.symbol ?? short(c.mint)}{c.held > 0 ? " ·보유" : ""}</td>
+                    <td className={cn("px-3 py-1 font-bold", scoreClass(c.score))}>{c.score}</td>
+                    <td className="px-3 py-1">{c.blocked ? "차단" : c.action === "enter" ? "진입" : c.action === "exit" ? "청산" : c.action === "hold" ? "보유" : "—"}{c.action === "enter" ? ` ×${c.sizeMult}` : ""}</td>
+                    <td className="px-3 py-1">{cell("flow")}</td><td className="px-3 py-1">{cell("momentum")}</td><td className="px-3 py-1">{cell("copy")}</td><td className="px-3 py-1">{cell("community")}</td>
+                    <td className="px-3 py-1 text-muted-foreground">{c.streamed ? "유료" : "무료"}</td>
+                    <td className="max-w-[360px] truncate px-3 py-1 text-muted-foreground" title={c.why}>{c.why}</td>
+                  </tr>
+                )
+              })}
+              {data.ensemble.candidates.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">후보 없음 — 스크린이 30초마다 pump.fun 을 폴링한다</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <Card>
         <div className="flex items-center gap-1.5 border-b border-border px-4 py-2.5"><h2 className="text-sm font-semibold">커뮤니티 읽기 — 밈코인은 커뮤니티가 가격이다</h2><span className="ml-auto font-mono text-[10px] text-muted-foreground">pump.fun 댓글·KOTH·라이브·소셜 링크 · 텔레그램 구독자 · creator 48h 발행 수 · 보안 판정 · ATH 대비 · (RPC 있으면) 상위10 홀더</span></div>
         <div className="overflow-x-auto">
           <table className="w-full font-mono text-[11px]">
