@@ -261,6 +261,9 @@ class PumpfunDesk extends EventEmitter {
     const mints = [...new Set([...this.ledger.heldMints(), ...this.liveLedger.heldMints()])].slice(0, 12);
     for (const m of mints) {
       try {
+        // AMM(졸업) 토큰은 거래가 뜸하면 마킹이 안 온다 — pump.fun 시총(SOL)으로 60초마다 폴백 마킹 (원가 모름 로트는 이게 첫 원가가 된다)
+        const stale = [...this.ledger.lotsOf(m), ...this.liveLedger.lotsOf(m)].some((l) => l.pool !== "pump" && (!(l.markSol > 0) || Date.now() - Date.parse(l.markAt) > 3 * 60_000));
+        if (stale) { const b = await communityDesk.coinBasics(m).catch(() => null); if (b && b.marketCapSol > 0) { const arg = { price: b.marketCapSol / 1_000_000_000, pool: b.complete ? "pump-amm" : "pump" }; this.ledger.mark(m, arg); this.liveLedger.mark(m, arg); } }
         const r = await communityDesk.read(m, { force: true, timeoutMs: 4_000 });
         if (r.facts.ok && r.facts.securityVerdict && r.facts.securityVerdict !== "allow") {
           logger.warn("[pumpfun] security verdict changed on a held token — exiting", { mint: m, verdict: r.facts.securityVerdict });
