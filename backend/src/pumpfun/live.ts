@@ -15,6 +15,7 @@ export interface LivePolicy {
   grossMaxPct: number;
   /** 선택적 절대 상한 (SOL). 0이면 없음 */
   maxPositionSol: number;
+  /** 동시 로트 수 상한. 0 = 제한 없음 — 크기는 이미 에쿼티 비율·총노출·지갑 예비로 잡혀 있어 개수 상한은 중복이다 (owner 지적) */
   maxLots: number;
   slippagePct: number;
   priorityFeeSol: number;
@@ -25,7 +26,7 @@ export interface LivePolicy {
   reserveSol: number;
 }
 // 지갑에 든 돈 전부가 거래 자본이다 (owner 결정, 2026-09-25). 포지션당 25% × standing, 총 100%, 예비 0.02 SOL만 남긴다
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 25, grossMaxPct: 100, maxPositionSol: 0, maxLots: 8, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02 };
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 25, grossMaxPct: 100, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 
@@ -47,7 +48,7 @@ export async function lightningTrade(apiKey: string, req: TradeRequest): Promise
 
 /** 실매수 크기 — 실 에쿼티(지갑 SOL + 실보유 평가) 비율 × standing. 총노출·지갑 예비·로트 수로 깎는다 */
 export function liveBuySize(p: LivePolicy, equitySol: number, standing: number, walletSol: number, openCostSol: number, openLots: number): { sol: number; why: string | null } {
-  if (openLots >= p.maxLots) return { sol: 0, why: `live maxLots ${p.maxLots}` };
+  if (p.maxLots > 0 && openLots >= p.maxLots) return { sol: 0, why: `live maxLots ${p.maxLots}` };
   let sol = equitySol * (p.maxPositionPct / 100) * Math.max(0, standing);
   if (p.maxPositionSol > 0) sol = Math.min(sol, p.maxPositionSol);
   const grossRoom = equitySol * (p.grossMaxPct / 100) - openCostSol;

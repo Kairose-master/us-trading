@@ -11,7 +11,8 @@ describe("liveBuySize", () => {
     expect(liveBuySize(P, 2.5, 1, 0.5, 2.0, 3).sol).toBeCloseTo(0.4795); // 지갑 0.5 − 예비 0.02 − 수수료
     expect(liveBuySize(P, 2.5, 1, 0.03, 0, 0).sol).toBe(0); // 예비 아래
     expect(liveBuySize({ ...P, maxPositionSol: 0.1 }, 2.5, 1, 2.5, 0, 0).sol).toBe(0.1); // 절대 상한을 켜면 그것
-    expect(liveBuySize(P, 2.5, 1, 2.5, 0, 8).why).toMatch(/maxLots/);
+    expect(liveBuySize(P, 2.5, 1, 2.5, 0, 50).sol).toBeGreaterThan(0); // 기본 0 = 개수 제한 없음
+    expect(liveBuySize({ ...P, maxLots: 8 }, 2.5, 1, 2.5, 0, 8).why).toMatch(/maxLots/);
   });
 });
 

@@ -18,6 +18,7 @@ export interface CopyPolicy {
   riskPct: number;
   grossMaxPct: number;
   cashFloorPct: number;
+  /** 0 = 제한 없음 (총노출·현금 하한이 크기를 잡는다) */
   maxLots: number;
   minLeaderSol: number;
   maxHoldMin: number;
@@ -53,7 +54,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 12, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 
@@ -95,7 +96,7 @@ export function onLeaderTrade(ev: Extract<FeedEvent, { kind: "trade" }>, ctx: { 
     if (rc.medianHoldMin30m !== null && rc.medianHoldMin30m < p.minLeaderHoldMin) return [{ type: "skip", reason: `leader's recent median hold ${rc.medianHoldMin30m.toFixed(1)}m < ${p.minLeaderHoldMin}m — scalping mode` }];
     if (rc.ourLastExitMinAgo !== null && rc.ourLastExitMinAgo < p.reentryCooldownMin) return [{ type: "skip", reason: `re-entry cooldown: we exited this token ${rc.ourLastExitMinAgo.toFixed(0)}m ago` }];
   }
-  if (ctx.lots.length >= p.maxLots) return [{ type: "skip", reason: `maxLots ${p.maxLots}` }];
+  if (p.maxLots > 0 && ctx.lots.length >= p.maxLots) return [{ type: "skip", reason: `maxLots ${p.maxLots}` }];
   let size = sizeFor(p, ctx.equitySol, follow.standing);
   const grossRoom = ctx.equitySol * (p.grossMaxPct / 100) - ctx.positionsSol;
   const cashRoom = ctx.cashSol - ctx.equitySol * (p.cashFloorPct / 100);

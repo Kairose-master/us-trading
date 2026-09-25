@@ -94,7 +94,7 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
               <div><span className="text-muted-foreground">오늘</span><br /><span className={pnlClass(live.dayPct)}>{signed(live.dayPct)}</span> (정지 −{live.policy.dailyStopPct}%)</div>
               <div><span className="text-muted-foreground">매수 / 매도 / 실패</span><br />{live.stats.buys} / {live.stats.sells} / {live.stats.failed}</div>
             </div>
-            <p className="text-muted-foreground">크기: 실 에쿼티 × {live.policy.maxPositionPct}% × standing (절대 상한 {live.policy.maxPositionSol > 0 ? `${live.policy.maxPositionSol} SOL` : "없음"}) · 총노출 {live.policy.grossMaxPct}% · 로트 {live.policy.maxLots} · 슬리피지 {live.policy.slippagePct}% · 우선순위 수수료 {live.policy.priorityFeeSol} SOL · 지갑 예비 {live.policy.reserveSol} SOL. PumpPortal 거래당 0.5% 추가.</p>
+            <p className="text-muted-foreground">크기: 실 에쿼티 × {live.policy.maxPositionPct}% × standing (절대 상한 {live.policy.maxPositionSol > 0 ? `${live.policy.maxPositionSol} SOL` : "없음"}) · 총노출 {live.policy.grossMaxPct}% · 로트 {live.policy.maxLots || "무제한"} · 슬리피지 {live.policy.slippagePct}% · 우선순위 수수료 {live.policy.priorityFeeSol} SOL · 지갑 예비 {live.policy.reserveSol} SOL. PumpPortal 거래당 0.5% 추가.</p>
             {live.error && <p className="font-mono text-[11px] text-destructive">최근 오류: {live.error}</p>}
             <div className="flex flex-wrap gap-2">
               <button type="button" disabled={busy} onClick={() => void go("paper")} className="rounded-md border border-border px-2 py-1 text-[11px] disabled:opacity-50">페이퍼로 돌아가기 (보유는 유지)</button>
@@ -204,13 +204,13 @@ export function PumpfunPageClient() {
           <>
             <Stat label="실 에쿼티 (지갑)" value={sol(data.live.equitySol)} valueClass="text-destructive" sub={`시작 ${data.live.startSol === null ? "—" : sol(data.live.startSol, 3)} · 페이퍼 그림자 ${sol(L.equitySol, 2)} (가상 시드 ${L.startSol})`} />
             <Stat label="실 누적 수익률" value={data.live.returnPct === null ? "—" : signed(data.live.returnPct)} valueClass={pnlClass(data.live.returnPct ?? 0)} sub={`오늘 ${signed(data.live.dayPct)} (일 손실 정지 −${data.live.policy.dailyStopPct}%) · 페이퍼 ${signed(L.returnPct)}`} />
-            <Stat label="지갑 SOL / 실포지션" value={sol(data.live.walletSol, 4)} sub={`포지션 ${sol(data.live.positionsSol, 4)} · 로트 ${data.live.lots.length}/${data.live.policy.maxLots} · 동기화 ${ago(data.live.syncedAt)}`} />
+            <Stat label="지갑 SOL / 실포지션" value={sol(data.live.walletSol, 4)} sub={`포지션 ${sol(data.live.positionsSol, 4)} · 로트 ${data.live.lots.length}${data.live.policy.maxLots ? `/${data.live.policy.maxLots}` : ""} · 동기화 ${ago(data.live.syncedAt)}`} />
           </>
         ) : (
           <>
             <Stat label="에쿼티 (페이퍼)" value={sol(L.equitySol)} sub={`가상 시드 ${sol(L.startSol, 2)} · ${ago(L.since)}부터`} />
             <Stat label="누적 수익률" value={signed(L.returnPct)} valueClass={pnlClass(L.returnPct)} sub={`오늘 ${signed(L.dayPct)} (일 손실 정지 −${data.policy.dailyStopPct}%)`} />
-            <Stat label="현금 / 포지션" value={sol(L.cashSol, 3)} sub={`포지션 ${sol(L.positionsSol, 3)} · 로트 ${L.lots.length}/${data.policy.maxLots}`} />
+            <Stat label="현금 / 포지션" value={sol(L.cashSol, 3)} sub={`포지션 ${sol(L.positionsSol, 3)} · 로트 ${L.lots.length}${data.policy.maxLots ? `/${data.policy.maxLots}` : ""}`} />
           </>
         )}
         <Stat label="추종 지갑" value={`${data.follows.length}`} valueClass={data.follows.length === 0 ? "text-destructive" : undefined} sub={data.follows.length === 0 ? "0개 — 따라갈 지갑이 없어 주문이 안 나간다. 시드를 넣거나 채점을 기다린다" : `상한 ${data.policy.followMax} · 시드 ${data.seeds.length} · 채점 대상 ${data.tradeBuffer.wallets ?? "—"} (자격 ${data.tradeBuffer.eligible ?? "—"} · 잠정 ${data.tradeBuffer.provisional ?? "—"})`} />

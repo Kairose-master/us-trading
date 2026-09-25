@@ -197,7 +197,7 @@ owner: `POST /pumpfun/wallets {wallet, action}` · `/pumpfun/rescore` · `/pumpf
 - **체결은 추정하지 않는다.** 나간 SOL과 받은 토큰은 확정 트랜잭션의 pre/post 잔고에서 읽는다(`solana-rpc.ts parseTxDeltas`, 실물 형태로 테스트).
   45초 안에 확정이 안 되거나 온체인에서 실패하면 로트를 만들지 않고 `live.error`·`stats.failed`에 남긴다.
 - **크기·한도** (`live.ts DEFAULT_LIVE_POLICY`, `POST /pumpfun/live/policy`): **지갑에 든 돈 전부가 거래 자본**이다(owner 결정).
-  포지션 = 실 에쿼티 × 25% × standing(0.1~2, 그래서 2.5~50%) · 총노출 100% · 로트 8 · 절대 상한 없음(`maxPositionSol`을 주면 켜진다) ·
+  포지션 = 실 에쿼티 × 25% × standing(0.1~2, 그래서 2.5~50%) · 총노출 100% · 로트 수 제한 없음(0; 총노출·예비가 크기를 잡는다) · 절대 상한 없음(`maxPositionSol`을 주면 켜진다) ·
   슬리피지 15% · 우선순위 수수료 0.0005 SOL · 지갑 예비 0.02 SOL · 일 손실 20%면 정지(신규 진입만, 청산은 계속). PumpPortal은 거래당 0.5%를 더 뗀다.
 - **킬스위치** `POST /pumpfun/live/flatten` — 실보유 전량 시장가 매도 + 정지. 카드의 버튼.
 - **귀속은 페이퍼 장부가 한다.** standing은 페이퍼 청산으로 움직인다 — 실장부는 한도 때문에 부분집합이라 신호가 성기다.
