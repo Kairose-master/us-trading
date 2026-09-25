@@ -30,6 +30,16 @@ describe("onLeaderTrade", () => {
   });
 });
 
+describe("anti-flip rules", () => {
+  it("does not copy a leader who is flipping the token, scalping lately, or a token we just exited", () => {
+    expect(onLeaderTrade(trade("buy"), ctx({ recent: { flipsOnMint10m: 2, medianHoldMin30m: 8, ourLastExitMinAgo: null } }))[0]).toMatchObject({ type: "skip", reason: expect.stringMatching(/flipped/) });
+    expect(onLeaderTrade(trade("buy"), ctx({ recent: { flipsOnMint10m: 0, medianHoldMin30m: 0.8, ourLastExitMinAgo: null } }))[0]).toMatchObject({ type: "skip", reason: expect.stringMatching(/scalping mode/) });
+    expect(onLeaderTrade(trade("buy"), ctx({ recent: { flipsOnMint10m: 0, medianHoldMin30m: 8, ourLastExitMinAgo: 4 } }))[0]).toMatchObject({ type: "skip", reason: expect.stringMatching(/cooldown/) });
+    expect(onLeaderTrade(trade("buy"), ctx({ recent: { flipsOnMint10m: 0, medianHoldMin30m: 8, ourLastExitMinAgo: 40 } }))[0].type).toBe("buy");
+    expect(onLeaderTrade(trade("buy"), ctx({ recent: { flipsOnMint10m: 0, medianHoldMin30m: null, ourLastExitMinAgo: null } }))[0].type).toBe("buy");
+  });
+});
+
 describe("lotExits", () => {
   it("stop-loss, trailing from a real peak, and time stop", () => {
     const sl = lotExits([lot({ markSol: 0.12 })], P);

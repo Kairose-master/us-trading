@@ -5,8 +5,8 @@ import { config } from "../config.js";
 import { logger } from "../core/logger.js";
 import { PumpPortalFeed, type FeedEvent } from "./feed.js";
 import { PumpLedger, DEFAULT_LEDGER_COSTS, type LedgerCosts, type LedgerSnapshot } from "./ledger.js";
-import { applyOutcome, lotExits, onLeaderTrade, DEFAULT_COPY_POLICY, type CopyAction, type CopyPolicy, type Follow } from "./copy.js";
-import { initialStanding, scoreWallets, DEFAULT_THRESHOLDS, PROVISIONAL_STANDING, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
+import { applyOutcome, lotExits, onLeaderTrade, DEFAULT_COPY_POLICY, type CopyAction, type CopyPolicy, type Follow, type LeaderRecent } from "./copy.js";
+import { initialStanding, roundTripsOf, scoreWallets, DEFAULT_THRESHOLDS, PROVISIONAL_STANDING, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
 import { parseTxDeltas, readCurve, tokenBalance, waitForTx, walletSol, walletTokenBalances } from "./solana-rpc.js";
 import { progress } from "./curve.js";
 import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
@@ -225,22 +225,34 @@ class PumpfunDesk extends EventEmitter {
     }
     // 추종 지갑이면 카피 규칙 — 매수는 커뮤니티를 읽은 뒤(비동기), 매도는 즉시
     const follow = this.st.follows[ev.wallet];
+    const recent = follow && ev.side === "buy" ? this.leaderRecent(ev.wallet, ev.mint) : undefined;
     if (follow) {
-      const actions = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.ledger.lots.values()], equitySol: this.ledger.equitySol(), cashSol: this.ledger.cashSol, positionsSol: this.ledger.positionsSol(), paused: this.st.paused });
-      for (const a of actions) { if (a.type === "buy") void this.copyBuy(a, ev, "paper"); else this.apply(a, ev); }
+      const actions = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.ledger.lots.values()], equitySol: this.ledger.equitySol(), cashSol: this.ledger.cashSol, positionsSol: this.ledger.positionsSol(), paused: this.st.paused, recent });
+      for (const a of actions) { if (a.type === "buy") void this.copyBuy(a, ev, "paper"); else { if (a.type === "skip" && ev.side === "buy") logger.info("[pumpfun] copy skipped", { leader: ev.wallet.slice(0, 8), mint: ev.mint.slice(0, 8), why: a.reason }); this.apply(a, ev); } }
     }
     // 마킹 뒤 청산 규칙
     for (const a of lotExits(this.ledger.lotsOf(ev.mint), this.st.policy)) this.apply(a, ev);
     // 실모드 — 같은 규칙을 실장부 위에서 한 번 더 돌리고, 결과는 체인으로 나간다
     if (this.modeSt.mode === "real") {
       if (follow) {
-        const acts = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.liveLedger.lots.values()], equitySol: this.liveEquitySol(), cashSol: this.liveSt.walletSol, positionsSol: this.liveLedger.positionsSol(), paused: this.st.paused });
+        const acts = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.liveLedger.lots.values()], equitySol: this.liveEquitySol(), cashSol: this.liveSt.walletSol, positionsSol: this.liveLedger.positionsSol(), paused: this.st.paused, recent: recent ?? (ev.side === "buy" ? this.leaderRecent(ev.wallet, ev.mint) : undefined) });
         for (const a of acts) { if (a.type === "buy") void this.copyBuy(a, ev, "live"); else void this.applyLive(a, ev); }
       }
       for (const a of lotExits(this.liveLedger.lotsOf(ev.mint), this.st.policy)) void this.applyLive(a, ev);
     }
   }
 
+  /** 리더의 최근 행동 — 이 토큰을 플립 중인가, 요즘 스캘핑 모드인가, 우리가 방금 판 토큰인가 (copy.ts 플립 방지 규칙의 재료) */
+  private leaderRecent(wallet: string, mint: string): LeaderRecent {
+    const now = Date.now();
+    const mine = this.trades.filter((t) => t.wallet === wallet && now - Date.parse(t.ts) < 30 * 60_000);
+    const rts = roundTripsOf(mine).get(wallet) ?? [];
+    const flips = rts.filter((r) => r.mint === mint && now - Date.parse(r.closedAt) < 10 * 60_000).length;
+    const holds = rts.map((r) => r.holdMin).sort((a, b) => a - b);
+    const median = holds.length ? holds[holds.length >> 1] : null;
+    const lastExit = [...this.ledger.orders].reverse().find((o) => o.side === "sell" && o.mint === mint);
+    return { flipsOnMint10m: flips, medianHoldMin30m: median, ourLastExitMinAgo: lastExit ? (now - Date.parse(lastExit.ts)) / 60_000 : null };
+  }
   /** 보유 토큰(페이퍼·실)의 creator 지갑들 — 커뮤니티 읽기에 creator 가 있을 때만 */
   private heldCreators(): Set<string> {
     const out = new Set<string>();

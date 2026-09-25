@@ -36,6 +36,15 @@ export interface CopyPolicy {
   discoveryWindowMin: number;
   discoveryMaxMints: number;
   rescoreMin: number;
+  /**
+   * 플립 방지 (실측 2026-09-25 12:53~13:00): 시드 지갑이 한 토큰을 30초~2분 간격으로 사고팔았고, 우리 카피는 매번 −3~−5%(왕복 수수료)로 끝났다.
+   * 리더가 같은 토큰에서 최근 10분 안에 이만큼 왕복했으면 그 토큰은 리더의 스캘핑 대상 — 따라가지 않는다
+   */
+  maxLeaderFlips10m: number;
+  /** 리더의 최근 30분 보유 시간 중앙값이 이 아래면 지금은 스캘핑 모드 — 따라가지 않는다 */
+  minLeaderHoldMin: number;
+  /** 우리가 같은 토큰을 청산한 뒤 재진입 금지(분) */
+  reentryCooldownMin: number;
   /** 하루 유료 메시지 예산 — 넘으면 발견 창을 닫고 추종 지갑·보유 토큰만 남긴다 (1만 건 = 0.01 SOL) */
   meteredBudgetMsgsPerDay: number;
   /** 1이면 보유 토큰의 거래 스트림을 구독(빠른 마킹, 유료), 0이면 커브 토큰은 무료 RPC 폴링으로만 마킹하고 AMM 토큰만 구독 */
@@ -44,7 +53,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 12, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 12, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 
@@ -57,7 +66,16 @@ export function sizeFor(p: CopyPolicy, equitySol: number, standing: number): num
   return Math.max(0, Math.min(p.maxPositionSol, equitySol * (p.riskPct / 100) * standing));
 }
 
-export function onLeaderTrade(ev: Extract<FeedEvent, { kind: "trade" }>, ctx: { policy: CopyPolicy; follow: Follow | undefined; lots: Lot[]; equitySol: number; cashSol: number; positionsSol: number; paused: boolean }): CopyAction[] {
+export interface LeaderRecent {
+  /** 리더가 이 토큰에서 최근 10분에 완료한 왕복 수 */
+  flipsOnMint10m: number;
+  /** 리더의 최근 30분 왕복 보유 시간 중앙값(분). 왕복이 없으면 null */
+  medianHoldMin30m: number | null;
+  /** 우리가 이 토큰을 마지막으로 청산한 지 몇 분 됐나. 없으면 null */
+  ourLastExitMinAgo: number | null;
+}
+
+export function onLeaderTrade(ev: Extract<FeedEvent, { kind: "trade" }>, ctx: { policy: CopyPolicy; follow: Follow | undefined; lots: Lot[]; equitySol: number; cashSol: number; positionsSol: number; paused: boolean; recent?: LeaderRecent }): CopyAction[] {
   const { policy: p, follow } = ctx;
   if (!follow) return [{ type: "skip", reason: "not a followed wallet" }];
   const mine = ctx.lots.filter((l) => l.mint === ev.mint && l.via === ev.wallet);
@@ -71,6 +89,12 @@ export function onLeaderTrade(ev: Extract<FeedEvent, { kind: "trade" }>, ctx: { 
   if (ctx.paused) return [{ type: "skip", reason: "paused" }];
   if (ev.sol < p.minLeaderSol) return [{ type: "skip", reason: `leader buy ${ev.sol.toFixed(4)} SOL < minLeaderSol` }];
   if (mine.length) return [{ type: "skip", reason: "already holding via this leader" }];
+  const rc = ctx.recent;
+  if (rc) {
+    if (rc.flipsOnMint10m >= p.maxLeaderFlips10m) return [{ type: "skip", reason: `leader flipped this token ${rc.flipsOnMint10m}× in 10m — scalping, not copyable` }];
+    if (rc.medianHoldMin30m !== null && rc.medianHoldMin30m < p.minLeaderHoldMin) return [{ type: "skip", reason: `leader's recent median hold ${rc.medianHoldMin30m.toFixed(1)}m < ${p.minLeaderHoldMin}m — scalping mode` }];
+    if (rc.ourLastExitMinAgo !== null && rc.ourLastExitMinAgo < p.reentryCooldownMin) return [{ type: "skip", reason: `re-entry cooldown: we exited this token ${rc.ourLastExitMinAgo.toFixed(0)}m ago` }];
+  }
   if (ctx.lots.length >= p.maxLots) return [{ type: "skip", reason: `maxLots ${p.maxLots}` }];
   let size = sizeFor(p, ctx.equitySol, follow.standing);
   const grossRoom = ctx.equitySol * (p.grossMaxPct / 100) - ctx.positionsSol;
