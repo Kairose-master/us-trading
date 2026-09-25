@@ -195,10 +195,20 @@ export function PumpfunPageClient() {
       )}
 
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="에쿼티" value={sol(L.equitySol)} sub={`시작 ${sol(L.startSol, 2)} · ${ago(L.since)}부터`} />
-        <Stat label="누적 수익률" value={signed(L.returnPct)} valueClass={pnlClass(L.returnPct)} sub={`오늘 ${signed(L.dayPct)} (일 손실 정지 −${data.policy.dailyStopPct}%)`} />
-        <Stat label="현금 / 포지션" value={sol(L.cashSol, 3)} sub={`포지션 ${sol(L.positionsSol, 3)} · 로트 ${L.lots.length}/${data.policy.maxLots}`} />
-        <Stat label="추종 지갑" value={`${data.follows.length}`} sub={`상한 ${data.policy.followMax} · 시드 ${data.seeds.length} · 채점 대상 ${data.tradeBuffer.wallets ?? "—"} (자격 ${data.tradeBuffer.eligible ?? "—"})`} />
+        {data.mode === "real" ? (
+          <>
+            <Stat label="실 에쿼티 (지갑)" value={sol(data.live.equitySol)} valueClass="text-destructive" sub={`시작 ${data.live.startSol === null ? "—" : sol(data.live.startSol, 3)} · 페이퍼 그림자 ${sol(L.equitySol, 2)} (가상 시드 ${L.startSol})`} />
+            <Stat label="실 누적 수익률" value={data.live.returnPct === null ? "—" : signed(data.live.returnPct)} valueClass={pnlClass(data.live.returnPct ?? 0)} sub={`오늘 ${signed(data.live.dayPct)} (일 손실 정지 −${data.live.policy.dailyStopPct}%) · 페이퍼 ${signed(L.returnPct)}`} />
+            <Stat label="지갑 SOL / 실포지션" value={sol(data.live.walletSol, 4)} sub={`포지션 ${sol(data.live.positionsSol, 4)} · 로트 ${data.live.lots.length}/${data.live.policy.maxLots} · 동기화 ${ago(data.live.syncedAt)}`} />
+          </>
+        ) : (
+          <>
+            <Stat label="에쿼티 (페이퍼)" value={sol(L.equitySol)} sub={`가상 시드 ${sol(L.startSol, 2)} · ${ago(L.since)}부터`} />
+            <Stat label="누적 수익률" value={signed(L.returnPct)} valueClass={pnlClass(L.returnPct)} sub={`오늘 ${signed(L.dayPct)} (일 손실 정지 −${data.policy.dailyStopPct}%)`} />
+            <Stat label="현금 / 포지션" value={sol(L.cashSol, 3)} sub={`포지션 ${sol(L.positionsSol, 3)} · 로트 ${L.lots.length}/${data.policy.maxLots}`} />
+          </>
+        )}
+        <Stat label="추종 지갑" value={`${data.follows.length}`} valueClass={data.follows.length === 0 ? "text-destructive" : undefined} sub={data.follows.length === 0 ? "0개 — 따라갈 지갑이 없어 주문이 안 나간다. 시드를 넣거나 채점을 기다린다" : `상한 ${data.policy.followMax} · 시드 ${data.seeds.length} · 채점 대상 ${data.tradeBuffer.wallets ?? "—"} (자격 ${data.tradeBuffer.eligible ?? "—"} · 잠정 ${data.tradeBuffer.provisional ?? "—"})`} />
         <Stat label="카피 / 청산" value={`${data.stats.copies} / ${data.stats.exits}`} sub={`관측 거래 ${data.stats.tradesObserved.toLocaleString()} · 발견 창 ${data.discovery.length}`} />
         <Stat label="오늘 유료 메시지 (비용)" value={`${data.feed.metered.todayMsgs.toLocaleString()} (${data.feed.metered.todaySol.toFixed(4)} SOL)`} valueClass={data.budget.overBudget ? "text-destructive" : undefined} sub={`예산 ${data.budget.msgsPerDay.toLocaleString()}건/일 = ${data.budget.solPerDay} SOL${data.budget.overBudget ? " · 초과 — 발견 창 닫힘" : ""} · 누적 ${data.feed.metered.totalSol.toFixed(3)} SOL · 신규 ${data.stats.creates.toLocaleString()} / 이주 ${data.stats.migrations}`} />
       </div>
@@ -263,8 +273,9 @@ export function PumpfunPageClient() {
               <tbody className="divide-y divide-border/50">
                 {(cands?.ranked ?? []).slice(0, 15).map((w) => {
                   const ok = cands?.eligible.some((e) => e.wallet === w.wallet)
+                  const prov = cands?.provisional.some((e) => e.wallet === w.wallet)
                   return (
-                    <tr key={w.wallet} className={cn(ok && "bg-chart-1/5")}>
+                    <tr key={w.wallet} className={cn(ok && "bg-chart-1/5", prov && "bg-chart-2/5")} title={ok ? "정식 자격" : prov ? "잠정 자격 (standing 0.25로 시작)" : undefined}>
                       <td className="px-3 py-1" title={w.wallet}>{short(w.wallet)}</td>
                       <td className={cn("px-3 py-1 font-bold", w.score > 0 ? "text-chart-1" : "text-muted-foreground")}>{w.score}</td>
                       <td className="px-3 py-1">{w.roundTrips}</td><td className="px-3 py-1">{w.mints}</td>

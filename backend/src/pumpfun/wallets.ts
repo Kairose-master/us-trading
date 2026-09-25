@@ -40,6 +40,12 @@ export interface WalletStats {
 
 export interface ScoreThresholds { minRoundTrips: number; minMints: number; minMedianPnlPct: number; minWinRate: number }
 export const DEFAULT_THRESHOLDS: ScoreThresholds = { minRoundTrips: 8, minMints: 5, minMedianPnlPct: 0, minWinRate: 0.4 };
+/**
+ * 잠정 자격 — 관측 창이 짧아(졸업 토큰 20분×3) 정식 자격(왕복 8·토큰 5)이 첫날 안 나온다. 그래서 표본이 작아도 중앙값이 양수이고
+ * 승률이 절반을 넘으면 **작게(standing 0.25)** 추종을 시작하고, 실기록이 standing 을 키우거나 굶겨 죽인다.
+ */
+export const PROVISIONAL_THRESHOLDS: ScoreThresholds = { minRoundTrips: 3, minMints: 2, minMedianPnlPct: 0, minWinRate: 0.5 };
+export const PROVISIONAL_STANDING = 0.25;
 
 const median = (xs: number[]) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 
@@ -67,7 +73,7 @@ export function roundTripsOf(trades: WalletTrade[]): Map<string, RoundTrip[]> {
   return out;
 }
 
-export function scoreWallets(trades: WalletTrade[], th: ScoreThresholds = DEFAULT_THRESHOLDS): { ranked: WalletStats[]; eligible: WalletStats[] } {
+export function scoreWallets(trades: WalletTrade[], th: ScoreThresholds = DEFAULT_THRESHOLDS, prov: ScoreThresholds = PROVISIONAL_THRESHOLDS): { ranked: WalletStats[]; eligible: WalletStats[]; provisional: WalletStats[] } {
   const rts = roundTripsOf(trades);
   const byWallet = new Map<string, WalletTrade[]>();
   for (const t of trades) { const l = byWallet.get(t.wallet) ?? []; l.push(t); byWallet.set(t.wallet, l); }
@@ -83,8 +89,10 @@ export function scoreWallets(trades: WalletTrade[], th: ScoreThresholds = DEFAUL
     ranked.push({ wallet, trades: list.length, roundTrips: r.length, mints: new Set(list.map((t) => t.mint)).size, winRate: +winRate.toFixed(3), medianPnlPct: +medianPnlPct.toFixed(2), totalPnlSol: +totalPnlSol.toFixed(4), volumeSol: +list.filter((t) => t.side === "buy").reduce((a, t) => a + t.sol, 0).toFixed(3), medianHoldMin: +median(r.map((x) => x.holdMin)).toFixed(1), score, firstSeen: tss[0], lastSeen: tss[tss.length - 1] });
   }
   ranked.sort((a, b) => b.score - a.score || b.totalPnlSol - a.totalPnlSol);
-  const eligible = ranked.filter((w) => w.roundTrips >= th.minRoundTrips && w.mints >= th.minMints && w.medianPnlPct > th.minMedianPnlPct && w.winRate >= th.minWinRate);
-  return { ranked, eligible };
+  const passes = (w: WalletStats, t: ScoreThresholds) => w.roundTrips >= t.minRoundTrips && w.mints >= t.minMints && w.medianPnlPct > t.minMedianPnlPct && w.winRate >= t.minWinRate;
+  const eligible = ranked.filter((w) => passes(w, th));
+  const provisional = ranked.filter((w) => !passes(w, th) && passes(w, prov));
+  return { ranked, eligible, provisional };
 }
 
 /** 스코어 → 초기 standing. 스코어가 클수록 크게, 하한 0.25 — 채택 직후엔 아직 실기록이 없다 */

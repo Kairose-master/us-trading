@@ -44,7 +44,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 12, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 30, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 12, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 20_000, subscribeHeldTokens: 0 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 

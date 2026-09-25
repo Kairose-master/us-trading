@@ -28,11 +28,12 @@ describe("scoreWallets", () => {
     expect(lucky.totalPnlSol).toBeGreaterThan(0); // 총액은 양수지만
     expect(lucky.medianPnlPct).toBeLessThan(0); // 중앙값이 음수라 탈락
   });
-  it("requires a sample: too few round trips or too few mints is not eligible", () => {
+  it("requires a sample: too few round trips or too few mints is not eligible — but a small positive sample is provisional", () => {
     const trades: WalletTrade[] = [];
     for (let i = 0; i < 3; i++) { trades.push(t("FEW", `f${i}`, "buy", 1, 100, i * 2)); trades.push(t("FEW", `f${i}`, "sell", 1.5, 100, i * 2 + 1)); }
     for (let i = 0; i < 12; i++) { trades.push(t("ONE", "same", "buy", 1, 100, i * 2)); trades.push(t("ONE", "same", "sell", 1.5, 100, i * 2 + 1)); }
-    const { eligible } = scoreWallets(trades);
+    const { eligible, provisional } = scoreWallets(trades);
     expect(eligible).toHaveLength(0);
+    expect(provisional.map((w) => w.wallet)).toEqual(["FEW"]); // 3 왕복·3 토큰·승률 100% → 잠정. ONE 은 토큰 1종이라 잠정도 아니다
   });
 });

@@ -909,7 +909,7 @@ export interface PumpStatus {
   thresholds: { minRoundTrips: number; minMints: number; minMedianPnlPct: number; minWinRate: number }
   costs: { latencySlipPct: number; ammImpactPct: number; priorityFeeSol: number }
   discovery: Array<{ mint: string; until: string }>
-  tradeBuffer: { trades: number; hours: number; wallets: number | null; eligible: number | null; lastRescoreAt: string | null }
+  tradeBuffer: { trades: number; hours: number; wallets: number | null; eligible: number | null; provisional: number | null; lastRescoreAt: string | null }
   stats: { creates: number; migrations: number; tradesObserved: number; copies: number; exits: number }
   recentCreates: Array<{ ts: string; mint: string; creator: string; name: string; symbol: string; initialBuySol: number; marketCapSol: number; bondingCurveKey: string }>
   recentMigrations: Array<{ ts: string; mint: string; pool: string }>
@@ -918,7 +918,7 @@ export interface PumpStatus {
 }
 export interface PumpWalletStats { wallet: string; trades: number; roundTrips: number; mints: number; winRate: number; medianPnlPct: number; totalPnlSol: number; volumeSol: number; medianHoldMin: number; score: number; firstSeen: string; lastSeen: string }
 export async function getPumpfun(): Promise<PumpStatus> { return req("pumpfun") }
-export async function getPumpfunWallets(limit = 50): Promise<{ at: string; ranked: PumpWalletStats[]; eligible: PumpWalletStats[]; thresholds: PumpStatus["thresholds"]; trades: number }> { return req(`pumpfun/wallets?limit=${limit}`) }
+export async function getPumpfunWallets(limit = 50): Promise<{ at: string; ranked: PumpWalletStats[]; eligible: PumpWalletStats[]; provisional: PumpWalletStats[]; thresholds: PumpStatus["thresholds"]; trades: number }> { return req(`pumpfun/wallets?limit=${limit}`) }
 export async function getPumpfunEquity(limit = 2000): Promise<Array<{ ts: string; equitySol: number; cashSol: number; lots: number }>> { return req(`pumpfun/equity?limit=${limit}`) }
 export async function getPumpfunOrders(limit = 200): Promise<PumpOrder[]> { return req(`pumpfun/orders?limit=${limit}`) }
 export async function pumpfunAddWallet(wallet: string): Promise<{ ok: true; seeds: string[] }> { return write("pumpfun/wallets", "POST", { wallet, action: "add" }) }

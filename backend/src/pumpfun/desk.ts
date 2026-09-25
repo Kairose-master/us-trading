@@ -6,7 +6,7 @@ import { logger } from "../core/logger.js";
 import { PumpPortalFeed, type FeedEvent } from "./feed.js";
 import { PumpLedger, DEFAULT_LEDGER_COSTS, type LedgerCosts, type LedgerSnapshot } from "./ledger.js";
 import { applyOutcome, lotExits, onLeaderTrade, DEFAULT_COPY_POLICY, type CopyAction, type CopyPolicy, type Follow } from "./copy.js";
-import { initialStanding, scoreWallets, DEFAULT_THRESHOLDS, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
+import { initialStanding, scoreWallets, DEFAULT_THRESHOLDS, PROVISIONAL_STANDING, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
 import { parseTxDeltas, readCurve, waitForTx, walletSol } from "./solana-rpc.js";
 import { progress } from "./curve.js";
 import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
@@ -68,7 +68,7 @@ class PumpfunDesk extends EventEmitter {
   private st: State;
   /** 최근 48h 관측 거래 (지갑 채점용) */
   private trades: WalletTrade[] = [];
-  private lastScore: { ranked: WalletStats[]; eligible: WalletStats[]; at: string } | null = null;
+  private lastScore: { ranked: WalletStats[]; eligible: WalletStats[]; provisional: WalletStats[]; at: string } | null = null;
   private timers: NodeJS.Timeout[] = [];
   lastError: string | null = null;
   /** 이벤트 링 — 화면용 */
@@ -148,6 +148,8 @@ class PumpfunDesk extends EventEmitter {
     this.timers.push(setInterval(() => void this.tick(), 15_000));
     this.timers.push(setInterval(() => this.snapshotEquity(), EQUITY_SNAPSHOT_MS));
     this.timers.push(setInterval(() => this.rescore(), this.st.policy.rescoreMin * 60_000));
+    // 첫 채점은 기동 3분 뒤 — 30분을 빈손으로 기다리지 않게
+    setTimeout(() => { if (this.trades.length) this.rescore(); }, 3 * 60_000).unref();
     this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.syncWallet(); }, LIVE_SYNC_MS));
     this.timers.push(setInterval(() => void this.pollHeldCommunity(), 60_000));
     if (this.modeSt.mode === "real") { logger.warn("[pumpfun] REAL mode active", { wallet: this.modeSt.walletPubkey }); void this.syncWallet(); }
@@ -434,7 +436,7 @@ class PumpfunDesk extends EventEmitter {
   }
 
   /** 관측 거래로 지갑을 채점하고 추종 목록을 갱신 (수동 시드는 유지) */
-  rescore(): { ranked: WalletStats[]; eligible: WalletStats[]; at: string } {
+  rescore(): { ranked: WalletStats[]; eligible: WalletStats[]; provisional: WalletStats[]; at: string } {
     const cutoff = Date.now() - TRADE_BUFFER_H * 3_600_000;
     this.trades = this.trades.filter((t) => Date.parse(t.ts) >= cutoff);
     const r = scoreWallets(this.trades, this.st.thresholds);
@@ -444,14 +446,18 @@ class PumpfunDesk extends EventEmitter {
     const room = Math.max(0, this.st.policy.followMax - manual.size);
     const top = r.eligible.slice(0, room);
     const topScore = top[0]?.score ?? 0;
-    const keep = new Set<string>([...manual, ...top.map((w) => w.wallet)]);
+    // 정식 자격이 모자라면 잠정 지갑으로 절반까지 채운다 — 작게 시작하고 실기록이 결정한다
+    const provRoom = Math.max(0, Math.min(Math.floor(this.st.policy.followMax / 2), room - top.length));
+    const prov = r.provisional.slice(0, provRoom);
+    const keep = new Set<string>([...manual, ...top.map((w) => w.wallet), ...prov.map((w) => w.wallet)]);
     // 이미 추종 중이고 실기록이 있는 지갑은 채점에서 빠졌어도 유지 — 실기록(standing)이 판단한다. 굶으면 applyOutcome이 뺀다
     for (const [w, f] of Object.entries(this.st.follows)) if (f.closes > 0 && keep.size < this.st.policy.followMax) keep.add(w);
     for (const w of Object.keys(this.st.follows)) if (!keep.has(w)) delete this.st.follows[w];
     for (const w of top) if (!this.st.follows[w.wallet]) this.st.follows[w.wallet] = { wallet: w.wallet, standing: initialStanding(w, topScore), since: this.lastScore.at, source: "scored", closes: 0, wins: 0, cumPct: 0, returns: [] };
+    for (const w of prov) if (!this.st.follows[w.wallet]) this.st.follows[w.wallet] = { wallet: w.wallet, standing: PROVISIONAL_STANDING, since: this.lastScore.at, source: "scored", closes: 0, wins: 0, cumPct: 0, returns: [] };
     this.syncSubscriptions();
     this.save();
-    logger.info("[pumpfun] rescored", { trades: this.trades.length, wallets: r.ranked.length, eligible: r.eligible.length, following: Object.keys(this.st.follows).length });
+    logger.info("[pumpfun] rescored", { trades: this.trades.length, wallets: r.ranked.length, eligible: r.eligible.length, provisional: r.provisional.length, following: Object.keys(this.st.follows).length });
     return this.lastScore;
   }
 
@@ -498,7 +504,7 @@ class PumpfunDesk extends EventEmitter {
       paused: this.st.paused, pausedAt: this.st.pausedAt, pausedReason: this.st.pausedReason,
       policy: this.st.policy, thresholds: this.st.thresholds, costs: this.st.costs,
       discovery: Object.entries(this.st.discovery).map(([mint, d]) => ({ mint, until: d.until })),
-      tradeBuffer: { trades: this.trades.length, hours: TRADE_BUFFER_H, wallets: this.lastScore?.ranked.length ?? null, eligible: this.lastScore?.eligible.length ?? null, lastRescoreAt: this.st.lastRescoreAt },
+      tradeBuffer: { trades: this.trades.length, hours: TRADE_BUFFER_H, wallets: this.lastScore?.ranked.length ?? null, eligible: this.lastScore?.eligible.length ?? null, provisional: this.lastScore?.provisional.length ?? null, lastRescoreAt: this.st.lastRescoreAt },
       budget: { msgsPerDay: this.st.policy.meteredBudgetMsgsPerDay, solPerDay: +(this.st.policy.meteredBudgetMsgsPerDay * 0.01 / 10_000).toFixed(4), overBudget: this.overBudget() },
       community: { policy: communityDesk.policy, stats: communityDesk.stats, recent: communityDesk.recentReads(12).map((r) => ({ mint: r.facts.mint, symbol: r.facts.symbol, score: r.score, multiplier: r.multiplier, block: r.block, unknown: r.unknown, reasons: r.reasons, at: r.facts.fetchedAt, replyCount: r.facts.replyCount, telegramMembers: r.facts.telegramMembers, isLive: r.facts.isLive })) },
       stats: this.st.stats,
@@ -509,7 +515,7 @@ class PumpfunDesk extends EventEmitter {
     };
   }
   private communityOf(mint: string) { const r = communityDesk.cached(mint); return r ? { score: r.score, multiplier: r.multiplier, unknown: r.unknown, reasons: r.reasons, replyCount: r.facts.replyCount, telegramMembers: r.facts.telegramMembers, isLive: r.facts.isLive, creator: r.facts.creator } : null; }
-  candidates(limit = 50) { const s = this.lastScore ?? this.rescoreView(); return { at: s.at, ranked: s.ranked.slice(0, limit), eligible: s.eligible.slice(0, limit), thresholds: this.st.thresholds, trades: this.trades.length }; }
+  candidates(limit = 50) { const s = this.lastScore ?? this.rescoreView(); return { at: s.at, ranked: s.ranked.slice(0, limit), eligible: s.eligible.slice(0, limit), provisional: s.provisional.slice(0, limit), thresholds: this.st.thresholds, trades: this.trades.length }; }
   private rescoreView() { const r = scoreWallets(this.trades, this.st.thresholds); return { ...r, at: new Date().toISOString() }; }
   orders(limit = 200) { return this.ledger.orders.slice(-limit).reverse(); }
   events(limit = 100, kind?: FeedEvent["kind"]) { const list = kind ? this.recent.filter((e) => e.kind === kind) : this.recent; return list.slice(-limit).reverse(); }
