@@ -7,7 +7,7 @@ describe("liveBuySize", () => {
   it("caps by position, gross and wallet reserve, and refuses when the book is full", () => {
     expect(liveBuySize(P, 0.3, 2.5, 0, 0)).toEqual({ sol: 0.1, why: null });
     expect(liveBuySize(P, 0.3, 2.5, 0.95, 2).sol).toBeCloseTo(0.05);
-    expect(liveBuySize(P, 0.3, 0.04, 0, 0).sol).toBe(0);
+    expect(liveBuySize(P, 0.3, 0.03, 0, 0).sol).toBe(0); // 0.03 − 예비 0.02 − 수수료 < 최소 0.01
     expect(liveBuySize(P, 0.3, 2.5, 0, 5).why).toMatch(/maxLots/);
   });
 });

@@ -27,7 +27,7 @@ const STATE_FILE = join(DIR, "state.json");
 const EQUITY_FILE = join(DIR, "equity.jsonl");
 const TRADES_FILE = join(DIR, "trades.jsonl");
 const EQUITY_SNAPSHOT_MS = 5 * 60_000;
-const MARK_STALE_MS = 60_000;
+const MARK_STALE_MS = 10_000;
 const TRADE_BUFFER_H = 48;
 
 interface State {
@@ -42,6 +42,8 @@ interface State {
   day: { date: string; startEquitySol: number };
   lastRescoreAt: string | null;
   stats: { creates: number; migrations: number; tradesObserved: number; copies: number; exits: number };
+  /** 유료 메시지 카운터 — 재시작해도 오늘 예산이 이어지도록 */
+  metered?: { today: string; todayMsgs: number; totalMsgs: number };
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -73,6 +75,7 @@ class PumpfunDesk extends EventEmitter {
     this.ledger = PumpLedger.restore(this.st.ledger, this.st.costs);
     for (const w of seeds) if (!this.st.follows[w]) this.st.follows[w] = { wallet: w, standing: 0.5, since: new Date().toISOString(), source: "manual", closes: 0, wins: 0, cumPct: 0, returns: [] };
     this.loadTradeBuffer();
+    if (this.st.metered) this.feed.restoreMetered(this.st.metered);
     // 이벤트 핸들러는 기동 여부와 무관하게 건다 — 피드 연결만 start()가 한다 (테스트에서 합성 이벤트를 넣을 수 있게)
     this.feed.on("event", (ev: FeedEvent) => { try { this.onEvent(ev); } catch (e) { this.lastError = (e as Error).message; logger.warn("[pumpfun] event handling failed", { error: this.lastError, kind: ev.kind }); } });
     this.feed.on("open", () => this.syncSubscriptions());
@@ -87,6 +90,7 @@ class PumpfunDesk extends EventEmitter {
     try {
       mkdirSync(DIR, { recursive: true });
       this.st.ledger = this.ledger.snapshot();
+      const m = this.feed.status().metered; this.st.metered = { today: m.today, todayMsgs: m.todayMsgs, totalMsgs: m.totalMsgs };
       const tmp = `${STATE_FILE}.tmp`; writeFileSync(tmp, JSON.stringify(this.st)); renameSync(tmp, STATE_FILE);
     } catch (e) { logger.warn("[pumpfun] state save failed", { error: (e as Error).message }); }
   }
@@ -124,11 +128,17 @@ class PumpfunDesk extends EventEmitter {
     this.feed.unsubscribeAccounts([...haveAccounts].filter((w) => !wantAccounts.has(w)));
     const now = Date.now();
     for (const [mint, d] of Object.entries(this.st.discovery)) if (Date.parse(d.until) < now) delete this.st.discovery[mint];
-    const wantTokens = new Set([...this.ledger.heldMints(), ...Object.keys(this.st.discovery)]);
+    // 예산 초과 — 발견 창을 전부 닫는다. 추종 지갑(싸다)과 보유 토큰(필요하다)만 남긴다
+    if (this.overBudget() && Object.keys(this.st.discovery).length) { logger.warn("[pumpfun] metered budget exceeded — closing discovery windows", { today: this.feed.meteredToday(), budget: this.st.policy.meteredBudgetMsgsPerDay }); this.st.discovery = {}; }
+    // 보유 토큰: 커브 토큰은 무료 RPC 폴링(tick)으로 마킹하니 구독하지 않는다(정책 0). AMM 토큰은 무료 시세원이 없어 구독한다
+    const held = [...this.ledger.lots.values()].filter((l) => this.st.policy.subscribeHeldTokens >= 1 || l.pool !== "pump").map((l) => l.mint);
+    const wantTokens = new Set([...held, ...Object.keys(this.st.discovery)]);
     const haveTokens = new Set(this.feed.subscribedTokens());
     this.feed.subscribeTokens([...wantTokens].filter((m) => !haveTokens.has(m)));
     this.feed.unsubscribeTokens([...haveTokens].filter((m) => !wantTokens.has(m)));
   }
+
+  private overBudget(): boolean { return this.feed.meteredToday() >= this.st.policy.meteredBudgetMsgsPerDay; }
 
   // ===== 이벤트 =====
   private onEvent(ev: FeedEvent) {
@@ -143,8 +153,8 @@ class PumpfunDesk extends EventEmitter {
       this.st.stats.migrations += 1;
       this.recentMigrations.push(ev); if (this.recentMigrations.length > 100) this.recentMigrations.shift();
       this.appendJsonl(join(DIR, `events-${today()}.jsonl`), { k: "m", ts: ev.ts, mint: ev.mint, pool: ev.pool });
-      // 지갑 발견 창 — 졸업 토큰의 거래를 잠시 관측한다 (유료 스트림이라 창과 개수를 제한)
-      if (this.feed.hasKey && Object.keys(this.st.discovery).length < this.st.policy.discoveryMaxMints) {
+      // 지갑 발견 창 — 졸업 토큰의 거래를 잠시 관측한다 (유료 스트림이라 창·개수·일 예산으로 제한)
+      if (this.feed.hasKey && !this.overBudget() && Object.keys(this.st.discovery).length < this.st.policy.discoveryMaxMints) {
         this.st.discovery[ev.mint] = { until: new Date(Date.now() + this.st.policy.discoveryWindowMin * 60_000).toISOString(), symbol: "" };
         this.feed.subscribeTokens([ev.mint]);
       }
@@ -209,9 +219,9 @@ class PumpfunDesk extends EventEmitter {
     // 날짜 경계 — 일 손실 기준 갱신
     const d = today();
     if (this.st.day.date !== d) { this.st.day = { date: d, startEquitySol: this.ledger.equitySol() }; }
-    // 오래 마킹 안 된 커브 로트는 RPC로 읽어 마킹 (스트림이 끊겨도 포지션이 정직하게 평가되도록)
+    // 보유 커브 로트는 매 틱(15초) 무료 RPC로 커브 계정을 읽어 마킹한다 — 유료 거래 스트림을 구독하지 않아도 평가·손절이 돈다
     const stale = [...this.ledger.lots.values()].filter((l) => l.pool === "pump" && l.bondingCurveKey && Date.now() - Date.parse(l.markAt) > MARK_STALE_MS);
-    const keys = [...new Set(stale.map((l) => l.bondingCurveKey!))].slice(0, 6);
+    const keys = [...new Set(stale.map((l) => l.bondingCurveKey!))].slice(0, 12);
     for (const key of keys) {
       try {
         const c = await readCurve(key);
@@ -299,6 +309,7 @@ class PumpfunDesk extends EventEmitter {
       policy: this.st.policy, thresholds: this.st.thresholds, costs: this.st.costs,
       discovery: Object.entries(this.st.discovery).map(([mint, d]) => ({ mint, until: d.until })),
       tradeBuffer: { trades: this.trades.length, hours: TRADE_BUFFER_H, wallets: this.lastScore?.ranked.length ?? null, eligible: this.lastScore?.eligible.length ?? null, lastRescoreAt: this.st.lastRescoreAt },
+      budget: { msgsPerDay: this.st.policy.meteredBudgetMsgsPerDay, solPerDay: +(this.st.policy.meteredBudgetMsgsPerDay * 0.01 / 10_000).toFixed(4), overBudget: this.overBudget() },
       stats: this.st.stats,
       recentCreates: this.recentCreates.slice(-20).reverse(),
       recentMigrations: this.recentMigrations.slice(-20).reverse(),

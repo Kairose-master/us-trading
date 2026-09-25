@@ -35,7 +35,9 @@ export function normalize(raw: Raw, ts = new Date().toISOString()): FeedEvent | 
   return null;
 }
 
-export interface FeedStatus { url: string; connected: boolean; since: string | null; reconnects: number; messages: number; events: { create: number; trade: number; migrate: number }; lastMessageAt: string | null; lastError: string | null; metered: { hasKey: boolean; ok: boolean | null; note: string | null }; subscriptions: { tokens: number; accounts: number; newToken: boolean; migration: boolean } }
+/** PumpPortal 과금: 유료 구독(토큰·지갑 거래) 메시지 1만 건당 0.01 SOL */
+export const METERED_SOL_PER_MSG = 0.01 / 10_000;
+export interface FeedStatus { url: string; connected: boolean; since: string | null; reconnects: number; messages: number; events: { create: number; trade: number; migrate: number }; lastMessageAt: string | null; lastError: string | null; metered: { hasKey: boolean; ok: boolean | null; note: string | null; /** 오늘(UTC) 받은 유료 메시지 수와 추정 비용 — 돈이 타는 속도 */ today: string; todayMsgs: number; todaySol: number; totalMsgs: number; totalSol: number }; subscriptions: { tokens: number; accounts: number; newToken: boolean; migration: boolean } }
 
 export class PumpPortalFeed extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -49,10 +51,15 @@ export class PumpPortalFeed extends EventEmitter {
 
   constructor(private baseUrl: string, private apiKey: string) {
     super();
-    this.st = { url: baseUrl, connected: false, since: null, reconnects: 0, messages: 0, events: { create: 0, trade: 0, migrate: 0 }, lastMessageAt: null, lastError: null, metered: { hasKey: !!apiKey, ok: null, note: apiKey ? null : "no PUMPFUN_API_KEY — token/account trade streams unavailable (new-token + migration only)" }, subscriptions: { tokens: 0, accounts: 0, newToken: false, migration: false } };
+    this.st = { url: baseUrl, connected: false, since: null, reconnects: 0, messages: 0, events: { create: 0, trade: 0, migrate: 0 }, lastMessageAt: null, lastError: null, metered: { hasKey: !!apiKey, ok: null, note: apiKey ? null : "no PUMPFUN_API_KEY — token/account trade streams unavailable (new-token + migration only)", today: new Date().toISOString().slice(0, 10), todayMsgs: 0, todaySol: 0, totalMsgs: 0, totalSol: 0 }, subscriptions: { tokens: 0, accounts: 0, newToken: false, migration: false } };
   }
 
-  status(): FeedStatus { return { ...this.st, subscriptions: { tokens: this.tokenSubs.size, accounts: this.accountSubs.size, newToken: this.wantNewToken, migration: this.wantMigration } }; }
+  status(): FeedStatus { this.rollMeteredDay(); return { ...this.st, metered: { ...this.st.metered }, subscriptions: { tokens: this.tokenSubs.size, accounts: this.accountSubs.size, newToken: this.wantNewToken, migration: this.wantMigration } }; }
+  /** 오늘 받은 유료 메시지 수 — 데스크의 예산 게이트가 본다 */
+  meteredToday(): number { this.rollMeteredDay(); return this.st.metered.todayMsgs; }
+  /** 재시작 뒤 이어 세도록 데스크가 복원해 준다 */
+  restoreMetered(m: { today: string; todayMsgs: number; totalMsgs: number }) { this.st.metered.today = m.today; this.st.metered.todayMsgs = m.todayMsgs; this.st.metered.totalMsgs = m.totalMsgs; this.st.metered.todaySol = +(m.todayMsgs * METERED_SOL_PER_MSG).toFixed(5); this.st.metered.totalSol = +(m.totalMsgs * METERED_SOL_PER_MSG).toFixed(5); this.rollMeteredDay(); }
+  private rollMeteredDay() { const d = new Date().toISOString().slice(0, 10); if (this.st.metered.today !== d) { this.st.metered.today = d; this.st.metered.todayMsgs = 0; this.st.metered.todaySol = 0; } }
   get hasKey() { return !!this.apiKey; }
 
   start() { if (!this.stopped) return; this.stopped = false; this.connect(); }
@@ -114,6 +121,8 @@ export class PumpPortalFeed extends EventEmitter {
     const ev = normalize(raw);
     if (!ev) return;
     this.st.events[ev.kind] += 1;
+    // 거래 이벤트는 유료 구독(토큰·지갑)에서만 온다 — 그게 과금 단위
+    if (ev.kind === "trade") { this.rollMeteredDay(); const m = this.st.metered; m.todayMsgs += 1; m.totalMsgs += 1; m.todaySol = +(m.todayMsgs * METERED_SOL_PER_MSG).toFixed(5); m.totalSol = +(m.totalMsgs * METERED_SOL_PER_MSG).toFixed(5); }
     this.emit("event", ev);
   }
 }
