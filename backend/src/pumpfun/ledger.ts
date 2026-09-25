@@ -30,6 +30,8 @@ export interface Lot {
   /** 마지막으로 본 커브 상태 (AMM이면 null, 가격만) */
   curve: CurveState | null;
   lastPrice: number;
+  /** 최근 마킹 이력 (러그 감시 — 90초 안의 급락을 본다) */
+  marks?: Array<{ ts: number; markSol: number }>;
 }
 
 export interface PaperOrder {
@@ -192,6 +194,7 @@ export class PumpLedger {
       lot.markAt = ts;
       if (costUnknown && lot.markSol > 0) { lot.costSol = lot.markSol; lot.peakMarkSol = lot.markSol; lot.openedAt = ts; }
       lot.peakMarkSol = Math.max(lot.peakMarkSol, lot.markSol);
+      const t = Date.parse(ts) || Date.now(); const h = lot.marks ?? []; h.push({ ts: t, markSol: lot.markSol }); while (h.length && t - h[0].ts > 10 * 60_000) h.shift(); if (h.length > 60) h.splice(0, h.length - 60); lot.marks = h;
     }
   }
 }

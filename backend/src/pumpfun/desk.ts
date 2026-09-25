@@ -134,6 +134,8 @@ class PumpfunDesk extends EventEmitter {
     try { if (existsSync(LIVE_FILE)) live = JSON.parse(readFileSync(LIVE_FILE, "utf-8")) as LiveState; } catch (e) { logger.warn("[pumpfun] live ledger restore failed — fresh", { error: (e as Error).message }); }
     this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, syncedAt: null, startSol: null, since: null, stats: { buys: 0, sells: 0, failed: 0 } };
     this.liveSt.policy = { ...DEFAULT_LIVE_POLICY, ...this.liveSt.policy };
+    // 저장된 옛 기본값(25/100/20) → 러그 시장용 기본값으로 이전
+    if (this.liveSt.policy.maxPositionPct === 25 && this.liveSt.policy.grossMaxPct === 100) { this.liveSt.policy.maxPositionPct = DEFAULT_LIVE_POLICY.maxPositionPct; this.liveSt.policy.grossMaxPct = DEFAULT_LIVE_POLICY.grossMaxPct; if (this.liveSt.policy.dailyStopPct === 20) this.liveSt.policy.dailyStopPct = DEFAULT_LIVE_POLICY.dailyStopPct; }
     this.liveLedger = PumpLedger.restore(this.liveSt.ledger, this.st.costs);
     if (this.modeSt.mode === "real" && !this.feed.hasKey) { logger.warn("[pumpfun] real mode restored without PUMPFUN_API_KEY — falling back to paper"); this.modeSt.mode = "paper"; }
     // 이벤트 핸들러는 기동 여부와 무관하게 건다 — 피드 연결만 start()가 한다 (테스트에서 합성 이벤트를 넣을 수 있게)
@@ -222,7 +224,7 @@ class PumpfunDesk extends EventEmitter {
     this.recent.push(ev); if (this.recent.length > 300) this.recent.shift();
     if (ev.kind === "create") {
       this.st.stats.creates += 1;
-      communityDesk.noteLaunch(ev.creator, Date.parse(ev.ts) || Date.now());
+      communityDesk.noteLaunch(ev.creator, Date.parse(ev.ts) || Date.now(), ev.mint, ev.initialBuySol);
       this.recentCreates.push(ev); if (this.recentCreates.length > 100) this.recentCreates.shift();
       this.appendJsonl(join(DIR, `events-${today()}.jsonl`), { k: "c", ts: ev.ts, mint: ev.mint, sym: ev.symbol, creator: ev.creator, buySol: ev.initialBuySol, vSol: ev.vSol, mcap: ev.marketCapSol });
       return;

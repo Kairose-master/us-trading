@@ -27,8 +27,8 @@ export interface LivePolicy {
   /** 평가액이 이 아래인 로트는 팔지 않고 먼지로 지운다 — 수수료보다 싸다 (실측: 0.0007 SOL 짜리 매도가 시뮬레이션 실패로 219번 재시도됐다) */
   dustSol: number;
 }
-// 지갑에 든 돈 전부가 거래 자본이다 (owner 결정, 2026-09-25). 포지션당 25% × standing, 총 100%, 예비 0.02 SOL만 남긴다
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 25, grossMaxPct: 100, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 20, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003 };
+// 러그가 기본값인 시장 — 살아남는 건 손절이 아니라 크기다 (owner 합의, 2026-09-25 저녁). 포지션당 8% × standing(최대 16%), 총 60%, 일 손실 15%
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 15, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 

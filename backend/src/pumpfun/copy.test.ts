@@ -52,6 +52,18 @@ describe("lotExits", () => {
   });
 });
 
+describe("rug watch", () => {
+  it("sells immediately on a 50% drop inside 90 seconds, before the stop-loss would", () => {
+    const now = Date.now();
+    const l = lot({ markSol: 0.19, peakMarkSol: 0.2, marks: [{ ts: now - 60_000, markSol: 0.2 }, { ts: now - 10_000, markSol: 0.08 }] });
+    l.markSol = 0.08;
+    const r = lotExits([l], P, now);
+    expect(r[0]).toMatchObject({ type: "sell", reason: expect.stringMatching(/RUG WATCH/) });
+    const slow = lot({ markSol: 0.19, marks: [{ ts: now - 8 * 60_000, markSol: 0.4 }, { ts: now - 30_000, markSol: 0.2 }] });
+    expect(lotExits([slow], P, now)).toHaveLength(0); // 90초 창 안에서는 −5% 뿐 — 러그가 아니다
+  });
+});
+
 describe("applyOutcome", () => {
   it("raises standing on wins, lowers on losses, and drops a wallet that starves", () => {
     let f = follow;

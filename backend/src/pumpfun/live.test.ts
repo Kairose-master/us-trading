@@ -4,11 +4,11 @@ import { parseTxDeltas, type ParsedTx } from "./solana-rpc.js";
 import { PumpLedger } from "./ledger.js";
 
 describe("liveBuySize", () => {
-  it("sizes from the whole wallet: equity × pct × standing, capped by gross, wallet reserve and lot count", () => {
-    expect(liveBuySize(P, 2.5, 1, 2.5, 0, 0)).toEqual({ sol: 0.625, why: null }); // 2.5 × 25%
-    expect(liveBuySize(P, 2.5, 0.5, 2.5, 0, 0).sol).toBeCloseTo(0.3125); // standing 0.5
-    expect(liveBuySize(P, 2.5, 2, 2.5, 0, 0).sol).toBeCloseTo(1.25); // standing 2 → 50%
-    expect(liveBuySize(P, 2.5, 1, 0.5, 2.0, 3).sol).toBeCloseTo(0.4795); // 지갑 0.5 − 예비 0.02 − 수수료
+  it("sizes by equity × pct × standing (8% default — rug-sized), capped by gross, wallet reserve and lot count", () => {
+    expect(liveBuySize(P, 2.5, 1, 2.5, 0, 0)).toEqual({ sol: 0.2, why: null }); // 2.5 × 8%
+    expect(liveBuySize(P, 2.5, 0.5, 2.5, 0, 0).sol).toBeCloseTo(0.1); // standing 0.5
+    expect(liveBuySize(P, 2.5, 2, 2.5, 0, 0).sol).toBeCloseTo(0.4); // standing 2 → 16%
+    expect(liveBuySize(P, 2.5, 1, 2.5, 1.45, 3).sol).toBeCloseTo(0.05); // 총노출 60% = 1.5 → 남은 0.05
     expect(liveBuySize(P, 2.5, 1, 0.03, 0, 0).sol).toBe(0); // 예비 아래
     expect(liveBuySize({ ...P, maxPositionSol: 0.1 }, 2.5, 1, 2.5, 0, 0).sol).toBe(0.1); // 절대 상한을 켜면 그것
     expect(liveBuySize(P, 2.5, 1, 2.5, 0, 50).sol).toBeGreaterThan(0); // 기본 0 = 개수 제한 없음

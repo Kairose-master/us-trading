@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scoreCommunity, CommunityDesk, type CommunityFacts } from "./community.js";
 
-const facts = (over: Partial<CommunityFacts> = {}): CommunityFacts => ({ mint: "m", fetchedAt: "t", ok: true, symbol: "X", creator: "C", ageMin: 30, replyCount: 0, replyPerMin: null, kothMinAgo: null, twitter: null, telegram: null, website: null, telegramMembers: null, isLive: false, mcapUsd: 10_000, athMcapUsd: 12_000, fromAth: 0.83, securityVerdict: "allow", complete: false, top10Share: null, creatorLaunches48h: 1, ...over });
+const facts = (over: Partial<CommunityFacts> = {}): CommunityFacts => ({ mint: "m", fetchedAt: "t", ok: true, symbol: "X", creator: "C", ageMin: 30, replyCount: 0, replyPerMin: null, kothMinAgo: null, twitter: null, telegram: null, website: null, telegramMembers: null, isLive: false, mcapUsd: 10_000, athMcapUsd: 12_000, fromAth: 0.83, securityVerdict: "allow", complete: false, top10Share: null, creatorLaunches48h: 1, creatorSharePct: null, creatorInitialBuySol: null, ...over });
 
 describe("scoreCommunity", () => {
   it("a bare token with no socials and no replies after 10 minutes is skipped", () => {
@@ -29,6 +29,17 @@ describe("scoreCommunity", () => {
   it("gate can be switched off: score still computed, never blocks", () => {
     const r = scoreCommunity(facts({ fromAth: 0.1 }), { minScore: 40, gate: 0 });
     expect(r.block).toBe(false); expect(r.multiplier).toBe(0.5);
+  });
+});
+
+describe("rug watch", () => {
+  it("blocks a creator holding ≥10% or a ≥5 SOL bundled launch, and penalises smaller versions", () => {
+    const good = facts({ twitter: "x", telegram: "t", replyCount: 60 });
+    expect(scoreCommunity(good).score).toBe(85);
+    expect(scoreCommunity({ ...good, creatorSharePct: 12 }).block).toBe(true);
+    expect(scoreCommunity({ ...good, creatorInitialBuySol: 6 }).block).toBe(true);
+    expect(scoreCommunity({ ...good, creatorSharePct: 5 }).score).toBe(65);
+    expect(scoreCommunity({ ...good, creatorInitialBuySol: 2.5 }).score).toBe(70);
   });
 });
 

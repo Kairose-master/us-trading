@@ -46,6 +46,9 @@ export interface CopyPolicy {
   minLeaderHoldMin: number;
   /** 우리가 같은 토큰을 청산한 뒤 재진입 금지(분) */
   reentryCooldownMin: number;
+  /** 러그 감시 — 90초 안에 평가액이 이만큼(%) 빠지면 손절선과 무관하게 즉시 전량 (실측: 러그는 2분 안에 −99%) */
+  crashPct: number;
+  crashWindowSec: number;
   /** 1 = 추종 지갑 매수를 직접 따라 산다(구 방식). 0 = 표(copy vote)로만 쓴다 — 복합 결정이 산다 */
   directCopy: number;
   /** 유료 스트림을 걸 후보 토큰 수 (복합 엔진의 흐름 신호용) */
@@ -58,7 +61,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, stopLossPct: 35, trailingPct: 30, followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 20, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, crashPct: 50, crashWindowSec: 90 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 
@@ -117,7 +120,11 @@ export function lotExits(lots: Lot[], p: CopyPolicy, now = Date.now()): CopyActi
     const pnlPct = l.costSol > 0 ? ((l.markSol - l.costSol) / l.costSol) * 100 : 0;
     const peakPct = l.costSol > 0 ? ((l.peakMarkSol - l.costSol) / l.costSol) * 100 : 0;
     const fromPeak = l.peakMarkSol > 0 ? ((l.markSol - l.peakMarkSol) / l.peakMarkSol) * 100 : 0;
-    if (pnlPct <= -p.stopLossPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `stop-loss ${pnlPct.toFixed(1)}%` });
+    // 러그 감시 — 짧은 창 안의 급락은 손절선보다 먼저 본다
+    const ref = (l.marks ?? []).find((m) => now - m.ts <= p.crashWindowSec * 1000 && now - m.ts >= 5_000);
+    const crash = ref && ref.markSol > 0 ? ((l.markSol - ref.markSol) / ref.markSol) * 100 : 0;
+    if (crash <= -p.crashPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG WATCH: ${crash.toFixed(0)}% in ${((now - ref!.ts) / 1000).toFixed(0)}s` });
+    else if (pnlPct <= -p.stopLossPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `stop-loss ${pnlPct.toFixed(1)}%` });
     else if (peakPct >= 20 && fromPeak <= -p.trailingPct) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `trailing: ${fromPeak.toFixed(1)}% from peak (+${peakPct.toFixed(0)}%)` });
     else if (holdMin >= p.maxHoldMin) out.push({ type: "sell", lotId: l.id, fraction: 1, reason: `time stop ${holdMin.toFixed(0)}m` });
   }
