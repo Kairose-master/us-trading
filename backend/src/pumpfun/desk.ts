@@ -113,6 +113,8 @@ class PumpfunDesk extends EventEmitter {
     this.st = restored ?? { ledger: new PumpLedger(config.PUMPFUN_PAPER_START_SOL).snapshot(), follows: {}, seeds, paused: false, pausedAt: null, pausedReason: null, policy: DEFAULT_COPY_POLICY, thresholds: DEFAULT_THRESHOLDS, costs: DEFAULT_LEDGER_COSTS, discovery: {}, day: { date: today(), startEquitySol: config.PUMPFUN_PAPER_START_SOL }, lastRescoreAt: null, stats: { creates: 0, migrations: 0, tradesObserved: 0, copies: 0, exits: 0 } };
     this.st.seeds = seeds;
     this.st.policy = { ...DEFAULT_COPY_POLICY, ...this.st.policy };
+    // 저장된 정책의 옛 기본값 이전 — 예산 2만 건은 흐름 엔진을 굶긴다 (실측: 후보 구독 0, flow 전부 기권)
+    if (this.st.policy.meteredBudgetMsgsPerDay === 20_000) this.st.policy.meteredBudgetMsgsPerDay = DEFAULT_COPY_POLICY.meteredBudgetMsgsPerDay;
     this.st.thresholds = { ...DEFAULT_THRESHOLDS, ...this.st.thresholds };
     this.st.costs = { ...DEFAULT_LEDGER_COSTS, ...this.st.costs };
     this.ledger = PumpLedger.restore(this.st.ledger, this.st.costs);
