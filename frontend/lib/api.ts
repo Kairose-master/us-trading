@@ -907,6 +907,7 @@ export interface PumpStatus {
   ledger: { startSol: number; since: string; cashSol: number; positionsSol: number; equitySol: number; returnPct: number; lots: PumpLot[]; day: { date: string; startEquitySol: number }; dayPct: number }
   follows: PumpFollow[]
   seeds: string[]
+  protectedMints: string[]
   paused: boolean; pausedAt: string | null; pausedReason: string | null
   policy: PumpPolicy
   thresholds: { minRoundTrips: number; minMints: number; minMedianPnlPct: number; minWinRate: number }

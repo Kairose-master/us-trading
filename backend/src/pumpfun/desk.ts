@@ -248,6 +248,9 @@ class PumpfunDesk extends EventEmitter {
   private elasticFlowMax = 0;
 
   private overBudget(): boolean { return this.feed.meteredToday() >= this.st.policy.meteredBudgetMsgsPerDay; }
+  /** 보호 종목 — 봇이 절대 사고팔지 않고 편입도 안 한다: 대시보드로 발행한 mint + config 목록(스크립트 발행 SCAM·수동 보유분) */
+  private protectedMints = new Set<string>(config.PUMPFUN_PROTECTED_MINTS);
+  isProtectedMint(mint: string): boolean { return launchDesk.isOwnMint(mint) || this.protectedMints.has(mint); }
 
   // ===== 이벤트 =====
   private onEvent(ev: FeedEvent) {
@@ -340,7 +343,7 @@ class PumpfunDesk extends EventEmitter {
     const mints = [...new Set([...this.flowCandidates().slice(0, 20).map((c) => c.mint), ...heldMints])];
     let reads = 0;
     for (const mint of mints) {
-      if (launchDesk.isOwnMint(mint)) continue; // 우리 코인은 복합 결정에서도 제외 — 이해충돌
+      if (this.isProtectedMint(mint)) continue; // 보호 종목(SCAM·수동 보유)은 복합 결정에서 제외 — 이해충돌
       const cand = this.screen.get(mint);
       const flow = this.flowTrades.has(mint) ? flowRead(mint, this.flowTrades.get(mint)!, now, rankedScore) : null;
       const mom = cand ? momentumRead(mint, cand.snaps, now, cand.migratedAt) : null;
@@ -383,7 +386,7 @@ class PumpfunDesk extends EventEmitter {
   }
   /** 카피 매수 — 커뮤니티를 읽어(캐시 60s) 크기를 곱하거나 거른다. 데이터가 없으면 ×0.75 (모른다 ≠ 양성) */
   private async copyBuy(a: Extract<CopyAction, { type: "buy" }>, ev: Extract<FeedEvent, { kind: "trade" }>, target: "paper" | "live") {
-    if (launchDesk.isOwnMint(ev.mint)) return; // 우리가 만든 코인은 우리가 사지 않는다
+    if (this.isProtectedMint(ev.mint)) return; // 보호 종목은 우리가 사지 않는다
     let read: CommunityRead;
     try { read = await communityDesk.read(ev.mint); } catch (e) { logger.warn("[pumpfun] community read threw", { error: (e as Error).message }); return; }
     if (read.block) { if (target === "paper") logger.info("[pumpfun] copy buy skipped by community gate", { mint: ev.mint.slice(0, 8), score: read.score, why: read.reasons.slice(-2) }); return; }
@@ -532,7 +535,11 @@ class PumpfunDesk extends EventEmitter {
     try { held = await walletTokenBalances(this.modeSt.walletPubkey); } catch (e) { this.liveError = `reconcile: ${(e as Error).message}`; return out; }
     // 접미사로 거르지 않는다 — pump.fun 토큰이 전부 "…pump" 로 끝나지는 않는다 (실측: CvUX… 가 편입에서 빠졌다). 잔고 1 초과면 전부 본다
     const onChain = new Map(held.filter((h) => h.amount > 1).map((h) => [h.mint, h.amount]));
+    // 이미 편입돼 있던 보호 종목은 장부에서 방출한다 — 팔지 않고 (수동 보유로) 봇 장부에서만 제거
+    for (const lot of [...this.liveLedger.lots.values()]) if (this.isProtectedMint(lot.mint)) { this.liveLedger.closeFromFill(lot.id, lot.tokens, lot.markSol, "released — protected mint, held manually", ""); out.closed.push(lot.mint); }
+    for (const lot of [...this.ledger.lots.values()]) if (this.isProtectedMint(lot.mint)) this.ledger.sell(lot.id, 1, "released — protected mint");
     for (const [mint, amount] of onChain) {
+      if (this.isProtectedMint(mint)) continue; // 보호 종목은 편입하지 않는다 — 봇 장부 밖에 둔다 (수동 관리)
       const lots = this.liveLedger.lotsOf(mint);
       if (lots.length) continue;
       if (this.inflight.has(`buy:${mint}`)) continue;
@@ -771,6 +778,7 @@ class PumpfunDesk extends EventEmitter {
       ledger: { startSol: this.ledger.startSol, since: this.ledger.since, cashSol: +this.ledger.cashSol.toFixed(6), positionsSol: +this.ledger.positionsSol().toFixed(6), equitySol: +eq.toFixed(6), returnPct: this.ledger.startSol > 0 ? +(((eq - this.ledger.startSol) / this.ledger.startSol) * 100).toFixed(2) : 0, lots, day: this.st.day, dayPct: this.st.day.startEquitySol > 0 ? +(((eq - this.st.day.startEquitySol) / this.st.day.startEquitySol) * 100).toFixed(2) : 0 },
       follows: Object.values(this.st.follows).map((f) => ({ ...f, returns: undefined, hitRate: f.closes ? +(f.wins / f.closes).toFixed(2) : null, openLots: [...this.ledger.lots.values()].filter((l) => l.via === f.wallet).length })).sort((a, b) => b.standing - a.standing),
       seeds: this.st.seeds,
+      protectedMints: [...this.protectedMints, ...(launchDesk.ownMint() ? [launchDesk.ownMint()] : [])],
       paused: this.st.paused, pausedAt: this.st.pausedAt, pausedReason: this.st.pausedReason,
       policy: this.st.policy, thresholds: this.st.thresholds, costs: this.st.costs,
       discovery: Object.entries(this.st.discovery).map(([mint, d]) => ({ mint, until: d.until })),

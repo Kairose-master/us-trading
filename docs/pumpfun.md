@@ -385,6 +385,13 @@ trust404-prover.vercel.app) — 취약 컨트랙트 12개(재진입·접근제�
   이제 평가액이 `dustSol` 미만이면 0 포함해서 체인에 안 보내고 장부에서만 지운다.
 - **진입 문턱**: 실매수가 드물어(2건) `enterScore` 65 → 58, `exitScore` 35 → 32. 핵심 엔진 2개 요구는 유지(커뮤니티 단독 진입 방지). 저장된 65/35 는 부팅 때 이전.
 
+### 보호 종목 — SCAM 은 봇이 건드리지 않는다 (2026-09-25 밤)
+
+SCAM 은 스크립트로 발행됐고(mint `HvyZww…`, 14:45) 창설 매수 이후 수동으로 더 샀다. 스크립트 발행이라 대시보드 `launchDesk` 는 이 mint 를 몰라 `isOwnMint` 로 안 걸렸다.
+그래서 **보호 목록**(`PUMPFUN_PROTECTED_MINTS`, 기본에 SCAM mint 포함)을 뒀다. `isProtectedMint(mint)` = 대시보드 발행 mint ∪ 보호 목록. 보호 종목은:
+매수 안 함(카피·복합), 편입 안 함(reconcile 건너뜀), 이미 편입돼 있으면 팔지 않고 장부에서 방출(수동 보유로). 수동 매매는 owner 가 지갑에서 직접 한다.
+`GET /pumpfun`.protectedMints 로 확인, 추가는 env 콤마 목록.
+
 ### 아직 없는 것 (다음)
 
 - (완료 → 복합 결정의 momentum 엔진) ④ KOTH · ⑤ 졸업 직후 모멘텀.

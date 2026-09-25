@@ -75,6 +75,8 @@ const Env = z.object({
   DASHBOARD_URL: z.string().default("https://us-trading-dashboard.vercel.app"),
   // SCAM 박물관 사이트 (Kairose-master/MemeCoin, Vercel) — 토큰 이미지·메타데이터의 기준
   SCAM_SITE_URL: z.string().default("https://scam-museum-snowy.vercel.app"),
+  // 보호 종목 — 봇이 절대 사고팔지 않고 편입도 안 하는 mint 목록(콤마). 우리가 발행/보유한 SCAM 등. 기본에 스크립트로 발행한 SCAM mint 포함
+  PUMPFUN_PROTECTED_MINTS: z.string().default("HvyZwwPJhPp5mxkr48SmGt7b5p2Tqrwzyjf6sT5JpMBV").transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean)),
   // ===== 거래소 아웃바운드 고정 IP 프록시 (src/core/egress.ts) =====
   // Fixie 등 HTTP 프록시 URL(http://user:pw@host:port). 비우면 전부 직접 호출.
   EXCHANGE_PROXY_URL: z.string().default(""),
