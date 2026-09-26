@@ -73,6 +73,8 @@ interface State {
   ensemble?: EnsemblePolicy;
   /** 로트별 진입 표 — 청산 때 엔진 귀속에 쓴다 */
   entryVotes?: Record<string, Vote[]>;
+  /** 확신 집중 기본 ON 이전을 한 번만 적용했는지 — 이후 owner 가 끄면 부팅 때 다시 켜지 않는다 */
+  convictionDefaultOn?: boolean;
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -131,6 +133,8 @@ class PumpfunDesk extends EventEmitter {
     if (this.st.ensemble.enterScore === 65) this.st.ensemble.enterScore = DEFAULT_ENSEMBLE_POLICY.enterScore;
     if (this.st.ensemble.exitScore === 35) this.st.ensemble.exitScore = DEFAULT_ENSEMBLE_POLICY.exitScore;
     this.st.entryVotes ??= {};
+    // 확신 집중(몰빵)을 기본 정책으로 — owner 실측(분산보다 한 종목 집중 + 커브 초반 슬리피지 이점). 저장된 OFF 를 한 번만 ON 으로 이전
+    if (!this.st.convictionDefaultOn) { this.st.policy.convictionMode = DEFAULT_COPY_POLICY.convictionMode; this.st.convictionDefaultOn = true; }
     // 실모드 상태 복원
     try { if (existsSync(MODE_FILE)) this.modeSt = { ...this.modeSt, ...(JSON.parse(readFileSync(MODE_FILE, "utf-8")) as ModeState) }; } catch (e) { logger.warn("[pumpfun] mode restore failed — paper", { error: (e as Error).message }); }
     if (!this.modeSt.walletPubkey && config.PUMPFUN_WALLET_PUBKEY) this.modeSt.walletPubkey = config.PUMPFUN_WALLET_PUBKEY;

@@ -395,13 +395,13 @@ SCAM 은 스크립트로 발행됐고(mint `HvyZww…`, 14:45) 창설 매수 이
 ### 확신 집중 모드 — 분산 대신 몰빵 (2026-09-26, owner 실측)
 
 owner 실측: 여러 종목에 작게 분산하는 것보다 "될 것 같은 차트 하나에 몰빵 + 커브 초반 슬리피지 이점"이 수익이 잘 났다. 꼬리가 두꺼운 시장에선 근거 있는 관찰이다
-(분산은 평균으로 수렴 → 대부분 0인 시장에선 평균도 낮다). 그래서 **옵트인** 모드로 넣었다(`convictionMode`, 기본 OFF):
+(분산은 평균으로 수렴 → 대부분 0인 시장에선 평균도 낮다). 처음엔 **옵트인**(`convictionMode`, 기본 OFF)으로 넣었다가 owner 지시로 **기본 ON**으로 바꿨다(2026-09-26, 저장된 OFF 도 부팅 때 한 번 ON 으로 이전 — `convictionDefaultOn` 플래그라 이후 owner 가 끄면 유지):
 - ON 이면 매 평가에서 진입 자격 후보를 점수순 정렬해 **최상위 `maxConvictionLots`(기본 1)개**, 그것도 점수 ≥ `convictionMinScore`(68) 인 것에만 산다. 나머지 자격 후보는 버린다.
 - 크기는 basePct 가 아니라 `convictionPct`(기본 40% × sizeMult). 실모드도 같은 %로.
 - 로트 태그 `rule:conviction`. 청산 규칙은 그대로 겹친다 — **러그 감시(90초 −50%)·손절(−35%)·익절 사다리·흐름 반전이 몰빵에서도 산다.** 이게 몰빵을 살아남게 하는 유일한 이유다.
 
 정직한 경고(문서에 남긴다): 몰빵은 우리가 만든 러그 방어(작은 크기)를 정면으로 거스른다. 한 번의 러그가 그날 수익을 전부 지운다. 실측 표본이 작고 생존편향이 있다.
-그래서 기본 OFF 이고, 켤 때도 `maxConvictionLots`·`convictionPct`·`convictionMinScore` 로 강도를 조절한다. Railway 에서 `PUMPFUN_*` 정책이 아니라 `POST /pumpfun/policy {convictionMode:1, convictionPct:40, ...}` 로 켠다.
+강도는 `maxConvictionLots`·`convictionPct`·`convictionMinScore` 로 조절하고, 끄려면 `POST /pumpfun/policy {convictionMode:0}`.
 
 ### USDC 를 자본으로 계상 + 잔액조회 버그 (2026-09-26)
 
