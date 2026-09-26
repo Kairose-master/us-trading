@@ -134,6 +134,8 @@ class PumpfunDesk extends EventEmitter {
     if (this.st.ensemble.exitScore === 35) this.st.ensemble.exitScore = DEFAULT_ENSEMBLE_POLICY.exitScore;
     this.st.entryVotes ??= {};
     // 확신 집중(몰빵)을 기본 정책으로 — owner 실측(분산보다 한 종목 집중 + 커브 초반 슬리피지 이점). 저장된 OFF 를 한 번만 ON 으로 이전
+    // 확신 최소 점수가 진입 문턱(58)보다 높으면(옛 68) 자격 후보를 대부분 버려 매수가 안 나간다 — 진입 문턱에 맞춘다
+    if (this.st.policy.convictionMinScore === 68) this.st.policy.convictionMinScore = DEFAULT_COPY_POLICY.convictionMinScore;
     if (!this.st.convictionDefaultOn) { this.st.policy.convictionMode = DEFAULT_COPY_POLICY.convictionMode; this.st.convictionDefaultOn = true; }
     // 실모드 상태 복원
     try { if (existsSync(MODE_FILE)) this.modeSt = { ...this.modeSt, ...(JSON.parse(readFileSync(MODE_FILE, "utf-8")) as ModeState) }; } catch (e) { logger.warn("[pumpfun] mode restore failed — paper", { error: (e as Error).message }); }
@@ -240,7 +242,10 @@ class PumpfunDesk extends EventEmitter {
     const rate = this.feed.msgsPerMin();
     const ratio = pacePerMin > 0 ? rate / pacePerMin : 1;
     // ratio ≤ 1 이면 최대(flowMaxMints), 2배면 0 — 선형으로 줄이고 최소 0
-    const elasticMax = Math.max(0, Math.round(this.st.policy.flowMaxMints * Math.min(1, Math.max(0, 2 - ratio))));
+    // 바닥 2개 — 0 까지 내리면 흐름 엔진이 전부 기권해 "핵심 엔진 2개" 조건을 못 채워 매수가 영영 안 나간다(실측).
+    // 비용의 하드 캡은 하루 예산(overBudget)이 따로 건다. owner 는 지켜볼 때만 돌리니 24시간 균등 페이스보다 신호가 우선
+    const floor = Math.min(2, this.st.policy.flowMaxMints);
+    const elasticMax = Math.max(floor, Math.round(this.st.policy.flowMaxMints * Math.min(1, Math.max(0, 2 - ratio))));
     this.elasticFlowMax = elasticMax;
     // 복합 엔진 후보 — 무료 스냅샷 모멘텀 상위, 폭주·쿨다운 토큰은 빼고, 탄력 개수만큼만 유료 스트림 (예산 초과면 0)
     const flowMints = this.overBudget() ? [] : this.flowCandidates().filter((c) => !this.floodBlock.has(c.mint)).slice(0, elasticMax).map((c) => c.mint);
@@ -252,6 +257,14 @@ class PumpfunDesk extends EventEmitter {
   /** 폭주로 끊긴 토큰 → 재구독 금지 만료 시각 */
   private floodBlock = new Map<string, number>();
   private elasticFlowMax = 0;
+  /** 매수가 안 나간 이유 — 최근 것만. 화면의 "왜 안 샀나" */
+  private buyBlocks: Array<{ ts: string; mint: string; why: string }> = [];
+  private noteBlock(mint: string, why: string) {
+    const last = this.buyBlocks[this.buyBlocks.length - 1];
+    if (last && last.mint === mint && last.why === why && Date.now() - Date.parse(last.ts) < 60_000) return;
+    this.buyBlocks.push({ ts: new Date().toISOString(), mint, why });
+    if (this.buyBlocks.length > 30) this.buyBlocks.shift();
+  }
 
   private overBudget(): boolean { return this.feed.meteredToday() >= this.st.policy.meteredBudgetMsgsPerDay; }
   /** 보호 종목 — 봇이 절대 사고팔지 않고 편입도 안 한다: 대시보드로 발행한 mint + config 목록(스크립트 발행 SCAM·수동 보유분) */
@@ -368,6 +381,7 @@ class PumpfunDesk extends EventEmitter {
       const r = ensemble(mint, votes, W, P, held, comm, flow, mom, heldPnl);
       this.lastEnsemble.set(mint, r); this.ensembleStats.evaluations += 1;
       if (r.action === "enter" && !this.st.paused) { entries.push({ mint, r, votes }); }
+      else if (r.action === "enter") this.noteBlock(mint, `paused — ${this.st.pausedReason ?? ""}`.trim());
       else if (r.action === "exit") {
         this.ensembleStats.exits += 1;
         for (const l of this.ledger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "rule:conviction") this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
@@ -377,16 +391,27 @@ class PumpfunDesk extends EventEmitter {
     // 진입 집행 — 기본은 자격 후보를 각각 basePct 로. 확신 집중 모드면 점수 최상위 하나(들)에만 크게 몰고 나머지는 버린다
     entries.sort((a, b) => b.r.score - a.r.score);
     const conv = this.st.policy;
+    if (!entries.length && !this.st.paused) {
+      // 진입 자격 후보가 하나도 없다 — 가장 가까웠던 후보(미보유 최고점)의 이유를 남긴다
+      const best = [...this.lastEnsemble.values()].filter((r) => r.action === "none").sort((a, b) => b.score - a.score)[0];
+      if (best) this.noteBlock(best.mint, `no entry: ${best.why}`);
+    }
     if (conv.convictionMode >= 1) {
-      const openConv = [...this.liveLedger.lots.values(), ...this.ledger.lots.values()].filter((l) => l.via === "rule:conviction").length;
-      const slots = Math.max(0, conv.maxConvictionLots - openConv);
-      const picks = entries.filter((e) => e.r.score >= conv.convictionMinScore && !e.r.blocked).slice(0, slots);
-      for (const e of picks) {
-        const solIn = +(this.ledger.equitySol() * (conv.convictionPct / 100) * e.r.sizeMult).toFixed(6);
-        const a = { type: "buy" as const, mint: e.mint, solIn, via: "rule:conviction", reason: `CONVICTION ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` };
-        const lotId = this.apply(a);
+      const minScore = conv.convictionMinScore;
+      const eligible = entries.filter((e) => e.r.score >= minScore && !e.r.blocked);
+      if (entries.length && !eligible.length) this.noteBlock(entries[0].mint, `conviction: top score ${entries[0].r.score} < ${minScore}`);
+      // 슬롯은 장부별로 센다 — 페이퍼 로트가 실 슬롯을 막으면 안 된다(버그: 실매수가 실패해도 페이퍼는 열려 실 슬롯이 영영 막혔다)
+      const convOpen = (lots: Iterable<{ via: string }>) => [...lots].filter((l) => l.via === "rule:conviction").length;
+      const paperSlots = Math.max(0, conv.maxConvictionLots - convOpen(this.ledger.lots.values()));
+      const liveSlots = Math.max(0, conv.maxConvictionLots - convOpen(this.liveLedger.lots.values()));
+      const mk = (e: (typeof entries)[number]) => ({ type: "buy" as const, mint: e.mint, solIn: +(this.ledger.equitySol() * (conv.convictionPct / 100) * e.r.sizeMult).toFixed(6), via: "rule:conviction", reason: `CONVICTION ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` });
+      for (const e of eligible.slice(0, paperSlots)) {
+        const lotId = this.apply(mk(e));
         if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
-        if (this.modeSt.mode === "real") void this.applyLive(a, undefined, e.r.sizeMult, 1, conv.convictionPct);
+      }
+      if (this.modeSt.mode === "real") {
+        if (eligible.length && !liveSlots) this.noteBlock(eligible[0].mint, `conviction: live slot full (${conv.maxConvictionLots} open)`);
+        for (const e of eligible.slice(0, liveSlots)) void this.applyLive(mk(e), undefined, e.r.sizeMult, 1, conv.convictionPct);
       }
     } else {
       for (const e of entries) {
@@ -401,7 +426,7 @@ class PumpfunDesk extends EventEmitter {
   }
   ensembleStatus() {
     const list = [...this.lastEnsemble.values()].sort((a, b) => b.score - a.score).slice(0, 20).map((r) => ({ mint: r.mint, symbol: this.screen.get(r.mint)?.symbol ?? null, score: r.score, action: r.action, why: r.why, blocked: r.blocked, sizeMult: r.sizeMult, votes: r.votes.map((v) => ({ engine: v.engine, score: v.score, abstain: v.abstain, why: v.why.slice(0, 3) })), streamed: this.feed.subscribedTokens().includes(r.mint), held: this.ledger.lotsOf(r.mint).length + this.liveLedger.lotsOf(r.mint).length }));
-    return { weights: this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, policy: this.st.ensemble ?? DEFAULT_ENSEMBLE_POLICY, directCopy: this.st.policy.directCopy, flowMaxMints: this.st.policy.flowMaxMints, conviction: { mode: this.st.policy.convictionMode, pct: this.st.policy.convictionPct, minScore: this.st.policy.convictionMinScore, maxLots: this.st.policy.maxConvictionLots, open: [...this.liveLedger.lots.values(), ...this.ledger.lots.values()].filter((l) => l.via === "rule:conviction").length }, elastic: { msgsPerMin: this.feed.msgsPerMin(), pacePerMin: Math.round(this.st.policy.meteredBudgetMsgsPerDay / 1440), activeFlowMax: this.elasticFlowMax, floodBlocked: this.floodBlock.size, topMintRates: this.feed.mintRates().slice(0, 5) }, screen: { candidates: this.screen.candidates().length, lastPollAt: this.screen.lastPollAt, ...this.screen.stats }, stats: this.ensembleStats, candidates: list };
+    return { weights: this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, policy: this.st.ensemble ?? DEFAULT_ENSEMBLE_POLICY, directCopy: this.st.policy.directCopy, flowMaxMints: this.st.policy.flowMaxMints, conviction: { mode: this.st.policy.convictionMode, pct: this.st.policy.convictionPct, minScore: this.st.policy.convictionMinScore, maxLots: this.st.policy.maxConvictionLots, open: [...this.liveLedger.lots.values(), ...this.ledger.lots.values()].filter((l) => l.via === "rule:conviction").length }, elastic: { msgsPerMin: this.feed.msgsPerMin(), pacePerMin: Math.round(this.st.policy.meteredBudgetMsgsPerDay / 1440), activeFlowMax: this.elasticFlowMax, floodBlocked: this.floodBlock.size, topMintRates: this.feed.mintRates().slice(0, 5) }, screen: { candidates: this.screen.candidates().length, lastPollAt: this.screen.lastPollAt, ...this.screen.stats }, stats: this.ensembleStats, blocks: this.buyBlocks.slice(-15).reverse(), candidates: list };
   }
   /** 보유 토큰(페이퍼·실)의 creator 지갑들 — 커뮤니티 읽기에 creator 가 있을 때만 */
   private heldCreators(): Set<string> {
@@ -472,7 +497,7 @@ class PumpfunDesk extends EventEmitter {
     const P = this.liveSt.policy;
     if (a.type === "buy") {
       const q = ev ? this.quoteFromEvent(ev) : this.lastQuote.get(a.mint) ?? this.quoteFromCandidate(a.mint);
-      if (!q) { logger.warn("[pumpfun] live buy: no quote", { mint: a.mint }); return; }
+      if (!q) { logger.warn("[pumpfun] live buy: no quote", { mint: a.mint }); this.noteBlock(a.mint, "live: no quote"); return; }
       const evq = { mint: q.mint, pool: q.pool, bondingCurveKey: q.bondingCurveKey, vSol: q.curve?.vSol ?? 0, vTokens: q.curve?.vTokens ?? 0, sol: q.price, tokens: 1 };
       ev = { ...(ev ?? { kind: "trade", ts: q.ts, wallet: "", side: "buy", newTokenBalance: 0, marketCapSol: 0, signature: "" }), ...evq } as Extract<FeedEvent, { kind: "trade" }>;
       if (this.inflight.has(`buy:${ev.mint}`)) return;
@@ -487,7 +512,7 @@ class PumpfunDesk extends EventEmitter {
       want = Math.min(want, eq0 * (pol.grossMaxPct / 100) - openCost);
       await this.ensureWalletSol(want + pol.reserveSol + pol.priorityFeeSol);
       const { sol, why } = liveBuySize(pol, this.liveEquitySol(), standing, this.liveSt.walletSol, openCost, open.length);
-      if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); return; }
+      if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); this.noteBlock(ev.mint, why ?? "live: size 0"); return; }
       this.inflight.add(`buy:${ev.mint}`);
       const solBefore = this.liveSt.walletSol;
       const balanceBefore = await tokenBalance(this.modeSt.walletPubkey!, ev.mint).catch(() => 0);
