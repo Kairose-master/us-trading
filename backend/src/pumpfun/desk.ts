@@ -47,7 +47,7 @@ const TX_TIMEOUT_MS = 90_000;
 const RECONCILE_MS = 2 * 60_000;
 export type PumpMode = "paper" | "real";
 interface ModeState { mode: PumpMode; since: string | null; by: string | null; walletPubkey: string | null }
-interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; startSol: number | null; since: string | null; stats: { buys: number; sells: number; failed: number } }
+interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; stats: { buys: number; sells: number; failed: number } }
 const EQUITY_SNAPSHOT_MS = 5 * 60_000;
 const MARK_STALE_MS = 10_000;
 const TRADE_BUFFER_H = 48;
@@ -136,7 +136,7 @@ class PumpfunDesk extends EventEmitter {
     if (!this.modeSt.walletPubkey && config.PUMPFUN_WALLET_PUBKEY) this.modeSt.walletPubkey = config.PUMPFUN_WALLET_PUBKEY;
     let live: LiveState | null = null;
     try { if (existsSync(LIVE_FILE)) live = JSON.parse(readFileSync(LIVE_FILE, "utf-8")) as LiveState; } catch (e) { logger.warn("[pumpfun] live ledger restore failed — fresh", { error: (e as Error).message }); }
-    this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, usdc: 0, solUsd: 0, syncedAt: null, startSol: null, since: null, stats: { buys: 0, sells: 0, failed: 0 } };
+    this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, usdc: 0, solUsd: 0, syncedAt: null, stats: { buys: 0, sells: 0, failed: 0 } };
     this.liveSt.usdc ??= 0; this.liveSt.solUsd ??= 0;
     this.liveSt.policy = { ...DEFAULT_LIVE_POLICY, ...this.liveSt.policy };
     // 저장된 옛 기본값(25/100/20) → 러그 시장용 기본값으로 이전
@@ -648,7 +648,6 @@ class PumpfunDesk extends EventEmitter {
     }
     this.modeSt = { mode: "real", since: new Date().toISOString(), by, walletPubkey: pk };
     this.liveSt.walletSol = bal; this.liveSt.syncedAt = new Date().toISOString();
-    if (this.liveSt.startSol === null) { this.liveSt.startSol = this.liveEquitySol(); this.liveSt.since = this.modeSt.since; }
     this.liveSt.day = { date: today(), startEquitySol: this.liveEquitySol() };
     this.saveLive();
     logger.warn("[pumpfun] mode → REAL", { by, wallet: pk, walletSol: bal });
@@ -673,7 +672,6 @@ class PumpfunDesk extends EventEmitter {
       mode: this.modeSt.mode, since: this.modeSt.since, by: this.modeSt.by, walletPubkey: this.modeSt.walletPubkey, hasKey: this.feed.hasKey,
       localSign: hasSigner(), execVia: hasSigner() ? "local" : (this.feed.hasKey ? "lightning" : "none"),
       walletSol: +this.liveSt.walletSol.toFixed(6), usdc: +this.liveSt.usdc.toFixed(4), solUsd: this.liveSt.solUsd, usdcInSol: +this.usdcInSol().toFixed(6), syncedAt: this.liveSt.syncedAt, equitySol: +eq.toFixed(6), positionsSol: +this.liveLedger.positionsSol().toFixed(6),
-      startSol: this.liveSt.startSol, liveSince: this.liveSt.since, returnPct: this.liveSt.startSol ? +(((eq - this.liveSt.startSol) / this.liveSt.startSol) * 100).toFixed(2) : null,
       day: this.liveSt.day, dayPct: this.liveSt.day.startEquitySol > 0 ? +(((eq - this.liveSt.day.startEquitySol) / this.liveSt.day.startEquitySol) * 100).toFixed(2) : 0,
       policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError,
       lots: [...this.liveLedger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1), community: this.communityOf(l.mint) })),
