@@ -61,7 +61,8 @@ export interface CommunityRead {
 export interface CommunityPolicy { minScore: number; gate: number }
 export const DEFAULT_COMMUNITY_POLICY: CommunityPolicy = { minScore: 40, gate: 1 };
 
-const COIN_URL = (mint: string) => `https://frontend-api-v3.pump.fun/coins/${mint}`;
+// 실측(2026-09-26): /coins/{mint} 는 모든 토큰에 404 — pump.fun 이 /coins-v2/{mint} 로 옮겼다(필드 동일)
+const COIN_URL = (mint: string) => `https://frontend-api-v3.pump.fun/coins-v2/${mint}`;
 // pump.fun 공개 API 는 키 없는 대신 빡빡하다 — 프로세스 전역 초당 1회
 let lastPumpApiAt = 0;
 async function pumpApiSlot() { const wait = lastPumpApiAt + 1_000 - Date.now(); if (wait > 0) await new Promise((r) => setTimeout(r, wait)); lastPumpApiAt = Date.now(); }
@@ -84,7 +85,8 @@ export function scoreCommunity(f: CommunityFacts, p: CommunityPolicy = DEFAULT_C
   if (f.twitter) add(10, "twitter linked");
   if (f.telegram) { add(10, "telegram linked"); if (f.telegramMembers !== null) { if (f.telegramMembers >= 2000) add(10, `telegram ${f.telegramMembers} members`); else if (f.telegramMembers >= 500) add(5, `telegram ${f.telegramMembers} members`); else if (f.telegramMembers < 50) add(-5, `telegram only ${f.telegramMembers} members`); } }
   if (f.website) add(5, "website linked");
-  if (f.replyCount !== null) { if (f.replyCount >= 50) add(15, `${f.replyCount} replies`); else if (f.replyCount >= 10) add(10, `${f.replyCount} replies`); else if (f.replyCount === 0 && (f.ageMin ?? 0) > 10) add(-10, "no replies after 10 min"); }
+  // 댓글은 가산만 한다 — 실측(2026-09-26): 최근 거래 150개 중 댓글 있는 토큰 4개, 시총 $24M 토큰도 0. 댓글 0 은 이제 신호가 아니다
+  if (f.replyCount !== null) { if (f.replyCount >= 50) add(15, `${f.replyCount} replies`); else if (f.replyCount >= 10) add(10, `${f.replyCount} replies`); }
   if (f.replyPerMin !== null && f.replyPerMin >= 2) add(10, `replies growing ${f.replyPerMin.toFixed(1)}/min`);
   if (f.isLive) add(10, "creator is live-streaming");
   if (f.kothMinAgo !== null && f.kothMinAgo <= 30) add(10, `king of the hill ${f.kothMinAgo.toFixed(0)}m ago`);

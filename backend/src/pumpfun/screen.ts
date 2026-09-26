@@ -11,7 +11,8 @@ import type { CoinSnapshot } from "./flow.js";
 
 const LIST_URL = "https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=last_trade_timestamp&order=DESC&includeNsfw=false";
 const LIVE_URL = "https://frontend-api-v3.pump.fun/coins/currently-live?offset=0&limit=20&includeNsfw=false";
-const COIN_URL = (m: string) => `https://frontend-api-v3.pump.fun/coins/${m}`;
+// 실측(2026-09-26): /coins/{mint} 는 모든 토큰에 404 — pump.fun 이 /coins-v2/{mint} 로 옮겼다(필드 동일)
+const COIN_URL = (m: string) => `https://frontend-api-v3.pump.fun/coins-v2/${m}`;
 const MAX_AGE_MIN = 180;
 const KEEP_SNAPS = 40;
 const DROP_AFTER_MS = 20 * 60_000;

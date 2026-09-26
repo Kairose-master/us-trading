@@ -4,9 +4,9 @@ import { scoreCommunity, CommunityDesk, type CommunityFacts } from "./community.
 const facts = (over: Partial<CommunityFacts> = {}): CommunityFacts => ({ mint: "m", fetchedAt: "t", ok: true, symbol: "X", creator: "C", ageMin: 30, replyCount: 0, replyPerMin: null, kothMinAgo: null, twitter: null, telegram: null, website: null, telegramMembers: null, isLive: false, mcapUsd: 10_000, athMcapUsd: 12_000, fromAth: 0.83, securityVerdict: "allow", complete: false, top10Share: null, creatorLaunches48h: 1, creatorSharePct: null, creatorInitialBuySol: null, ...over });
 
 describe("scoreCommunity", () => {
-  it("a bare token with no socials and no replies after 10 minutes is skipped", () => {
+  it("a bare token is neutral (zero replies is no longer a penalty); one far below ATH is skipped", () => {
     const r = scoreCommunity(facts());
-    expect(r.score).toBe(40); expect(r.block).toBe(false); expect(r.multiplier).toBe(0.5);
+    expect(r.score).toBe(50); expect(r.block).toBe(false); expect(r.multiplier).toBe(0.5);
     const dead = scoreCommunity(facts({ fromAth: 0.2 }));
     expect(dead.block).toBe(true); expect(dead.multiplier).toBe(0);
   });
