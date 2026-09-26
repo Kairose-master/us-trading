@@ -60,6 +60,14 @@ export interface CopyPolicy {
   directCopy: number;
   /** 유료 스트림을 걸 후보 토큰 수 상한 (복합 엔진의 흐름 신호용) — 탄력 제어가 소진 속도에 맞춰 이 아래로 줄인다 */
   flowMaxMints: number;
+  /** 확신 집중 모드 — 1이면 점수 최상위 후보(들)에만 크게 몰고 나머지는 안 산다 (owner 실측: 분산보다 몰빵이 나았다). 러그 가드는 유지 */
+  convictionMode: number;
+  /** 확신 진입 크기 (실 에쿼티 %) — basePct 대신. 몰빵이라 크다 */
+  convictionPct: number;
+  /** 확신 진입 최소 합성 점수 — 이 아래는 몰빵 대상 아님 */
+  convictionMinScore: number;
+  /** 동시 확신 포지션 수 상한 */
+  maxConvictionLots: number;
   /** 폭주 토큰 컷 — 구독한 후보가 분당 이 수를 넘으면 노이즈로 보고 끊는다 (초당 4건 = 240) */
   floodMintPerMin: number;
   /** 끊은 토큰 재구독 금지 시간(분) */
@@ -72,7 +80,7 @@ export interface CopyPolicy {
 
 // 발견 창 기본값은 작다: 졸업 직후 토큰은 초당 수 건씩 거래되어 30개×60분이면 하루 수백만 메시지(1 SOL 이상)가 나간다.
 // 3개×20분이면 하루 수만 건. 예산 2만 건/일(0.02 SOL)이 상한이고, 넘으면 발견을 멈춘다.
-export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 0, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, floodMintPerMin: 240, floodCooldownMin: 20, crashPct: 50, crashWindowSec: 90 };
+export const DEFAULT_COPY_POLICY: CopyPolicy = { maxPositionSol: 0.3, riskPct: 2, grossMaxPct: 60, cashFloorPct: 20, maxLots: 0, minLeaderSol: 0.05, maxHoldMin: 120, timeStopExemptPct: 30, stopLossPct: 35, trailingPct: 40, trailingActivatePct: 100, ladder: [{ atPct: 100, fraction: 0.34 }, { atPct: 400, fraction: 0.25 }], followMax: 20, eta: 2, dropAtPct: -50, dropAfterCloses: 5, dailyStopPct: 0, discoveryWindowMin: 20, discoveryMaxMints: 3, rescoreMin: 10, meteredBudgetMsgsPerDay: 60_000, subscribeHeldTokens: 0, maxLeaderFlips10m: 1, minLeaderHoldMin: 3, reentryCooldownMin: 15, directCopy: 0, flowMaxMints: 5, convictionMode: 0, convictionPct: 40, convictionMinScore: 68, maxConvictionLots: 1, floodMintPerMin: 240, floodCooldownMin: 20, crashPct: 50, crashWindowSec: 90 };
 
 export interface Follow { wallet: string; standing: number; since: string; source: "scored" | "manual"; closes: number; wins: number; cumPct: number; returns: number[] }
 

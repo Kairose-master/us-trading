@@ -342,6 +342,7 @@ class PumpfunDesk extends EventEmitter {
     const heldMints = new Set([...this.ledger.heldMints(), ...this.liveLedger.heldMints()]);
     const mints = [...new Set([...this.flowCandidates().slice(0, 20).map((c) => c.mint), ...heldMints])];
     let reads = 0;
+    const entries: Array<{ mint: string; r: EnsembleRead; votes: Vote[] }> = [];
     for (const mint of mints) {
       if (this.isProtectedMint(mint)) continue; // 보호 종목(SCAM·수동 보유)은 복합 결정에서 제외 — 이해충돌
       const cand = this.screen.get(mint);
@@ -360,23 +361,41 @@ class PumpfunDesk extends EventEmitter {
       const heldPnl = heldLots.length ? Math.max(...heldLots.map((l) => (l.costSol > 0 ? ((l.markSol - l.costSol) / l.costSol) * 100 : 0))) : 0;
       const r = ensemble(mint, votes, W, P, held, comm, flow, mom, heldPnl);
       this.lastEnsemble.set(mint, r); this.ensembleStats.evaluations += 1;
-      if (r.action === "enter" && !this.st.paused) {
-        const solIn = +(this.ledger.equitySol() * (P.basePct / 100) * r.sizeMult).toFixed(6);
-        const a = { type: "buy" as const, mint, solIn, via: "rule:ensemble", reason: `ensemble ${r.score}: ${votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` };
-        const lotId = this.apply(a);
-        if (lotId) { this.st.entryVotes![lotId] = votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
-        if (this.modeSt.mode === "real") void this.applyLive(a, undefined, r.sizeMult, 1);
-      } else if (r.action === "exit") {
+      if (r.action === "enter" && !this.st.paused) { entries.push({ mint, r, votes }); }
+      else if (r.action === "exit") {
         this.ensembleStats.exits += 1;
-        for (const l of this.ledger.lotsOf(mint)) if (l.via === "rule:ensemble") this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
-        if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "chain:adopted") void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
+        for (const l of this.ledger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "rule:conviction") this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
+        if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "rule:conviction" || l.via === "chain:adopted") void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
+      }
+    }
+    // 진입 집행 — 기본은 자격 후보를 각각 basePct 로. 확신 집중 모드면 점수 최상위 하나(들)에만 크게 몰고 나머지는 버린다
+    entries.sort((a, b) => b.r.score - a.r.score);
+    const conv = this.st.policy;
+    if (conv.convictionMode >= 1) {
+      const openConv = [...this.liveLedger.lots.values(), ...this.ledger.lots.values()].filter((l) => l.via === "rule:conviction").length;
+      const slots = Math.max(0, conv.maxConvictionLots - openConv);
+      const picks = entries.filter((e) => e.r.score >= conv.convictionMinScore && !e.r.blocked).slice(0, slots);
+      for (const e of picks) {
+        const solIn = +(this.ledger.equitySol() * (conv.convictionPct / 100) * e.r.sizeMult).toFixed(6);
+        const a = { type: "buy" as const, mint: e.mint, solIn, via: "rule:conviction", reason: `CONVICTION ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` };
+        const lotId = this.apply(a);
+        if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
+        if (this.modeSt.mode === "real") void this.applyLive(a, undefined, e.r.sizeMult, 1, conv.convictionPct);
+      }
+    } else {
+      for (const e of entries) {
+        const solIn = +(this.ledger.equitySol() * (P.basePct / 100) * e.r.sizeMult).toFixed(6);
+        const a = { type: "buy" as const, mint: e.mint, solIn, via: "rule:ensemble", reason: `ensemble ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` };
+        const lotId = this.apply(a);
+        if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
+        if (this.modeSt.mode === "real") void this.applyLive(a, undefined, e.r.sizeMult, 1);
       }
     }
     for (const [m] of this.lastEnsemble) if (!mints.includes(m)) this.lastEnsemble.delete(m);
   }
   ensembleStatus() {
     const list = [...this.lastEnsemble.values()].sort((a, b) => b.score - a.score).slice(0, 20).map((r) => ({ mint: r.mint, symbol: this.screen.get(r.mint)?.symbol ?? null, score: r.score, action: r.action, why: r.why, blocked: r.blocked, sizeMult: r.sizeMult, votes: r.votes.map((v) => ({ engine: v.engine, score: v.score, abstain: v.abstain, why: v.why.slice(0, 3) })), streamed: this.feed.subscribedTokens().includes(r.mint), held: this.ledger.lotsOf(r.mint).length + this.liveLedger.lotsOf(r.mint).length }));
-    return { weights: this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, policy: this.st.ensemble ?? DEFAULT_ENSEMBLE_POLICY, directCopy: this.st.policy.directCopy, flowMaxMints: this.st.policy.flowMaxMints, elastic: { msgsPerMin: this.feed.msgsPerMin(), pacePerMin: Math.round(this.st.policy.meteredBudgetMsgsPerDay / 1440), activeFlowMax: this.elasticFlowMax, floodBlocked: this.floodBlock.size, topMintRates: this.feed.mintRates().slice(0, 5) }, screen: { candidates: this.screen.candidates().length, lastPollAt: this.screen.lastPollAt, ...this.screen.stats }, stats: this.ensembleStats, candidates: list };
+    return { weights: this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, policy: this.st.ensemble ?? DEFAULT_ENSEMBLE_POLICY, directCopy: this.st.policy.directCopy, flowMaxMints: this.st.policy.flowMaxMints, conviction: { mode: this.st.policy.convictionMode, pct: this.st.policy.convictionPct, minScore: this.st.policy.convictionMinScore, maxLots: this.st.policy.maxConvictionLots, open: [...this.liveLedger.lots.values(), ...this.ledger.lots.values()].filter((l) => l.via === "rule:conviction").length }, elastic: { msgsPerMin: this.feed.msgsPerMin(), pacePerMin: Math.round(this.st.policy.meteredBudgetMsgsPerDay / 1440), activeFlowMax: this.elasticFlowMax, floodBlocked: this.floodBlock.size, topMintRates: this.feed.mintRates().slice(0, 5) }, screen: { candidates: this.screen.candidates().length, lastPollAt: this.screen.lastPollAt, ...this.screen.stats }, stats: this.ensembleStats, candidates: list };
   }
   /** 보유 토큰(페이퍼·실)의 creator 지갑들 — 커뮤니티 읽기에 creator 가 있을 때만 */
   private heldCreators(): Set<string> {
@@ -423,7 +442,7 @@ class PumpfunDesk extends EventEmitter {
     catch (e) { this.liveError = (e as Error).message; }
     return this.liveSt.walletSol;
   }
-  private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1, standingOverride?: number) {
+  private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1, standingOverride?: number, pctOverride?: number) {
     if (a.type === "skip") return;
     const P = this.liveSt.policy;
     if (a.type === "buy") {
@@ -434,7 +453,8 @@ class PumpfunDesk extends EventEmitter {
       if (this.inflight.has(`buy:${ev.mint}`)) return;
       const open = [...this.liveLedger.lots.values()];
       const standing = (standingOverride ?? this.st.follows[a.via]?.standing ?? 0.5) * mult;
-      const { sol, why } = liveBuySize(P, this.liveEquitySol(), standing, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
+      const pol = pctOverride !== undefined ? { ...P, maxPositionPct: pctOverride } : P;
+      const { sol, why } = liveBuySize(pol, this.liveEquitySol(), standing, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
       if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); return; }
       this.inflight.add(`buy:${ev.mint}`);
       const solBefore = this.liveSt.walletSol;
