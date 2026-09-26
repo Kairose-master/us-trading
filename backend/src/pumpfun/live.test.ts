@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { liveBuySize, DEFAULT_LIVE_POLICY as P } from "./live.js";
+import { liveBuySize, executeTrade, DEFAULT_LIVE_POLICY as P } from "./live.js";
 import { parseTxDeltas, type ParsedTx } from "./solana-rpc.js";
+import { hasSigner, signerPubkey } from "./signer.js";
 import { PumpLedger } from "./ledger.js";
+
+describe("exec path dispatch", () => {
+  it("without a local signer, falls back to the Lightning path (which needs an API key)", async () => {
+    expect(hasSigner()).toBe(false); // 테스트 env 엔 PUMPFUN_WALLET_SECRET 없음
+    expect(signerPubkey()).toBeNull();
+    await expect(executeTrade("", { action: "buy", mint: "m", amount: 0.1, denominatedInSol: true, slippage: 15, priorityFee: 0.0005, pool: "pump" }))
+      .rejects.toThrow(/PUMPFUN_API_KEY/);
+  });
+});
 
 describe("liveBuySize", () => {
   it("sizes by equity × pct × standing (8% default — rug-sized), capped by gross, wallet reserve and lot count", () => {

@@ -413,13 +413,29 @@ owner 실측: 여러 종목에 작게 분산하는 것보다 "될 것 같은 차
   `usdcInSol()` = USDC ÷ SOL가격. **`liveEquitySol()` = walletSol + usdcInSol() + positionsSol** — 이제 USDC 가 자본으로 잡혀 에쿼티·수익률·사이징이 맞다.
 - `GET /pumpfun`.live / `/pumpfun/mode` 에 `usdc`·`solUsd`·`usdcInSol` 노출. 대시보드 헤더·"지갑 SOL/실포지션" 타일에 USDC 표시.
 
-**정직한 한계 — USDC 를 "쓰지는" 못한다**: PumpPortal Lightning 은 지갑 **서명키를 자기가** 들고 있어서(우리 백엔드는 임의 Solana 트랜잭션에 서명 못 함) USDC→SOL 스왑을 봇이 자동으로 못 한다.
-그래서 USDC 는 **자본(에쿼티)으로 계상**되고 화면에 뜨지만, 실제 커브 매수는 여전히 네이티브 SOL 로만 나가고 `liveBuySize` 가 지갑 SOL 로 상한을 건다.
-USDC 를 실제로 굴리려면 (a) 지갑에서 USDC→SOL 수동 스왑, 또는 (b) Local-API 서명(키를 서버 금고에)으로 이전 — 둘 중 하나가 필요하다.
+**Lightning 경로의 한계(이후 (b)로 해소)**: PumpPortal Lightning 은 지갑 **서명키를 자기가** 들고 있어서 USDC→SOL 스왑을 봇이 못 한다 → 이 경로에선 USDC 는 계상만 되고 실탄은 SOL 뿐이다.
+owner 가 (b) 로컬 서명을 택해 이 한계를 없앴다 — 아래 "로컬 서명 실행" 참고. `PUMPFUN_WALLET_SECRET` 이 있으면 매수 직전 부족분을 USDC→SOL 자동 스왑한다.
+
+### 로컬 서명 실행 — 0.5% 제거 + USDC 자동 스왑 (2026-09-26, owner 요청 "기본으로 켜")
+
+USDC 를 자본으로만 계상하는 걸 넘어 **실제로 쓰게** 하려면 서명키가 서버에 있어야 한다(PumpPortal Lightning 은 키를 자기가 쥐고 있어 임의 스왑 불가). owner 가 (b) 로컬 서명을 택했다.
+
+- **켜는 법**: Railway Secret 에 `PUMPFUN_WALLET_SECRET`(거래 지갑 개인키, base58 또는 `[1,2,…]` JSON 배열)를 넣으면 자동으로 로컬 서명 경로가 된다. 비우면 기존 Lightning(`PUMPFUN_API_KEY`) 으로 폴백. **개인키는 로그·API 응답에 절대 안 실린다**(공개키만 `execVia`/`localSign` 로 노출).
+- **`signer.ts`**:
+  - `localTrade()` — PumpPortal **Local API**(`/api/trade-local`)가 직렬화 tx 를 주면 `@solana/web3.js` 로 서명·전송. Lightning 0.5% 가 사라진다.
+  - `swapUsdcToSol()` — Jupiter v6. 지갑 SOL 이 목표 매수 크기에 못 미치면 부족분만 USDC→SOL 로 바꾼다(슬리피지 1% 상한 — USDC/SOL 은 유동성 깊음).
+- **`live.ts` `executeTrade()`** — 서명키 있으면 `localTrade`, 없으면 `lightningTrade`. 반환은 동일(`{signature}`)하고 체결 확정은 그대로 체인 확인·잔고 대조가 한다.
+- **`desk.ts`**:
+  - 매수 전 목표 크기를 먼저 계산 → `ensureWalletSol(목표+예비+수수료)` 가 부족하면 USDC 를 스왑(3% 버퍼) → 그다음 `liveBuySize`. 이제 USDC 가 실탄이 된다.
+  - 매수·매도 모두 `executeTrade` 로 나간다.
+  - `setMode(real)` 은 이제 Lightning 키 **또는** 로컬 서명키 중 하나면 켜진다. 로컬 서명이면 지갑 공개키를 서명키에서 채우고, 잔고가 최소치 미만이어도 **가스용 네이티브 SOL 0.003 이상 + USDC 보유**면 허용(스왑으로 조달).
+- **여전한 요구**: 스왑·매매 tx 가스로 지갑에 **네이티브 SOL 이 조금은** 있어야 한다(0 이면 스왑조차 못 보냄). 그래서 `reserveSol`(0.02)·최소 가스(0.003)를 남긴다.
+
+정직한 리스크: 서명키가 서버(Railway)에 있다. 컨테이너·환경변수가 뚫리면 지갑이 뚫린다. 그래서 Secret 에만 두고 로그에 안 남긴다. owner 가 감수하기로 한 트레이드오프다.
 
 ### 아직 없는 것 (다음)
 
 - (완료 → 복합 결정의 momentum 엔진) ④ KOTH · ⑤ 졸업 직후 모멘텀.
 - 사건 백테스트 — 관측 기록(`events-*.jsonl`, `trades.jsonl`)이 쌓이면 지갑 채점의 **아웃오브샘플** 검증
   (채점 창 이후의 왕복으로 채점이 예측력이 있었는지, 사건 부트스트랩 p값). 이게 음수면 카피는 여기서 끝이다.
-- 직접 서명(Local API)으로 PumpPortal 0.5%를 없애는 것 — 서명 키를 서버 금고에 두는 대가가 있어 지금은 안 한다.
+- (완료 → "로컬 서명 실행") 직접 서명(Local API)으로 PumpPortal 0.5% 제거. `PUMPFUN_WALLET_SECRET` 을 넣으면 켜진다.

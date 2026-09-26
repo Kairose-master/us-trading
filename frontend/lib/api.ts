@@ -933,7 +933,7 @@ export async function pumpfunResume(): Promise<{ ok: true }> { return write("pum
 export async function pumpfunSetPolicy(patch: Partial<PumpPolicy>): Promise<{ ok: true; policy: PumpPolicy }> { return write("pumpfun/policy", "POST", patch) }
 export interface PumpLivePolicy { maxPositionPct: number; grossMaxPct: number; maxPositionSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number; dustSol?: number }
 export interface PumpLive {
-  mode: "paper" | "real"; since: string | null; by: string | null; walletPubkey: string | null; hasKey: boolean
+  mode: "paper" | "real"; since: string | null; by: string | null; walletPubkey: string | null; hasKey: boolean; localSign: boolean; execVia: "local" | "lightning" | "none"
   walletSol: number; usdc: number; solUsd: number; usdcInSol: number; syncedAt: string | null; equitySol: number; positionsSol: number; startSol: number | null; liveSince: string | null; returnPct: number | null
   day: { date: string; startEquitySol: number }; dayPct: number
   policy: PumpLivePolicy; stats: { buys: number; sells: number; failed: number }; inflight: string[]; error: string | null

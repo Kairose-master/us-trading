@@ -67,6 +67,10 @@ const Env = z.object({
   PUMPFUN_SEED_WALLETS: z.string().default("").transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean)),
   // 실주문(PumpPortal Lightning) — 거래 지갑 공개키. 실모드는 화면 스위치(REAL 타이핑)로만 켜진다. 환경변수로는 못 켠다
   PUMPFUN_WALLET_PUBKEY: z.string().default(""),
+  // 로컬 서명 키 (base58 또는 [1,2,...] JSON 배열). 넣으면 매수/매도를 백엔드가 직접 서명(PumpPortal Local API)해
+  // Lightning 0.5% 수수료가 사라지고 USDC→SOL 자동 스왑이 가능해진다. 비우면 Lightning(API_KEY) 경로로 폴백.
+  // ⚠️ 서명키를 서버에 두는 것이라 Railway Secret 에만 넣고 로그·응답에 절대 노출하지 않는다.
+  PUMPFUN_WALLET_SECRET: z.string().default(""),
   // 빠른 RPC(Helius 등). 비우면 공개 엔드포인트
   PUMPFUN_RPC_URL: z.string().default(""),
   // SCAM 발행 — 메타데이터 IPFS 업로드(Pinata JWT). 비우면 대시보드 정적 파일 URI 를 쓴다

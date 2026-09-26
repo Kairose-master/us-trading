@@ -9,7 +9,8 @@ import { applyOutcome, lotExits, onLeaderTrade, DEFAULT_COPY_POLICY, type CopyAc
 import { initialStanding, roundTripsOf, scoreWallets, DEFAULT_THRESHOLDS, PROVISIONAL_STANDING, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
 import { parseTxDeltas, readCurve, solUsdPrice, tokenBalance, usdcBalance, waitForTx, walletSol, walletTokenBalances } from "./solana-rpc.js";
 import { progress } from "./curve.js";
-import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
+import { isSolanaAddress, executeTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
+import { hasSigner, signerPubkey, swapUsdcToSol } from "./signer.js";
 import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
 import { CURATED_SEEDS, isBlockedWallet } from "./curated.js";
 import { flowRead, momentumRead, type FlowTrade } from "./flow.js";
@@ -144,7 +145,7 @@ class PumpfunDesk extends EventEmitter {
     if (this.liveSt.policy.dailyStopPct === 15 || this.liveSt.policy.dailyStopPct === 20) this.liveSt.policy.dailyStopPct = 0;
     if (this.st.paused && (this.st.pausedReason?.includes("daily stop") ?? false)) { this.st.paused = false; this.st.pausedAt = null; this.st.pausedReason = null; logger.warn("[pumpfun] daily stop removed — clearing that paused state on boot"); }
     this.liveLedger = PumpLedger.restore(this.liveSt.ledger, this.st.costs);
-    if (this.modeSt.mode === "real" && !this.feed.hasKey) { logger.warn("[pumpfun] real mode restored without PUMPFUN_API_KEY — falling back to paper"); this.modeSt.mode = "paper"; }
+    if (this.modeSt.mode === "real" && !this.feed.hasKey && !hasSigner()) { logger.warn("[pumpfun] real mode restored without PUMPFUN_API_KEY or PUMPFUN_WALLET_SECRET — falling back to paper"); this.modeSt.mode = "paper"; }
     // 이벤트 핸들러는 기동 여부와 무관하게 건다 — 피드 연결만 start()가 한다 (테스트에서 합성 이벤트를 넣을 수 있게)
     this.feed.on("event", (ev: FeedEvent) => { try { this.onEvent(ev); } catch (e) { this.lastError = (e as Error).message; logger.warn("[pumpfun] event handling failed", { error: this.lastError, kind: ev.kind }); } });
     this.feed.on("open", () => this.syncSubscriptions());
@@ -448,6 +449,20 @@ class PumpfunDesk extends EventEmitter {
     } catch (e) { this.liveError = (e as Error).message; }
     return this.liveSt.walletSol;
   }
+  /** 목표 SOL 에 지갑이 못 미치면 부족분을 USDC→SOL 스왑으로 채운다 — 로컬 서명일 때만(Lightning 은 키가 PumpPortal 에 있어 스왑 불가) */
+  private async ensureWalletSol(targetSol: number): Promise<void> {
+    if (!hasSigner()) return;
+    const need = targetSol - this.liveSt.walletSol;
+    if (need <= 0.0005 || this.liveSt.usdc <= 0 || this.liveSt.solUsd <= 0) return;
+    const usdcNeeded = Math.min(this.liveSt.usdc, need * this.liveSt.solUsd * 1.03); // 3% 버퍼(슬리피지·수수료)
+    if (usdcNeeded < 0.5) return; // 0.5 USDC 미만은 스왑 비용이 더 든다
+    try {
+      const { signature, outSol } = await swapUsdcToSol(usdcNeeded, 100); // USDC/SOL 은 유동성 깊음 — 1% 슬리피지 상한
+      logger.warn("[pumpfun] USDC→SOL swap", { usdc: +usdcNeeded.toFixed(3), outSol: +outSol.toFixed(4), signature });
+      await waitForTx(signature, TX_TIMEOUT_MS).catch(() => null);
+      await this.syncWallet();
+    } catch (e) { this.liveError = `usdc swap: ${(e as Error).message}`; logger.warn("[pumpfun] USDC→SOL swap failed", { error: this.liveError }); }
+  }
   private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1, standingOverride?: number, pctOverride?: number) {
     if (a.type === "skip") return;
     const P = this.liveSt.policy;
@@ -460,13 +475,20 @@ class PumpfunDesk extends EventEmitter {
       const open = [...this.liveLedger.lots.values()];
       const standing = (standingOverride ?? this.st.follows[a.via]?.standing ?? 0.5) * mult;
       const pol = pctOverride !== undefined ? { ...P, maxPositionPct: pctOverride } : P;
-      const { sol, why } = liveBuySize(pol, this.liveEquitySol(), standing, this.liveSt.walletSol, open.reduce((x, l) => x + l.costSol, 0), open.length);
+      const openCost = open.reduce((x, l) => x + l.costSol, 0);
+      // 지갑 SOL 이 목표 크기에 못 미치면(USDC 로 잡힌 자본이라) 로컬 서명일 때 부족분만 USDC→SOL 스왑
+      const eq0 = this.liveEquitySol();
+      let want = eq0 * (pol.maxPositionPct / 100) * Math.max(0, standing);
+      if (pol.maxPositionSol > 0) want = Math.min(want, pol.maxPositionSol);
+      want = Math.min(want, eq0 * (pol.grossMaxPct / 100) - openCost);
+      await this.ensureWalletSol(want + pol.reserveSol + pol.priorityFeeSol);
+      const { sol, why } = liveBuySize(pol, this.liveEquitySol(), standing, this.liveSt.walletSol, openCost, open.length);
       if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); return; }
       this.inflight.add(`buy:${ev.mint}`);
       const solBefore = this.liveSt.walletSol;
       const balanceBefore = await tokenBalance(this.modeSt.walletPubkey!, ev.mint).catch(() => 0);
       try {
-        const { signature } = await lightningTrade(config.PUMPFUN_API_KEY, { action: "buy", mint: ev.mint, amount: sol, denominatedInSol: true, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: ev.pool === "pump" ? "pump" : "auto" });
+        const { signature } = await executeTrade(config.PUMPFUN_API_KEY, { action: "buy", mint: ev.mint, amount: sol, denominatedInSol: true, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: ev.pool === "pump" ? "pump" : "auto" });
         const tx = await waitForTx(signature, TX_TIMEOUT_MS);
         let tokens = 0, costSol = 0, ts = new Date().toISOString();
         if (tx) {
@@ -511,7 +533,7 @@ class PumpfunDesk extends EventEmitter {
       const all = a.fraction >= 0.999;
       const tokens = all ? lot.tokens : lot.tokens * a.fraction;
       // 전량이면 "100%" — 먼지가 남지 않게 지갑의 실제 잔고 전부를 판다
-      const { signature } = await lightningTrade(config.PUMPFUN_API_KEY, { action: "sell", mint: lot.mint, amount: all ? "100%" : Math.floor(tokens), denominatedInSol: false, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: lot.pool === "pump" ? "pump" : "auto" });
+      const { signature } = await executeTrade(config.PUMPFUN_API_KEY, { action: "sell", mint: lot.mint, amount: all ? "100%" : Math.floor(tokens), denominatedInSol: false, slippage: P.slippagePct, priorityFee: P.priorityFeeSol, pool: lot.pool === "pump" ? "pump" : "auto" });
       sentSignature = signature;
       const tx = await waitForTx(signature, TX_TIMEOUT_MS);
       let sold = 0, received = 0, ts = new Date().toISOString();
@@ -612,12 +634,18 @@ class PumpfunDesk extends EventEmitter {
   /** 실모드 전환 — owner가 화면에서 "REAL"을 타이핑. 켜는 순간 키·지갑을 검증한다 */
   async setMode(mode: PumpMode, by: string, walletPubkey?: string): Promise<{ error?: string; walletSol?: number }> {
     if (mode === "paper") { this.modeSt = { ...this.modeSt, mode: "paper", since: new Date().toISOString(), by }; this.saveLive(); logger.warn("[pumpfun] mode → paper", { by }); return {}; }
-    if (!this.feed.hasKey) return { error: "PUMPFUN_API_KEY 없음 — PumpPortal 키가 있어야 실주문이 나간다" };
-    const pk = (walletPubkey ?? this.modeSt.walletPubkey ?? "").trim();
+    if (!this.feed.hasKey && !hasSigner()) return { error: "PUMPFUN_API_KEY(Lightning) 또는 PUMPFUN_WALLET_SECRET(로컬 서명) 중 하나가 있어야 실주문이 나간다" };
+    // 로컬 서명이면 지갑은 그 키의 공개키다 — pubkey 를 안 넣어도 서명키에서 채운다
+    const pk = (walletPubkey ?? this.modeSt.walletPubkey ?? signerPubkey() ?? "").trim();
     if (!isSolanaAddress(pk)) return { error: "거래 지갑 공개키가 필요하다 (PumpPortal 설정 페이지의 wallet public key, 또는 PUMPFUN_WALLET_PUBKEY)" };
+    if (hasSigner() && signerPubkey() && pk !== signerPubkey()) return { error: `공개키(${pk.slice(0, 6)}…)가 로컬 서명키의 지갑(${signerPubkey()!.slice(0, 6)}…)과 다르다` };
     let bal: number;
     try { bal = await walletSol(pk); } catch (e) { return { error: `지갑 잔고 조회 실패: ${(e as Error).message}` }; }
-    if (bal < this.liveSt.policy.minWalletSol) return { error: `지갑 잔고 ${bal.toFixed(4)} SOL < 최소 ${this.liveSt.policy.minWalletSol} SOL` };
+    if (bal < this.liveSt.policy.minWalletSol) {
+      // 로컬 서명이면 USDC 를 SOL 로 바꿔 쓸 수 있다 — 단 스왑 tx 가스로 최소한의 네이티브 SOL(0.003)은 있어야 한다
+      const usdcOk = hasSigner() && bal >= 0.003 && (await usdcBalance(pk).catch(() => 0)) > 0;
+      if (!usdcOk) return { error: `지갑 잔고 ${bal.toFixed(4)} SOL < 최소 ${this.liveSt.policy.minWalletSol} SOL${hasSigner() ? " (USDC 스왑에도 가스용 네이티브 SOL 이 최소 0.003 필요)" : ""}` };
+    }
     this.modeSt = { mode: "real", since: new Date().toISOString(), by, walletPubkey: pk };
     this.liveSt.walletSol = bal; this.liveSt.syncedAt = new Date().toISOString();
     if (this.liveSt.startSol === null) { this.liveSt.startSol = this.liveEquitySol(); this.liveSt.since = this.modeSt.since; }
@@ -643,6 +671,7 @@ class PumpfunDesk extends EventEmitter {
     const eq = this.liveEquitySol();
     return {
       mode: this.modeSt.mode, since: this.modeSt.since, by: this.modeSt.by, walletPubkey: this.modeSt.walletPubkey, hasKey: this.feed.hasKey,
+      localSign: hasSigner(), execVia: hasSigner() ? "local" : (this.feed.hasKey ? "lightning" : "none"),
       walletSol: +this.liveSt.walletSol.toFixed(6), usdc: +this.liveSt.usdc.toFixed(4), solUsd: this.liveSt.solUsd, usdcInSol: +this.usdcInSol().toFixed(6), syncedAt: this.liveSt.syncedAt, equitySol: +eq.toFixed(6), positionsSol: +this.liveLedger.positionsSol().toFixed(6),
       startSol: this.liveSt.startSol, liveSince: this.liveSt.since, returnPct: this.liveSt.startSol ? +(((eq - this.liveSt.startSol) / this.liveSt.startSol) * 100).toFixed(2) : null,
       day: this.liveSt.day, dayPct: this.liveSt.day.startEquitySol > 0 ? +(((eq - this.liveSt.day.startEquitySol) / this.liveSt.day.startEquitySol) * 100).toFixed(2) : 0,

@@ -1,4 +1,5 @@
 import { logger } from "../core/logger.js";
+import { hasSigner, localTrade } from "./signer.js";
 
 /**
  * pump.fun 실주문 — PumpPortal Lightning Transaction API. 돈이 나가는 유일한 경로.
@@ -50,6 +51,15 @@ export async function lightningTrade(apiKey: string, req: TradeRequest): Promise
   if (!res.ok) throw new Error(`pumpportal ${res.status}: ${text.slice(0, 200)}`);
   if (json.errors || json.error) throw new Error(`pumpportal refused: ${JSON.stringify(json.errors ?? json.error).slice(0, 200)}`);
   throw new Error(`pumpportal: no signature in response ${text.slice(0, 120)}`);
+}
+
+/**
+ * 실행 경로 선택 — 로컬 서명키(PUMPFUN_WALLET_SECRET)가 있으면 그걸로 서명(0.5% 없음), 없으면 Lightning(API 키).
+ * 둘 다 {signature}만 돌려주고, 체결 확정은 호출부의 체인 확인·잔고 대조가 한다(동일 규율).
+ */
+export async function executeTrade(apiKey: string, req: TradeRequest): Promise<{ signature: string; via: "local" | "lightning" }> {
+  if (hasSigner()) return { ...(await localTrade(req)), via: "local" };
+  return { ...(await lightningTrade(apiKey, req)), via: "lightning" };
 }
 
 /** 실매수 크기 — 실 에쿼티(지갑 SOL + 실보유 평가) 비율 × standing. 총노출·지갑 예비·로트 수로 깎는다 */
