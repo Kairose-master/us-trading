@@ -88,9 +88,8 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
       <div className="flex flex-col gap-3 p-4 text-xs">
         {real ? (
           <>
-            <div className="grid gap-2 sm:grid-cols-3 font-mono text-[11px]">
+            <div className="grid gap-2 sm:grid-cols-2 font-mono text-[11px]">
               <div><span className="text-muted-foreground">실 에쿼티</span><br />{live.equitySol.toFixed(4)} SOL</div>
-              <div><span className="text-muted-foreground">오늘</span><br /><span className={pnlClass(live.dayPct)}>{signed(live.dayPct)}</span> (정지 −{live.policy.dailyStopPct}%)</div>
               <div><span className="text-muted-foreground">매수 / 매도 / 실패</span><br />{live.stats.buys} / {live.stats.sells} / {live.stats.failed}</div>
             </div>
             <p className="text-muted-foreground">크기: 실 에쿼티 × {live.policy.maxPositionPct}% × standing (절대 상한 {live.policy.maxPositionSol > 0 ? `${live.policy.maxPositionSol} SOL` : "없음"}) · 총노출 {live.policy.grossMaxPct}% · 로트 {live.policy.maxLots || "무제한"} · 슬리피지 {live.policy.slippagePct}% · 우선순위 수수료 {live.policy.priorityFeeSol} SOL · 지갑 예비 {live.policy.reserveSol} SOL. {live.localSign ? "실행: 로컬 서명 — 0.5% 없음, SOL 부족 시 USDC 자동 스왑." : "실행: PumpPortal Lightning, 거래당 0.5% 추가."}</p>
@@ -202,13 +201,12 @@ export function PumpfunPageClient() {
         {data.mode === "real" ? (
           <>
             <Stat label="실 에쿼티 (지갑)" value={sol(data.live.equitySol)} valueClass="text-destructive" sub={`페이퍼 그림자 ${sol(L.equitySol, 2)} (가상 시드 ${L.startSol})`} />
-            <Stat label="실 오늘" value={signed(data.live.dayPct)} valueClass={pnlClass(data.live.dayPct)} sub={`페이퍼 ${signed(L.returnPct)}`} />
             <Stat label="지갑 SOL / 실포지션" value={sol(data.live.walletSol, 4)} sub={`${data.live.usdc > 0 ? `+ ${data.live.usdc.toFixed(2)} USDC (≈${sol(data.live.usdcInSol, 3)}) · ` : ""}포지션 ${sol(data.live.positionsSol, 4)} · 로트 ${data.live.lots.length}${data.live.policy.maxLots ? `/${data.live.policy.maxLots}` : ""} · 동기화 ${ago(data.live.syncedAt)}`} />
           </>
         ) : (
           <>
             <Stat label="에쿼티 (페이퍼)" value={sol(L.equitySol)} sub={`가상 시드 ${sol(L.startSol, 2)} · ${ago(L.since)}부터`} />
-            <Stat label="누적 수익률" value={signed(L.returnPct)} valueClass={pnlClass(L.returnPct)} sub={`오늘 ${signed(L.dayPct)} (일 손실 정지 −${data.policy.dailyStopPct}%)`} />
+            <Stat label="누적 수익률" value={signed(L.returnPct)} valueClass={pnlClass(L.returnPct)} />
             <Stat label="현금 / 포지션" value={sol(L.cashSol, 3)} sub={`포지션 ${sol(L.positionsSol, 3)} · 로트 ${L.lots.length}${data.policy.maxLots ? `/${data.policy.maxLots}` : ""}`} />
           </>
         )}
