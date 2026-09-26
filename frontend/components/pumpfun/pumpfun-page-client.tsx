@@ -83,7 +83,7 @@ function RealModeCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
         <ShieldAlert className={cn("size-3.5", real ? "text-destructive" : "text-muted-foreground")} aria-hidden="true" />
         <h2 className="text-sm font-semibold">거래 모드</h2>
         <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", real ? "bg-destructive/15 text-destructive" : "bg-chart-1/15 text-chart-1")}>{real ? "REAL — PumpPortal 지갑" : "PAPER — 가상 장부"}</span>
-        <span className="ml-auto font-mono text-[10px] text-muted-foreground">{live.walletPubkey ? `지갑 ${live.walletPubkey.slice(0, 4)}…${live.walletPubkey.slice(-4)} · ${live.walletSol.toFixed(4)} SOL (${ago(live.syncedAt)})` : "지갑 미지정"}</span>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground">{live.walletPubkey ? `지갑 ${live.walletPubkey.slice(0, 4)}…${live.walletPubkey.slice(-4)} · ${live.walletSol.toFixed(4)} SOL${live.usdc > 0 ? ` + ${live.usdc.toFixed(2)} USDC` : ""} (${ago(live.syncedAt)})` : "지갑 미지정"}</span>
       </div>
       <div className="flex flex-col gap-3 p-4 text-xs">
         {real ? (
@@ -259,7 +259,7 @@ export function PumpfunPageClient() {
           <>
             <Stat label="실 에쿼티 (지갑)" value={sol(data.live.equitySol)} valueClass="text-destructive" sub={`시작 ${data.live.startSol === null ? "—" : sol(data.live.startSol, 3)} · 페이퍼 그림자 ${sol(L.equitySol, 2)} (가상 시드 ${L.startSol})`} />
             <Stat label="실 누적 수익률" value={data.live.returnPct === null ? "—" : signed(data.live.returnPct)} valueClass={pnlClass(data.live.returnPct ?? 0)} sub={`오늘 ${signed(data.live.dayPct)} (일 손실 정지 −${data.live.policy.dailyStopPct}%) · 페이퍼 ${signed(L.returnPct)}`} />
-            <Stat label="지갑 SOL / 실포지션" value={sol(data.live.walletSol, 4)} sub={`포지션 ${sol(data.live.positionsSol, 4)} · 로트 ${data.live.lots.length}${data.live.policy.maxLots ? `/${data.live.policy.maxLots}` : ""} · 동기화 ${ago(data.live.syncedAt)}`} />
+            <Stat label="지갑 SOL / 실포지션" value={sol(data.live.walletSol, 4)} sub={`${data.live.usdc > 0 ? `+ ${data.live.usdc.toFixed(2)} USDC (≈${sol(data.live.usdcInSol, 3)}) · ` : ""}포지션 ${sol(data.live.positionsSol, 4)} · 로트 ${data.live.lots.length}${data.live.policy.maxLots ? `/${data.live.policy.maxLots}` : ""} · 동기화 ${ago(data.live.syncedAt)}`} />
           </>
         ) : (
           <>

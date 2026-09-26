@@ -50,6 +50,25 @@ export async function tokenBalance(pubkey: string, mint: string): Promise<number
   return (r?.value ?? []).reduce((a, x) => a + (x.account.data.parsed.info.tokenAmount.uiAmount ?? 0), 0);
 }
 
+export const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+/** 지갑의 USDC 잔고 (UI 단위, 6 decimals) */
+export async function usdcBalance(pubkey: string): Promise<number> { return tokenBalance(pubkey, USDC_MINT); }
+
+/** SOL/USD — Jupiter Price API. 실패하면 0 (호출부가 이전 값 유지) */
+export async function solUsdPrice(): Promise<number> {
+  for (const url of ["https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112", "https://price.jup.ag/v6/price?ids=SOL"]) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(6_000) });
+      if (!res.ok) continue;
+      const j = (await res.json()) as { data?: Record<string, { price?: number | string }> };
+      const d = j.data ?? {}; const k = Object.keys(d)[0];
+      const px = k ? Number(d[k].price) : 0;
+      if (px > 0) return px;
+    } catch { /* try next */ }
+  }
+  return 0;
+}
+
 export interface ParsedTx {
   slot: number; blockTime: number | null;
   meta: { err: unknown; fee: number; preBalances: number[]; postBalances: number[]; preTokenBalances?: Array<{ accountIndex: number; mint: string; owner?: string; uiTokenAmount: { uiAmount: number | null } }>; postTokenBalances?: Array<{ accountIndex: number; mint: string; owner?: string; uiTokenAmount: { uiAmount: number | null } }> } | null;

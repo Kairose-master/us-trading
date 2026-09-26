@@ -7,7 +7,7 @@ import { PumpPortalFeed, type FeedEvent } from "./feed.js";
 import { PumpLedger, DEFAULT_LEDGER_COSTS, type LedgerCosts, type LedgerSnapshot } from "./ledger.js";
 import { applyOutcome, lotExits, onLeaderTrade, DEFAULT_COPY_POLICY, type CopyAction, type CopyPolicy, type Follow, type LeaderRecent } from "./copy.js";
 import { initialStanding, roundTripsOf, scoreWallets, DEFAULT_THRESHOLDS, PROVISIONAL_STANDING, type ScoreThresholds, type WalletStats, type WalletTrade } from "./wallets.js";
-import { parseTxDeltas, readCurve, tokenBalance, waitForTx, walletSol, walletTokenBalances } from "./solana-rpc.js";
+import { parseTxDeltas, readCurve, solUsdPrice, tokenBalance, usdcBalance, waitForTx, walletSol, walletTokenBalances } from "./solana-rpc.js";
 import { progress } from "./curve.js";
 import { isSolanaAddress, lightningTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
 import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
@@ -46,7 +46,7 @@ const TX_TIMEOUT_MS = 90_000;
 const RECONCILE_MS = 2 * 60_000;
 export type PumpMode = "paper" | "real";
 interface ModeState { mode: PumpMode; since: string | null; by: string | null; walletPubkey: string | null }
-interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; syncedAt: string | null; startSol: number | null; since: string | null; stats: { buys: number; sells: number; failed: number } }
+interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; startSol: number | null; since: string | null; stats: { buys: number; sells: number; failed: number } }
 const EQUITY_SNAPSHOT_MS = 5 * 60_000;
 const MARK_STALE_MS = 10_000;
 const TRADE_BUFFER_H = 48;
@@ -135,7 +135,8 @@ class PumpfunDesk extends EventEmitter {
     if (!this.modeSt.walletPubkey && config.PUMPFUN_WALLET_PUBKEY) this.modeSt.walletPubkey = config.PUMPFUN_WALLET_PUBKEY;
     let live: LiveState | null = null;
     try { if (existsSync(LIVE_FILE)) live = JSON.parse(readFileSync(LIVE_FILE, "utf-8")) as LiveState; } catch (e) { logger.warn("[pumpfun] live ledger restore failed — fresh", { error: (e as Error).message }); }
-    this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, syncedAt: null, startSol: null, since: null, stats: { buys: 0, sells: 0, failed: 0 } };
+    this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, usdc: 0, solUsd: 0, syncedAt: null, startSol: null, since: null, stats: { buys: 0, sells: 0, failed: 0 } };
+    this.liveSt.usdc ??= 0; this.liveSt.solUsd ??= 0;
     this.liveSt.policy = { ...DEFAULT_LIVE_POLICY, ...this.liveSt.policy };
     // 저장된 옛 기본값(25/100/20) → 러그 시장용 기본값으로 이전
     if (this.liveSt.policy.maxPositionPct === 25 && this.liveSt.policy.grossMaxPct === 100) { this.liveSt.policy.maxPositionPct = DEFAULT_LIVE_POLICY.maxPositionPct; this.liveSt.policy.grossMaxPct = DEFAULT_LIVE_POLICY.grossMaxPct; }
@@ -435,11 +436,16 @@ class PumpfunDesk extends EventEmitter {
   }
 
   // ===== 실주문 =====
-  liveEquitySol(): number { return this.liveSt.walletSol + this.liveLedger.positionsSol(); }
+  /** USDC 를 SOL 로 환산 — 자본 기준(에쿼티)에 포함. 실제 매수는 네이티브 SOL 로만 나가고 liveBuySize 가 지갑 SOL 로 상한을 건다 */
+  usdcInSol(): number { return this.liveSt.solUsd > 0 ? this.liveSt.usdc / this.liveSt.solUsd : 0; }
+  liveEquitySol(): number { return this.liveSt.walletSol + this.usdcInSol() + this.liveLedger.positionsSol(); }
   async syncWallet(): Promise<number> {
     if (!this.modeSt.walletPubkey) return this.liveSt.walletSol;
-    try { this.liveSt.walletSol = await walletSol(this.modeSt.walletPubkey); this.liveSt.syncedAt = new Date().toISOString(); this.liveError = null; }
-    catch (e) { this.liveError = (e as Error).message; }
+    try {
+      const [sol, usdc, px] = await Promise.all([walletSol(this.modeSt.walletPubkey), usdcBalance(this.modeSt.walletPubkey).catch(() => this.liveSt.usdc), solUsdPrice().catch(() => 0)]);
+      this.liveSt.walletSol = sol; this.liveSt.usdc = usdc; if (px > 0) this.liveSt.solUsd = px;
+      this.liveSt.syncedAt = new Date().toISOString(); this.liveError = null;
+    } catch (e) { this.liveError = (e as Error).message; }
     return this.liveSt.walletSol;
   }
   private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1, standingOverride?: number, pctOverride?: number) {
@@ -637,7 +643,7 @@ class PumpfunDesk extends EventEmitter {
     const eq = this.liveEquitySol();
     return {
       mode: this.modeSt.mode, since: this.modeSt.since, by: this.modeSt.by, walletPubkey: this.modeSt.walletPubkey, hasKey: this.feed.hasKey,
-      walletSol: +this.liveSt.walletSol.toFixed(6), syncedAt: this.liveSt.syncedAt, equitySol: +eq.toFixed(6), positionsSol: +this.liveLedger.positionsSol().toFixed(6),
+      walletSol: +this.liveSt.walletSol.toFixed(6), usdc: +this.liveSt.usdc.toFixed(4), solUsd: this.liveSt.solUsd, usdcInSol: +this.usdcInSol().toFixed(6), syncedAt: this.liveSt.syncedAt, equitySol: +eq.toFixed(6), positionsSol: +this.liveLedger.positionsSol().toFixed(6),
       startSol: this.liveSt.startSol, liveSince: this.liveSt.since, returnPct: this.liveSt.startSol ? +(((eq - this.liveSt.startSol) / this.liveSt.startSol) * 100).toFixed(2) : null,
       day: this.liveSt.day, dayPct: this.liveSt.day.startEquitySol > 0 ? +(((eq - this.liveSt.day.startEquitySol) / this.liveSt.day.startEquitySol) * 100).toFixed(2) : 0,
       policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError,

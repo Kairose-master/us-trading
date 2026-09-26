@@ -403,6 +403,20 @@ owner 실측: 여러 종목에 작게 분산하는 것보다 "될 것 같은 차
 정직한 경고(문서에 남긴다): 몰빵은 우리가 만든 러그 방어(작은 크기)를 정면으로 거스른다. 한 번의 러그가 그날 수익을 전부 지운다. 실측 표본이 작고 생존편향이 있다.
 그래서 기본 OFF 이고, 켤 때도 `maxConvictionLots`·`convictionPct`·`convictionMinScore` 로 강도를 조절한다. Railway 에서 `PUMPFUN_*` 정책이 아니라 `POST /pumpfun/policy {convictionMode:1, convictionPct:40, ...}` 로 켠다.
 
+### USDC 를 자본으로 계상 + 잔액조회 버그 (2026-09-26)
+
+**버그**: `liveEquitySol()` 이 네이티브 SOL(`walletSol`)만 세고 지갑의 USDC 는 무시했다. 그래서 지갑에 USDC 가 있어도 에쿼티/수익률/사이징에 하나도 안 잡혔다(자본이 실제보다 작게 나옴).
+
+**고침**:
+- `solana-rpc.ts`: `usdcBalance(pubkey)`(USDC mint `EPjF…Dt1v`, 6 decimals) + `solUsdPrice()`(Jupiter Price API, 실패 시 0 → 호출부가 직전 값 유지).
+- `desk.ts`: `LiveState` 에 `usdc`·`solUsd` 추가(부팅 때 `??= 0` 이전). `syncWallet()` 이 `[walletSol, usdcBalance, solUsdPrice]` 를 한 번에 조회한다.
+  `usdcInSol()` = USDC ÷ SOL가격. **`liveEquitySol()` = walletSol + usdcInSol() + positionsSol** — 이제 USDC 가 자본으로 잡혀 에쿼티·수익률·사이징이 맞다.
+- `GET /pumpfun`.live / `/pumpfun/mode` 에 `usdc`·`solUsd`·`usdcInSol` 노출. 대시보드 헤더·"지갑 SOL/실포지션" 타일에 USDC 표시.
+
+**정직한 한계 — USDC 를 "쓰지는" 못한다**: PumpPortal Lightning 은 지갑 **서명키를 자기가** 들고 있어서(우리 백엔드는 임의 Solana 트랜잭션에 서명 못 함) USDC→SOL 스왑을 봇이 자동으로 못 한다.
+그래서 USDC 는 **자본(에쿼티)으로 계상**되고 화면에 뜨지만, 실제 커브 매수는 여전히 네이티브 SOL 로만 나가고 `liveBuySize` 가 지갑 SOL 로 상한을 건다.
+USDC 를 실제로 굴리려면 (a) 지갑에서 USDC→SOL 수동 스왑, 또는 (b) Local-API 서명(키를 서버 금고에)으로 이전 — 둘 중 하나가 필요하다.
+
 ### 아직 없는 것 (다음)
 
 - (완료 → 복합 결정의 momentum 엔진) ④ KOTH · ⑤ 졸업 직후 모멘텀.

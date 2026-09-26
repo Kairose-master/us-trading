@@ -934,7 +934,7 @@ export async function pumpfunSetPolicy(patch: Partial<PumpPolicy>): Promise<{ ok
 export interface PumpLivePolicy { maxPositionPct: number; grossMaxPct: number; maxPositionSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number; dustSol?: number }
 export interface PumpLive {
   mode: "paper" | "real"; since: string | null; by: string | null; walletPubkey: string | null; hasKey: boolean
-  walletSol: number; syncedAt: string | null; equitySol: number; positionsSol: number; startSol: number | null; liveSince: string | null; returnPct: number | null
+  walletSol: number; usdc: number; solUsd: number; usdcInSol: number; syncedAt: string | null; equitySol: number; positionsSol: number; startSol: number | null; liveSince: string | null; returnPct: number | null
   day: { date: string; startEquitySol: number }; dayPct: number
   policy: PumpLivePolicy; stats: { buys: number; sells: number; failed: number }; inflight: string[]; error: string | null
   lots: PumpLot[]; orders: PumpOrder[]
