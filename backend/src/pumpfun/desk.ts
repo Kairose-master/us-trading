@@ -404,14 +404,14 @@ class PumpfunDesk extends EventEmitter {
       const convOpen = (lots: Iterable<{ via: string }>) => [...lots].filter((l) => l.via === "rule:conviction").length;
       const paperSlots = Math.max(0, conv.maxConvictionLots - convOpen(this.ledger.lots.values()));
       const liveSlots = Math.max(0, conv.maxConvictionLots - convOpen(this.liveLedger.lots.values()));
-      const mk = (e: (typeof entries)[number]) => ({ type: "buy" as const, mint: e.mint, solIn: +(this.ledger.equitySol() * (conv.convictionPct / 100) * e.r.sizeMult).toFixed(6), via: "rule:conviction", reason: `CONVICTION ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` });
+      const mk = (e: (typeof entries)[number]) => ({ type: "buy" as const, mint: e.mint, solIn: +(this.ledger.equitySol() * (conv.convictionPct / 100)).toFixed(6), via: "rule:conviction", reason: `CONVICTION ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` });
       for (const e of eligible.slice(0, paperSlots)) {
         const lotId = this.apply(mk(e));
         if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
       }
       if (this.modeSt.mode === "real") {
         if (eligible.length && !liveSlots) this.noteBlock(eligible[0].mint, `conviction: live slot full (${conv.maxConvictionLots} open)`);
-        for (const e of eligible.slice(0, liveSlots)) void this.applyLive(mk(e), undefined, e.r.sizeMult, 1, conv.convictionPct);
+        for (const e of eligible.slice(0, liveSlots)) void this.applyLive(mk(e), undefined, 1, 1, conv.convictionPct); // 몰빵은 점수·커뮤니티 배수로 깎지 않는다 — 에쿼티 × convictionPct 그대로(러그 차단은 blocked 로 이미 거름)
       }
     } else {
       for (const e of entries) {
@@ -736,7 +736,7 @@ class PumpfunDesk extends EventEmitter {
     if ("error" in r) { logger.warn("[pumpfun] sell refused", { lotId: a.lotId, error: r.error }); return; }
     this.st.stats.exits += 1;
     // 귀속 — 로트가 닫히면 그 지갑의 standing 이 움직인다. 복합 로트면 진입에 표를 낸 엔진들의 가중치가 움직인다
-    if (r.closed && r.order.pnlPct !== undefined && lot.via === "rule:ensemble") {
+    if (r.closed && r.order.pnlPct !== undefined && (lot.via === "rule:ensemble" || lot.via === "rule:conviction")) {
       const votes = this.st.entryVotes?.[lot.id];
       if (votes) { this.st.engineWeights = attribute(this.st.engineWeights ?? DEFAULT_ENGINE_WEIGHTS, votes, r.order.pnlPct); delete this.st.entryVotes![lot.id]; logger.info("[pumpfun] engine weights updated", { pnlPct: r.order.pnlPct, weights: this.st.engineWeights }); }
     }
