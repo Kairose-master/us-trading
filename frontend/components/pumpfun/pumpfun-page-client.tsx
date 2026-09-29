@@ -459,6 +459,23 @@ export function PumpfunPageClient() {
         </Card>
       </div>
 
+      {data.rug && (
+        <Card>
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5">
+            <h2 className="text-sm font-semibold">러그 방어 — 진입 전 물량 구조 스크린 · 보유 중 덤프 감시</h2>
+            <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", data.rug.policy.on ? "bg-chart-1/15 text-chart-1" : "bg-destructive/15 text-destructive")}>{data.rug.policy.on ? "ON" : "OFF"}</span>
+            <span className="ml-auto font-mono text-[10px] text-muted-foreground">스크린 {data.rug.stats.screened} · 차단 {data.rug.stats.blocked} · 기록 불완전 {data.rug.stats.unknown} · 덤프 청산 {data.rug.stats.dumps} · 오류 {data.rug.stats.errors} · 감시 중 {data.rug.watching.length}</span>
+          </div>
+          <div className="flex flex-col gap-1 p-4 font-mono text-[11px]">
+            <div className="text-muted-foreground">차단: 개발자 &gt;{data.rug.policy.maxCreatorPct}% · 최대 홀더 &gt;{data.rug.policy.maxTop1Pct}% · 상위10 &gt;{data.rug.policy.maxTop10Pct}% · 번들 &gt;{data.rug.policy.maxBundlePct}% · 첫 1분 스나이퍼 &gt;{data.rug.policy.maxSnipersPct}% · 5분 지갑당 거래 &gt;{data.rug.policy.maxTradesPerWallet5m} · 5분 매수자 &lt;{data.rug.policy.minUniqBuyers5m}</div>
+            <div className="text-muted-foreground">보유 중 감시(무료 API {Math.round(data.rug.policy.pollMs / 1000)}초 폴링): 개발자 매도 · 진입 때 ≥{data.rug.policy.watchHolderPct}% 홀더·번들이 보유의 {Math.round(data.rug.policy.watchSellFrac * 100)}% 이상 매도{data.rug.policy.whaleSellPct > 0 ? ` · 한 번에 공급 ${data.rug.policy.whaleSellPct}% 이상 매도` : ""} → 전량 청산</div>
+            {data.rug.recent.length > 0 && <div className="mt-1 flex flex-col gap-0.5">{data.rug.recent.slice(0, 8).map((r, i) => (
+              <div key={i}><span className="text-muted-foreground">{ago(r.ts)}</span> · <a href={`https://pump.fun/coin/${r.mint}`} target="_blank" rel="noreferrer" className="underline decoration-dotted">{short(r.mint)}</a> · <span className={r.kind === "pass" ? "text-chart-1" : "text-destructive"}>{r.kind === "block" ? "차단" : r.kind === "dump" ? "덤프 청산" : "통과"}</span> · {r.why}</div>
+            ))}</div>}
+          </div>
+        </Card>
+      )}
+
       <Card>
         <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-4 py-2.5">
           <h2 className="text-sm font-semibold">복합 결정 — 흐름 · 모멘텀 · 카피 표 · 커뮤니티</h2>

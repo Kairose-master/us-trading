@@ -498,6 +498,8 @@ router.post("/pumpfun/mode", requireSession, requireOwner, async (req, res) => {
   res.json({ ok: true, ...pumpfunDesk.liveStatus() });
 });
 router.post("/pumpfun/live/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setLivePolicy(req.body ?? {}) }); });
+// 러그 스크린·덤프 감시 기준 (rugscreen.ts)
+router.post("/pumpfun/rug/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setRugPolicy(req.body ?? {}) }); });
 // 수동 검수 — 봇이 올린 매수 후보를 owner 가 승인/거절. 승인하면 그 크기(선택: body.sol)로 실매수
 router.get("/pumpfun/approvals", (_req, res) => { res.json({ pending: pumpfunDesk.pendingList() }); });
 router.post("/pumpfun/approvals/:id/approve", requireSession, requireOwner, async (req, res) => {

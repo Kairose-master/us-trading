@@ -11,6 +11,7 @@ import { parseTxDeltas, readCurve, solUsdPrice, tokenBalance, usdcBalance, waitF
 import { progress } from "./curve.js";
 import { isSolanaAddress, executeTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
 import { hasSigner, signerPubkey, swapUsdcToSol } from "./signer.js";
+import { DEFAULT_RUG_POLICY, dumpSignal, fetchRecentTrades, fetchTradesFromCreation, rugFeatures, rugVerdict, watchSet, type RugPolicy, type RugTrade, type RugVerdict } from "./rugscreen.js";
 import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
 import { CURATED_SEEDS, isBlockedWallet } from "./curated.js";
 import { flowRead, momentumRead, type FlowTrade } from "./flow.js";
@@ -79,6 +80,7 @@ interface State {
   /** 복합 결정 — 엔진 가중치(실현 결과로 움직인다)·정책 */
   engineWeights?: EngineWeights;
   ensemble?: EnsemblePolicy;
+  rug?: RugPolicy;
   /** 로트별 진입 표 — 청산 때 엔진 귀속에 쓴다 */
   entryVotes?: Record<string, Vote[]>;
   /** 확신 집중 기본 ON 이전을 한 번만 적용했는지 — 이후 owner 가 끄면 부팅 때 다시 켜지 않는다 */
@@ -141,6 +143,7 @@ class PumpfunDesk extends EventEmitter {
     if (this.st.ensemble.enterScore === 65) this.st.ensemble.enterScore = DEFAULT_ENSEMBLE_POLICY.enterScore;
     if (this.st.ensemble.exitScore === 35) this.st.ensemble.exitScore = DEFAULT_ENSEMBLE_POLICY.exitScore;
     this.st.entryVotes ??= {};
+    this.st.rug = { ...DEFAULT_RUG_POLICY, ...(this.st.rug ?? {}) };
     // 확신 집중(몰빵)을 기본 정책으로 — owner 실측(분산보다 한 종목 집중 + 커브 초반 슬리피지 이점). 저장된 OFF 를 한 번만 ON 으로 이전
     // 확신 최소 점수가 진입 문턱(58)보다 높으면(옛 68) 자격 후보를 대부분 버려 매수가 안 나간다 — 진입 문턱에 맞춘다
     if (this.st.policy.convictionMinScore === 68) this.st.policy.convictionMinScore = DEFAULT_COPY_POLICY.convictionMinScore;
@@ -214,6 +217,7 @@ class PumpfunDesk extends EventEmitter {
     this.timers.push(setInterval(() => void this.pollHeldCommunity(), 60_000));
     this.timers.push(setInterval(() => void this.screen.poll().then(() => this.syncSubscriptions()), 30_000));
     this.timers.push(setInterval(() => void this.evaluateEnsemble(), 15_000));
+    this.timers.push(setInterval(() => void this.pollRugWatch(), (this.st.rug ?? DEFAULT_RUG_POLICY).pollMs));
     setTimeout(() => void this.screen.poll().then(() => this.syncSubscriptions()), 5_000).unref();
     this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.reconcileLive(); }, RECONCILE_MS));
     if (this.modeSt.mode === "real") setTimeout(() => void this.reconcileLive(), 10_000).unref();
@@ -412,6 +416,15 @@ class PumpfunDesk extends EventEmitter {
     }
     // 진입 집행 — 기본은 자격 후보를 각각 basePct 로. 확신 집중 모드면 점수 최상위 하나(들)에만 크게 몰고 나머지는 버린다
     entries.sort((a, b) => b.r.score - a.r.score);
+    // 러그 스크린 — 진입 직전, 생성부터의 전체 거래로 물량 구조를 본다(무료 API). 호출 절약으로 상위 3개만
+    if ((this.st.rug?.on ?? 0) >= 1 && entries.length) {
+      const kept: typeof entries = [];
+      for (const e of entries.slice(0, 3)) {
+        const v = await this.rugScreen(e.mint);
+        if (v.block) { this.rugStats.blocked += 1; this.noteBlock(e.mint, `RUG SCREEN: ${v.reasons.join("; ")}`); } else kept.push(e);
+      }
+      entries.splice(0, entries.length, ...kept);
+    }
     const conv = this.st.policy;
     if (!entries.length && !this.st.paused) {
       // 진입 자격 후보가 하나도 없다 — 가장 가까웠던 후보(미보유 최고점)의 이유를 남긴다
@@ -429,7 +442,7 @@ class PumpfunDesk extends EventEmitter {
       const mk = (e: (typeof entries)[number]) => ({ type: "buy" as const, mint: e.mint, solIn: +(this.ledger.equitySol() * (conv.convictionPct / 100)).toFixed(6), via: "rule:conviction", reason: `CONVICTION ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` });
       for (const e of eligible.slice(0, paperSlots)) {
         const lotId = this.apply(mk(e));
-        if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
+        if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.armRugWatch(e.mint); this.syncSubscriptions(); }
       }
       if (this.modeSt.mode === "real") {
         if (eligible.length && !liveSlots) this.noteBlock(eligible[0].mint, `conviction: live slot full (${conv.maxConvictionLots} open)`);
@@ -440,7 +453,7 @@ class PumpfunDesk extends EventEmitter {
         const solIn = +(this.ledger.equitySol() * (P.basePct / 100) * e.r.sizeMult).toFixed(6);
         const a = { type: "buy" as const, mint: e.mint, solIn, via: "rule:ensemble", reason: `ensemble ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` };
         const lotId = this.apply(a);
-        if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.syncSubscriptions(); }
+        if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.armRugWatch(e.mint); this.syncSubscriptions(); }
         if (this.modeSt.mode === "real") void this.applyLive(a, undefined, e.r.sizeMult, 1);
       }
     }
@@ -564,7 +577,7 @@ class PumpfunDesk extends EventEmitter {
         this.markApproved(ev.mint); // 산 코인은 관리 대상 — 검수 OFF(자동) 매수도 이후 청산은 봇이 맡는다
         const r = this.liveLedger.openFromFill({ mint: ev.mint, symbol: ev.mint.slice(0, 4), pool: ev.pool || "pump", bondingCurveKey: ev.bondingCurveKey, curve: ev.pool === "pump" && ev.vSol > 0 ? { vSol: ev.vSol, vTokens: ev.vTokens } : null, tokens, costSol, via: a.via, reason: a.reason, signature, ts });
         if ("error" in r) { logger.warn("[pumpfun] live lot open refused", { error: r.error }); return; }
-        this.liveSt.stats.buys += 1;
+        this.liveSt.stats.buys += 1; this.armRugWatch(ev.mint);
         logger.warn("[pumpfun] LIVE BUY", { mint: ev.mint, sol: costSol, tokens, via: a.via.slice(0, 8), signature });
         this.emit("live-order", r.order);
       } catch (e) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)}: ${(e as Error).message}`; logger.warn("[pumpfun] live buy error", { error: this.liveError }); }
@@ -728,6 +741,77 @@ class PumpfunDesk extends EventEmitter {
     await Promise.all(lots.map((l) => this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason })));
     return { sold: lots.length - this.liveLedger.lots.size, pending: this.liveLedger.lots.size };
   }
+  // ===== 러그 스크린·덤프 감시 (rugscreen.ts) =====
+  private rugCache = new Map<string, { at: number; verdict: RugVerdict; trades: RugTrade[]; creator: string | null }>();
+  private rugWatch = new Map<string, { watch: Map<string, number>; sold: Map<string, number>; creator: string | null; seen: Set<string>; lastTs: number }>();
+  rugStats = { screened: 0, blocked: 0, unknown: 0, dumps: 0, errors: 0 };
+  private rugRecent: Array<{ ts: string; mint: string; kind: "block" | "pass" | "dump"; why: string }> = [];
+  private noteRug(mint: string, kind: "block" | "pass" | "dump", why: string) { this.rugRecent.push({ ts: new Date().toISOString(), mint, kind, why }); if (this.rugRecent.length > 40) this.rugRecent.shift(); }
+  /** 진입 직전 판정 — 60초 캐시. 데이터를 못 받으면 막지 않고 "모름"(기존 커뮤니티·크기 가드가 남는다) */
+  private async rugScreen(mint: string): Promise<RugVerdict> {
+    const c = this.rugCache.get(mint);
+    if (c && Date.now() - c.at < 60_000) return c.verdict;
+    const P = this.st.rug ?? DEFAULT_RUG_POLICY;
+    try {
+      const comm = communityDesk.cached(mint) ?? await communityDesk.read(mint, { timeoutMs: 4_000 });
+      const creator = comm.facts.creator;
+      const createdMs = comm.facts.ageMin !== null ? Date.parse(comm.facts.fetchedAt) - comm.facts.ageMin * 60_000 : Date.now() - 24 * 3_600_000;
+      const { trades, complete } = await fetchTradesFromCreation(mint, createdMs, 20);
+      const f = rugFeatures(trades, creator, createdMs, Date.now(), complete);
+      const verdict = rugVerdict(f, P);
+      this.rugStats.screened += 1; if (verdict.unknown) this.rugStats.unknown += 1;
+      this.rugCache.set(mint, { at: Date.now(), verdict, trades, creator });
+      if (this.rugCache.size > 300) { const k = this.rugCache.keys().next().value; if (k) this.rugCache.delete(k); }
+      this.noteRug(mint, verdict.block ? "block" : "pass", verdict.block ? verdict.reasons.join("; ") : `ok — creator ${f.creatorPct?.toFixed(1) ?? "?"}% · top10 ${f.top10Pct.toFixed(0)}% · bundle ${f.bundle3sPct.toFixed(1)}%${f.complete ? "" : " (history incomplete)"}`);
+      return verdict;
+    } catch (e) {
+      this.rugStats.errors += 1;
+      return { block: false, reasons: [`rug screen failed: ${(e as Error).message}`], features: null, unknown: true };
+    }
+  }
+  /** 산 직후 — 진입 때 물량을 쥔 지갑(개발자·큰 홀더·번들)을 감시 목록에 올린다 */
+  private armRugWatch(mint: string) {
+    if (this.rugWatch.has(mint)) return;
+    const c = this.rugCache.get(mint);
+    if (!c) return;
+    const P = this.st.rug ?? DEFAULT_RUG_POLICY;
+    const lastTs = c.trades.length ? c.trades[c.trades.length - 1].ts : Date.now();
+    this.rugWatch.set(mint, { watch: watchSet(c.trades, c.creator, P), sold: new Map(), creator: c.creator, seen: new Set(), lastTs });
+  }
+  /** 보유 토큰의 최신 거래를 폴링 — 감시 지갑이 던지면 페이퍼·실 전량 청산 */
+  private rugPolling = false;
+  private async pollRugWatch() {
+    if (this.rugPolling) return; // 이전 폴링이 아직 돌면 건너뛴다 (API 간격 350ms × 보유 수)
+    this.rugPolling = true;
+    try { await this.pollRugWatchOnce(); } finally { this.rugPolling = false; }
+  }
+  private async pollRugWatchOnce() {
+    const P = this.st.rug ?? DEFAULT_RUG_POLICY;
+    const held = new Set([...this.ledger.heldMints(), ...this.liveLedger.heldMints()]);
+    for (const m of [...this.rugWatch.keys()]) if (!held.has(m)) this.rugWatch.delete(m);
+    if (P.on < 1) return;
+    for (const [mint, w] of this.rugWatch) {
+      let recent: RugTrade[];
+      try { recent = await fetchRecentTrades(mint); } catch { this.rugStats.errors += 1; continue; }
+      const fresh = recent.filter((x) => { const k = `${x.ts}:${x.wallet}:${x.side}:${x.tokens}`; if (x.ts < w.lastTs || w.seen.has(k)) return false; w.seen.add(k); return true; });
+      if (w.seen.size > 5_000) w.seen = new Set([...w.seen].slice(-2_000));
+      if (fresh.length) w.lastTs = Math.max(w.lastTs, ...fresh.map((x) => x.ts));
+      const why = dumpSignal(fresh, w.watch, w.sold, w.creator, P);
+      if (!why) continue;
+      this.rugStats.dumps += 1; this.noteRug(mint, "dump", why);
+      logger.warn("[pumpfun] RUG DUMP detected — exiting", { mint: mint.slice(0, 8), why });
+      for (const l of this.ledger.lotsOf(mint)) this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG DUMP: ${why}` });
+      if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG DUMP: ${why}` });
+      this.rugWatch.delete(mint);
+    }
+  }
+  setRugPolicy(patch: Partial<RugPolicy>): RugPolicy {
+    const next = { ...(this.st.rug ?? DEFAULT_RUG_POLICY) };
+    for (const [k, v] of Object.entries(patch)) if (typeof v === "number" && Number.isFinite(v) && k in next) (next as unknown as Record<string, number>)[k] = v;
+    this.st.rug = next; this.save(); return next;
+  }
+  rugStatus() { return { policy: this.st.rug ?? DEFAULT_RUG_POLICY, stats: this.rugStats, watching: [...this.rugWatch.entries()].map(([m, w]) => ({ mint: m, wallets: w.watch.size })), recent: this.rugRecent.slice(-15).reverse() }; }
+
   // ===== 수동 검수 대기열 =====
   private pending = new Map<string, Pending>();
   private rejected = new Map<string, number>(); // mint → 이 시각까지 다시 안 올림
@@ -962,6 +1046,7 @@ class PumpfunDesk extends EventEmitter {
       tradeBuffer: { trades: this.trades.length, hours: TRADE_BUFFER_H, wallets: this.lastScore?.ranked.length ?? null, eligible: this.lastScore?.eligible.length ?? null, provisional: this.lastScore?.provisional.length ?? null, lastRescoreAt: this.st.lastRescoreAt },
       budget: { msgsPerDay: this.st.policy.meteredBudgetMsgsPerDay, solPerDay: +(this.st.policy.meteredBudgetMsgsPerDay * 0.01 / 10_000).toFixed(4), overBudget: this.overBudget() },
       ensemble: this.ensembleStatus(),
+      rug: this.rugStatus(),
       community: { policy: communityDesk.policy, stats: communityDesk.stats, recent: communityDesk.recentReads(12).map((r) => ({ mint: r.facts.mint, symbol: r.facts.symbol, score: r.score, multiplier: r.multiplier, block: r.block, unknown: r.unknown, reasons: r.reasons, at: r.facts.fetchedAt, replyCount: r.facts.replyCount, telegramMembers: r.facts.telegramMembers, isLive: r.facts.isLive })) },
       stats: this.st.stats,
       recentCreates: this.recentCreates.slice(-20).reverse(),
