@@ -130,8 +130,10 @@ export interface RugPolicy {
   /** 보유 토큰 최근 거래 폴링 간격 (ms) */
   pollMs: number;
 }
-// 실측(2026-09-29, 토큰 72·진입 23·러그 6·대박 4 — 작은 표본): 극단값만 막는다. 대박을 하나도 안 막은 기준만 골랐다
-export const DEFAULT_RUG_POLICY: RugPolicy = { on: 1, maxCreatorPct: 10, maxTop1Pct: 100, maxTop10Pct: 50, maxBundlePct: 15, maxSnipersPct: 30, maxTradesPerWallet5m: 5, minUniqBuyers5m: 0, maxHolders: 120, watchHolderPct: 2, watchSellFrac: 0.5, watchBundle: 0, whaleSellPct: 0, pollMs: 5_000 };
+// 실측(2026-09-29): 토큰 72·진입 23 으로 처음 정하고, 토큰 154·진입 66(러그 21·대박 19)으로 다시 검증.
+// 진입 차단은 두 표본 모두 유지(66건: 러그 19/21 차단, 대박 6/19 동반 차단, 평균 +12.2 → +18.5%).
+// 보유 중 감시는 개발자 매도만 — "≥2% 홀더 절반 매도" 는 23건에선 이득, 66건에선 손해(+14.5 → +11.1%, 대박 반토막)라 끔(watchHolderPct 100)
+export const DEFAULT_RUG_POLICY: RugPolicy = { on: 1, maxCreatorPct: 10, maxTop1Pct: 100, maxTop10Pct: 50, maxBundlePct: 15, maxSnipersPct: 30, maxTradesPerWallet5m: 5, minUniqBuyers5m: 0, maxHolders: 120, watchHolderPct: 100, watchSellFrac: 0.5, watchBundle: 0, whaleSellPct: 0, pollMs: 5_000 };
 
 export interface RugVerdict { block: boolean; reasons: string[]; features: RugFeatures | null; unknown: boolean }
 export function rugVerdict(f: RugFeatures, p: RugPolicy): RugVerdict {

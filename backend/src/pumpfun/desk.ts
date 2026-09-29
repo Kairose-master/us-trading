@@ -144,6 +144,8 @@ class PumpfunDesk extends EventEmitter {
     if (this.st.ensemble.exitScore === 35) this.st.ensemble.exitScore = DEFAULT_ENSEMBLE_POLICY.exitScore;
     this.st.entryVotes ??= {};
     this.st.rug = { ...DEFAULT_RUG_POLICY, ...(this.st.rug ?? {}) };
+    // 66건 재검증에서 '≥2% 홀더 절반 매도' 청산이 손해로 뒤집혔다 — 저장된 옛 기본값(2)을 끈다(100)
+    if (this.st.rug.watchHolderPct === 2) this.st.rug.watchHolderPct = DEFAULT_RUG_POLICY.watchHolderPct;
     // 확신 집중(몰빵)을 기본 정책으로 — owner 실측(분산보다 한 종목 집중 + 커브 초반 슬리피지 이점). 저장된 OFF 를 한 번만 ON 으로 이전
     // 확신 최소 점수가 진입 문턱(58)보다 높으면(옛 68) 자격 후보를 대부분 버려 매수가 안 나간다 — 진입 문턱에 맞춘다
     if (this.st.policy.convictionMinScore === 68) this.st.policy.convictionMinScore = DEFAULT_COPY_POLICY.convictionMinScore;
