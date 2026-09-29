@@ -83,15 +83,20 @@ function PendingRow({ p, onDone }: { p: PumpPending; onDone: () => Promise<unkno
   return (
     <div className="flex flex-col gap-1.5 rounded-md border border-border p-3 text-[11px]">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-semibold">{name}</span>
+        <a href={`https://pump.fun/coin/${p.mint}`} target="_blank" rel="noreferrer" className="text-sm font-semibold underline underline-offset-2" title="pump.fun 토큰 페이지 열기">{name} ↗</a>
         <span className="font-mono text-muted-foreground" title={p.mint}>{short(p.mint)}</span>
         {p.score !== null && <span className="rounded-sm bg-chart-1/15 px-1.5 py-0.5 font-mono text-chart-1">점수 {p.score}</span>}
         <span className="font-mono text-muted-foreground">{p.via === "rule:conviction" ? "몰빵 후보" : p.via === "rule:ensemble" ? "복합 후보" : `카피 ${short(p.via)}`}</span>
         <span className={cn("ml-auto font-mono", left < 60 ? "text-destructive" : "text-muted-foreground")}>남은 {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>
       </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <a href={`https://pump.fun/coin/${p.mint}`} target="_blank" rel="noreferrer" className="rounded-md bg-chart-1 px-3 py-1.5 text-xs font-semibold text-white">토큰 페이지 열기 ↗</a>
+        {c?.website && <a href={c.website} target="_blank" rel="noreferrer" className="rounded-md border border-border px-3 py-1.5 text-xs">공식 웹사이트 ↗</a>}
+        <a href={`https://dexscreener.com/solana/${p.mint}`} target="_blank" rel="noreferrer" className="rounded-md border border-border px-3 py-1.5 text-xs">차트 (DexScreener) ↗</a>
+      </div>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-muted-foreground">
-        {link(`https://pump.fun/coin/${p.mint}`, "pump.fun")}{link(`https://dexscreener.com/solana/${p.mint}`, "DexScreener")}{link(`https://solscan.io/token/${p.mint}`, "Solscan")}
-        {c?.twitter && link(c.twitter, "X")}{c?.telegram && link(c.telegram, "Telegram")}{c?.website && link(c.website, "웹사이트")}
+        {link(`https://solscan.io/token/${p.mint}`, "Solscan (홀더)")}
+        {c?.twitter && link(c.twitter, "X")}{c?.telegram && link(c.telegram, "Telegram")}
       </div>
       <div className="font-mono text-muted-foreground">엔진: {p.votes.length ? p.votes.join(" · ") : "—"}</div>
       <div className="font-mono">
@@ -126,7 +131,11 @@ function ApprovalCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
       const fresh = pending.filter((p) => !seen.current!.has(p.id))
       if (fresh.length) {
         beep()
-        if (typeof Notification !== "undefined" && Notification.permission === "granted") for (const p of fresh) new Notification("pump.fun 매수 승인 대기", { body: `${p.symbol ?? p.mint.slice(0, 6)} · 점수 ${p.score ?? "—"} · 제안 ${p.suggestedSol} SOL` })
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") for (const p of fresh) {
+          // 알림을 누르면 바로 그 토큰 페이지로
+          const n = new Notification("pump.fun 추천 토큰 — 승인 대기", { body: `${p.symbol ?? p.mint.slice(0, 6)} · 점수 ${p.score ?? "—"} · 제안 ${p.suggestedSol} SOL · 누르면 토큰 페이지`, tag: p.id })
+          n.onclick = () => { window.open(`https://pump.fun/coin/${p.mint}`, "_blank", "noopener,noreferrer"); window.focus(); n.close() }
+        }
       }
     }
     seen.current = ids
@@ -140,9 +149,9 @@ function ApprovalCard({ live, onChanged }: { live: PumpLive; onChanged: () => Pr
   return (
     <Card>
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-        <h2 className="text-sm font-semibold">매수 승인 대기 — 수동 검수</h2>
-        <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", on ? "bg-chart-1/15 text-chart-1" : "bg-destructive/15 text-destructive")}>{on ? "ON — 승인한 것만 실매수" : "OFF — 봇이 자동 실매수"}</span>
-        <span className="font-mono text-[10px] text-muted-foreground">제안 유효 {live.policy.approvalTtlMin ?? 10}분 · 청산(손절·익절·러그 감시)은 자동 · 페이퍼는 봇 단독 판단(그림자)</span>
+        <h2 className="text-sm font-semibold">추천 토큰 — 승인한 코인만 매수·매도</h2>
+        <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", on ? "bg-chart-1/15 text-chart-1" : "bg-destructive/15 text-destructive")}>{on ? "ON — 승인한 코인만 봇이 사고판다" : "OFF — 봇이 자동으로 사고판다"}</span>
+        <span className="font-mono text-[10px] text-muted-foreground">제안 유효 {live.policy.approvalTtlMin ?? 10}분 · 승인한 코인의 청산(손절·익절·러그 감시)은 자동 · 승인 안 한 지갑 토큰은 안 건드림 · 페이퍼는 봇 단독 판단(그림자)</span>
         <div className="ml-auto flex gap-2">
           {!notify && <button type="button" onClick={() => void askNotify()} className="rounded-md border border-border px-2 py-1 text-[11px]">브라우저 알림 켜기</button>}
           <button type="button" onClick={() => void toggle()} className="rounded-md border border-border px-2 py-1 text-[11px]">{on ? "검수 끄기…" : "검수 켜기"}</button>

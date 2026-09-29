@@ -47,7 +47,7 @@ const TX_TIMEOUT_MS = 90_000;
 const RECONCILE_MS = 2 * 60_000;
 export type PumpMode = "paper" | "real";
 interface ModeState { mode: PumpMode; since: string | null; by: string | null; walletPubkey: string | null }
-interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; stats: { buys: number; sells: number; failed: number } }
+interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; approvedMints?: Record<string, string>; stats: { buys: number; sells: number; failed: number } }
 interface Pending {
   id: string; mint: string; symbol: string | null; createdAt: string; expiresAt: string; suggestedSol: number; priceAtProposal: number;
   via: string; reason: string; score: number | null; votes: string[];
@@ -152,6 +152,8 @@ class PumpfunDesk extends EventEmitter {
     try { if (existsSync(LIVE_FILE)) live = JSON.parse(readFileSync(LIVE_FILE, "utf-8")) as LiveState; } catch (e) { logger.warn("[pumpfun] live ledger restore failed — fresh", { error: (e as Error).message }); }
     this.liveSt = live ?? { ledger: new PumpLedger(0).snapshot(), policy: DEFAULT_LIVE_POLICY, day: { date: today(), startEquitySol: 0 }, walletSol: 0, usdc: 0, solUsd: 0, syncedAt: null, stats: { buys: 0, sells: 0, failed: 0 } };
     this.liveSt.usdc ??= 0; this.liveSt.solUsd ??= 0;
+    // 승인 코인 목록 — 처음 생길 때 지금 실보유 중인 종목은 승인된 것으로 친다(관리 중이던 포지션을 방치하면 러그에 그대로 맞는다)
+    if (!this.liveSt.approvedMints) { this.liveSt.approvedMints = {}; for (const l of this.liveSt.ledger.lots ?? []) this.liveSt.approvedMints[l.mint] = new Date().toISOString(); }
     this.liveSt.policy = { ...DEFAULT_LIVE_POLICY, ...this.liveSt.policy };
     // 저장된 옛 기본값(25/100/20) → 러그 시장용 기본값으로 이전
     if (this.liveSt.policy.maxPositionPct === 25 && this.liveSt.policy.grossMaxPct === 100) { this.liveSt.policy.maxPositionPct = DEFAULT_LIVE_POLICY.maxPositionPct; this.liveSt.policy.grossMaxPct = DEFAULT_LIVE_POLICY.grossMaxPct; }
@@ -278,6 +280,14 @@ class PumpfunDesk extends EventEmitter {
   /** 보호 종목 — 봇이 절대 사고팔지 않고 편입도 안 한다: 대시보드로 발행한 mint + config 목록(스크립트 발행 SCAM·수동 보유분) */
   private protectedMints = new Set<string>(config.PUMPFUN_PROTECTED_MINTS);
   isProtectedMint(mint: string): boolean { return launchDesk.isOwnMint(mint) || this.protectedMints.has(mint); }
+  /** 봇이 사고팔아도 되는 코인인가 — 수동 검수 ON 이면 owner 가 승인한 코인만. 그 밖의 지갑 토큰은 편입도 매도도 안 한다 (owner, 2026-09-29) */
+  isManagedMint(mint: string): boolean { return this.liveSt.policy.manualApproval < 1 || !!this.liveSt.approvedMints?.[mint]; }
+  private markApproved(mint: string) { (this.liveSt.approvedMints ??= {})[mint] = new Date().toISOString(); }
+  /** 하루 지난 승인 중 실보유가 없는 것은 지운다 — 나중에 같은 토큰을 수동으로 사도 봇이 끌어가지 않게 */
+  private pruneApproved() {
+    const cutoff = Date.now() - 24 * 3_600_000; const a = this.liveSt.approvedMints ?? {};
+    for (const [m, at] of Object.entries(a)) if (Date.parse(at) < cutoff && !this.liveLedger.lotsOf(m).length) delete a[m];
+  }
 
   // ===== 이벤트 =====
   private onEvent(ev: FeedEvent) {
@@ -547,6 +557,7 @@ class PumpfunDesk extends EventEmitter {
           if (!(tokens > 0)) { this.liveSt.stats.failed += 1; this.liveError = `buy ${ev.mint.slice(0, 8)}: unconfirmed and no balance change (${signature.slice(0, 12)}) — reconcile will adopt if it lands`; return; }
           if (!(costSol > 0)) costSol = sol; // 지갑 동기화가 늦었으면 주문액으로
         }
+        this.markApproved(ev.mint); // 산 코인은 관리 대상 — 검수 OFF(자동) 매수도 이후 청산은 봇이 맡는다
         const r = this.liveLedger.openFromFill({ mint: ev.mint, symbol: ev.mint.slice(0, 4), pool: ev.pool || "pump", bondingCurveKey: ev.bondingCurveKey, curve: ev.pool === "pump" && ev.vSol > 0 ? { vSol: ev.vSol, vTokens: ev.vTokens } : null, tokens, costSol, via: a.via, reason: a.reason, signature, ts });
         if ("error" in r) { logger.warn("[pumpfun] live lot open refused", { error: r.error }); return; }
         this.liveSt.stats.buys += 1;
@@ -558,6 +569,7 @@ class PumpfunDesk extends EventEmitter {
     }
     const lot = this.liveLedger.lots.get(a.lotId);
     if (!lot || this.inflight.has(`sell:${lot.id}`)) return;
+    if (!this.isManagedMint(lot.mint)) { this.noteBlock(lot.mint, "sell skipped — not an approved coin"); return; }
     if (a.ladderAt !== undefined) { if ((lot.ladderDone ?? []).includes(a.ladderAt)) return; lot.ladderDone = [...(lot.ladderDone ?? []), a.ladderAt]; }
     const bo = this.sellBackoff.get(lot.id);
     if (bo && Date.now() < bo.nextAt) return;
@@ -628,8 +640,12 @@ class PumpfunDesk extends EventEmitter {
     // 이미 편입돼 있던 보호 종목은 장부에서 방출한다 — 팔지 않고 (수동 보유로) 봇 장부에서만 제거
     for (const lot of [...this.liveLedger.lots.values()]) if (this.isProtectedMint(lot.mint)) { this.liveLedger.closeFromFill(lot.id, lot.tokens, lot.markSol, "released — protected mint, held manually", ""); out.closed.push(lot.mint); }
     for (const lot of [...this.ledger.lots.values()]) if (this.isProtectedMint(lot.mint)) this.ledger.sell(lot.id, 1, "released — protected mint");
+    // 승인 안 한 코인이 장부에 있으면 방출 — 팔지 않고 수동 보유로 둔다
+    this.pruneApproved();
+    for (const lot of [...this.liveLedger.lots.values()]) if (!this.isManagedMint(lot.mint)) { this.liveLedger.closeFromFill(lot.id, lot.tokens, lot.markSol, "released — not an approved coin, held manually", ""); out.closed.push(lot.mint); }
     for (const [mint, amount] of onChain) {
       if (this.isProtectedMint(mint)) continue; // 보호 종목은 편입하지 않는다 — 봇 장부 밖에 둔다 (수동 관리)
+      if (!this.isManagedMint(mint)) continue; // 승인 안 한 코인은 편입하지 않는다 — owner 가 따로 산 토큰일 수 있다
       const lots = this.liveLedger.lotsOf(mint);
       if (lots.length) continue;
       if (this.inflight.has(`buy:${mint}`)) continue;
@@ -754,7 +770,7 @@ class PumpfunDesk extends EventEmitter {
     if (this.isProtectedMint(p.mint)) { this.pending.delete(id); return { error: "보호 종목" }; }
     const size = sol !== undefined ? sol : p.suggestedSol;
     if (!(size >= 0.01)) return { error: "매수 크기는 0.01 SOL 이상" };
-    this.pending.delete(id);
+    this.pending.delete(id); this.markApproved(p.mint);
     logger.warn("[pumpfun] buy APPROVED by owner", { mint: p.mint.slice(0, 8), sol: size, by });
     const before = this.liveLedger.lotsOf(p.mint).length; this.liveError = null;
     const fresh = this.lastQuote.has(p.mint) || this.quoteFromCandidate(p.mint) !== null;
@@ -777,7 +793,7 @@ class PumpfunDesk extends EventEmitter {
       localSign: hasSigner(), execVia: hasSigner() ? "local" : (this.feed.hasKey ? "lightning" : "none"),
       walletSol: +this.liveSt.walletSol.toFixed(6), usdc: +this.liveSt.usdc.toFixed(4), solUsd: this.liveSt.solUsd, usdcInSol: +this.usdcInSol().toFixed(6), syncedAt: this.liveSt.syncedAt, equitySol: +eq.toFixed(6), positionsSol: +this.liveLedger.positionsSol().toFixed(6),
       day: this.liveSt.day, dayPct: this.liveSt.day.startEquitySol > 0 ? +(((eq - this.liveSt.day.startEquitySol) / this.liveSt.day.startEquitySol) * 100).toFixed(2) : 0,
-      policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError, pending: this.pendingList(),
+      policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError, pending: this.pendingList(), approvedMints: Object.keys(this.liveSt.approvedMints ?? {}),
       lots: [...this.liveLedger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1), community: this.communityOf(l.mint) })),
       orders: this.liveLedger.orders.slice(-50).reverse(),
     };
