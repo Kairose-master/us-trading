@@ -117,16 +117,21 @@ export interface RugPolicy {
   maxSnipersPct: number;
   maxTradesPerWallet5m: number;
   minUniqBuyers5m: number;
+  /** 초반인데 홀더(공급 0.01% 이상 보유) 수가 이보다 많으면 — 물량을 수많은 지갑에 쪼갠 번들 (실측 근거 가장 약함, 0 = 끔) */
+  maxHolders: number;
   /** 보유 중 감시 — 진입 때 이만큼(공급 %) 이상 쥔 지갑·번들·개발자를 감시 */
   watchHolderPct: number;
   /** 감시 지갑이 진입 때 보유분의 이 비율 이상 팔면 전량 청산 */
   watchSellFrac: number;
+  /** 번들(첫 3초 매수) 지갑도 감시하나 — 실측에선 손해(-1.7%p)라 기본 끔 */
+  watchBundle: number;
   /** 누구든 한 번에 공급의 이 % 이상 팔면 전량 청산 (0 = 끔) */
   whaleSellPct: number;
   /** 보유 토큰 최근 거래 폴링 간격 (ms) */
   pollMs: number;
 }
-export const DEFAULT_RUG_POLICY: RugPolicy = { on: 1, maxCreatorPct: 100, maxTop1Pct: 100, maxTop10Pct: 100, maxBundlePct: 100, maxSnipersPct: 100, maxTradesPerWallet5m: 1e9, minUniqBuyers5m: 0, watchHolderPct: 2, watchSellFrac: 0.5, whaleSellPct: 0, pollMs: 5_000 };
+// 실측(2026-09-29, 토큰 72·진입 23·러그 6·대박 4 — 작은 표본): 극단값만 막는다. 대박을 하나도 안 막은 기준만 골랐다
+export const DEFAULT_RUG_POLICY: RugPolicy = { on: 1, maxCreatorPct: 10, maxTop1Pct: 100, maxTop10Pct: 50, maxBundlePct: 15, maxSnipersPct: 30, maxTradesPerWallet5m: 5, minUniqBuyers5m: 0, maxHolders: 120, watchHolderPct: 2, watchSellFrac: 0.5, watchBundle: 0, whaleSellPct: 0, pollMs: 5_000 };
 
 export interface RugVerdict { block: boolean; reasons: string[]; features: RugFeatures | null; unknown: boolean }
 export function rugVerdict(f: RugFeatures, p: RugPolicy): RugVerdict {
@@ -137,6 +142,7 @@ export function rugVerdict(f: RugFeatures, p: RugPolicy): RugVerdict {
     if (f.top10Pct > p.maxTop10Pct) r.push(`top-10 hold ${f.top10Pct.toFixed(0)}% > ${p.maxTop10Pct}%`);
     if (f.bundle3sPct > p.maxBundlePct) r.push(`launch bundle still holds ${f.bundle3sPct.toFixed(1)}% > ${p.maxBundlePct}%`);
     if (f.snipers60Pct > p.maxSnipersPct) r.push(`first-minute snipers hold ${f.snipers60Pct.toFixed(1)}% > ${p.maxSnipersPct}%`);
+    if (p.maxHolders > 0 && f.ageMin <= 60 && f.holders > p.maxHolders) r.push(`${f.holders} holders within ${f.ageMin.toFixed(0)} min > ${p.maxHolders} — supply split across many wallets`);
   }
   if (f.tradesPerWallet5m > p.maxTradesPerWallet5m) r.push(`wash-like: ${f.tradesPerWallet5m.toFixed(1)} trades/wallet in 5m`);
   if (f.uniqBuyers5m < p.minUniqBuyers5m) r.push(`only ${f.uniqBuyers5m} distinct buyers in 5m`);
@@ -148,7 +154,7 @@ export function watchSet(trades: RugTrade[], creator: string | null, p: RugPolic
   const net = new Map<string, number>(); const first = trades.length ? trades[0].ts : 0; const early = new Set<string>();
   for (const x of trades) { net.set(x.wallet, (net.get(x.wallet) ?? 0) + x.side * x.tokens); if (x.side > 0 && x.ts - first <= 3_000) early.add(x.wallet); }
   const out = new Map<string, number>();
-  for (const [w, v] of net) if (v > 0 && (w === creator || early.has(w) || (v / SUPPLY) * 100 >= p.watchHolderPct)) out.set(w, v);
+  for (const [w, v] of net) if (v > 0 && (w === creator || (p.watchBundle >= 1 && early.has(w)) || (v / SUPPLY) * 100 >= p.watchHolderPct)) out.set(w, v);
   return out;
 }
 

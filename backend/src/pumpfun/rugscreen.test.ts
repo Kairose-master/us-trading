@@ -42,10 +42,21 @@ describe("rug verdict and dump watch", () => {
     expect(rugVerdict(rugFeatures(trades, "dev", T0, T0 + 200_000, false), p).block).toBe(false); // 불완전하면 보유 구조로는 안 막는다
     expect(rugVerdict(f, { ...p, on: 0 }).block).toBe(false);
   });
+  it("defaults block the measured extremes and pass an ordinary launch", () => {
+    const ordinary = rugFeatures([tr(0, "dev", 1, 3), tr(20, "a", 1, 2), tr(100, "b", 1, 3), tr(130, "c", 1, 1)], "dev", T0, T0 + 600_000, true);
+    expect(rugVerdict(ordinary, DEFAULT_RUG_POLICY).block).toBe(false);
+    const rug = rugFeatures([tr(0, "dev", 1, 24), tr(1, "x", 1, 17)], "dev", T0, T0 + 600_000, true);
+    const v = rugVerdict(rug, DEFAULT_RUG_POLICY);
+    expect(v.block).toBe(true);
+    expect(v.reasons.join(" ")).toMatch(/creator holds 24/);
+    const split = rugFeatures([...Array(130)].map((_, i) => tr(200 + i, `w${i}`, 1, 0.05)), null, T0, T0 + 10 * 60_000, true);
+    expect(rugVerdict(split, DEFAULT_RUG_POLICY).reasons.join(" ")).toMatch(/130 holders within 10 min/);
+  });
   it("watches the creator, launch bundle and big holders, and fires on their dumps", () => {
     const p = { ...DEFAULT_RUG_POLICY, watchHolderPct: 2, watchSellFrac: 0.5 };
     const w = watchSet(trades, "dev", p);
-    expect([...w.keys()].sort()).toEqual(["b1", "dev", "whale"]);
+    expect([...w.keys()].sort()).toEqual(["b1", "dev", "whale"]); // b1 은 3% 라 홀더 기준으로 들어간다
+    expect([...watchSet([tr(0, "dev", 1, 5), tr(1, "tiny", 1, 0.5)], "dev", p).keys()]).toEqual(["dev"]); // 번들 감시는 기본 끔
     const sold = new Map<string, number>();
     expect(dumpSignal([tr(300, "small", -1, 0.2)], w, sold, "dev", p)).toBeNull();
     expect(dumpSignal([tr(301, "whale", -1, 2)], w, sold, "dev", p)).toBeNull(); // 5% 중 2% = 40%
