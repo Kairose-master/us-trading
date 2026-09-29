@@ -11,7 +11,7 @@ import { parseTxDeltas, readCurve, solUsdPrice, tokenBalance, usdcBalance, waitF
 import { progress } from "./curve.js";
 import { isSolanaAddress, executeTrade, liveBuySize, DEFAULT_LIVE_POLICY, type LivePolicy } from "./live.js";
 import { hasSigner, signerPubkey, swapUsdcToSol } from "./signer.js";
-import { DEFAULT_RUG_POLICY, dumpSignal, fetchRecentTrades, fetchTradesFromCreation, rugFeatures, rugVerdict, watchSet, type RugPolicy, type RugTrade, type RugVerdict } from "./rugscreen.js";
+import { DEFAULT_RUG_POLICY, dumpSignal, watchEnabled, fetchRecentTrades, fetchTradesFromCreation, rugFeatures, rugVerdict, watchSet, type RugPolicy, type RugTrade, type RugVerdict } from "./rugscreen.js";
 import { communityDesk, DEFAULT_COMMUNITY_POLICY, type CommunityPolicy, type CommunityRead } from "./community.js";
 import { CURATED_SEEDS, isBlockedWallet } from "./curated.js";
 import { flowRead, momentumRead, type FlowTrade } from "./flow.js";
@@ -146,6 +146,9 @@ class PumpfunDesk extends EventEmitter {
     this.st.rug = { ...DEFAULT_RUG_POLICY, ...(this.st.rug ?? {}) };
     // 66건 재검증에서 '≥2% 홀더 절반 매도' 청산이 손해로 뒤집혔다 — 저장된 옛 기본값(2)을 끈다(100)
     if (this.st.rug.watchHolderPct === 2) this.st.rug.watchHolderPct = DEFAULT_RUG_POLICY.watchHolderPct;
+    // 296토큰 최종 검증: 개발자>10·번들>15 는 기여가 없거나 음수 → 저장된 첫 반영값(10·15)을 끈다(100)
+    if (this.st.rug.maxCreatorPct === 10) this.st.rug.maxCreatorPct = DEFAULT_RUG_POLICY.maxCreatorPct;
+    if (this.st.rug.maxBundlePct === 15) this.st.rug.maxBundlePct = DEFAULT_RUG_POLICY.maxBundlePct;
     // 확신 집중(몰빵)을 기본 정책으로 — owner 실측(분산보다 한 종목 집중 + 커브 초반 슬리피지 이점). 저장된 OFF 를 한 번만 ON 으로 이전
     // 확신 최소 점수가 진입 문턱(58)보다 높으면(옛 68) 자격 후보를 대부분 버려 매수가 안 나간다 — 진입 문턱에 맞춘다
     if (this.st.policy.convictionMinScore === 68) this.st.policy.convictionMinScore = DEFAULT_COPY_POLICY.convictionMinScore;
@@ -796,7 +799,7 @@ class PumpfunDesk extends EventEmitter {
     const P = this.st.rug ?? DEFAULT_RUG_POLICY;
     const held = new Set([...this.ledger.heldMints(), ...this.liveLedger.heldMints()]);
     for (const m of [...this.rugWatch.keys()]) if (!held.has(m)) this.rugWatch.delete(m);
-    if (P.on < 1) return;
+    if (P.on < 1 || !watchEnabled(P)) return;
     for (const [mint, w] of this.rugWatch) {
       let recent: RugTrade[];
       try { recent = await fetchRecentTrades(mint); } catch { this.rugStats.errors += 1; continue; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RUG_POLICY, dumpSignal, rugFeatures, rugVerdict, SUPPLY, watchSet, type RugTrade } from "./rugscreen.js";
+import { DEFAULT_RUG_POLICY, dumpSignal, rugFeatures, rugVerdict, SUPPLY, watchEnabled, watchSet, type RugTrade } from "./rugscreen.js";
 
 const T0 = 1_790_000_000_000;
 const tr = (sec: number, wallet: string, side: 1 | -1, pctSupply: number, sol = 0.1): RugTrade => ({ ts: T0 + sec * 1000, wallet, side, sol, tokens: (pctSupply / 100) * SUPPLY, price: 1e-7 });
@@ -48,15 +48,17 @@ describe("rug verdict and dump watch", () => {
     const rug = rugFeatures([tr(0, "dev", 1, 24), tr(1, "x", 1, 17)], "dev", T0, T0 + 600_000, true);
     const v = rugVerdict(rug, DEFAULT_RUG_POLICY);
     expect(v.block).toBe(true);
-    expect(v.reasons.join(" ")).toMatch(/creator holds 24/);
+    expect(v.reasons.join(" ")).toMatch(/snipers hold 41\.0%/); // 개발자>10 은 최종 검증에서 뺐다 — 스나이퍼 규칙이 잡는다
+    expect(v.reasons.join(" ")).not.toMatch(/creator holds/);
     const split = rugFeatures([...Array(130)].map((_, i) => tr(200 + i, `w${i}`, 1, 0.05)), null, T0, T0 + 10 * 60_000, true);
     expect(rugVerdict(split, DEFAULT_RUG_POLICY).reasons.join(" ")).toMatch(/130 holders within 10 min/);
   });
   it("watches the creator, launch bundle and big holders, and fires on their dumps", () => {
-    const p = { ...DEFAULT_RUG_POLICY, watchHolderPct: 2, watchSellFrac: 0.5 };
+    const p = { ...DEFAULT_RUG_POLICY, watchHolderPct: 2, watchSellFrac: 0.5, watchCreator: 1 };
     const w = watchSet(trades, "dev", p);
     expect([...w.keys()].sort()).toEqual(["b1", "dev", "whale"]); // b1 은 3% 라 홀더 기준으로 들어간다
     expect([...watchSet([tr(0, "dev", 1, 5), tr(1, "tiny", 1, 0.5)], "dev", p).keys()]).toEqual(["dev"]); // 번들 감시는 기본 끔
+    expect(watchEnabled(DEFAULT_RUG_POLICY)).toBe(false); // 기본은 보유 중 감시 전부 끔 — 폴링도 안 한다
     const sold = new Map<string, number>();
     expect(dumpSignal([tr(300, "small", -1, 0.2)], w, sold, "dev", p)).toBeNull();
     expect(dumpSignal([tr(301, "whale", -1, 2)], w, sold, "dev", p)).toBeNull(); // 5% 중 2% = 40%

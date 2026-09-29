@@ -125,15 +125,21 @@ export interface RugPolicy {
   watchSellFrac: number;
   /** 번들(첫 3초 매수) 지갑도 감시하나 — 실측에선 손해(-1.7%p)라 기본 끔 */
   watchBundle: number;
+  /** 개발자 매도를 감시하나 — 세 번 잰 효과 +2 / +1.4 / −1.5%p(가장 큰 표본에서 음수) → 기본 끔 */
+  watchCreator: number;
   /** 누구든 한 번에 공급의 이 % 이상 팔면 전량 청산 (0 = 끔) */
   whaleSellPct: number;
   /** 보유 토큰 최근 거래 폴링 간격 (ms) */
   pollMs: number;
 }
-// 실측(2026-09-29): 토큰 72·진입 23 으로 처음 정하고, 토큰 154·진입 66(러그 21·대박 19)으로 다시 검증.
-// 진입 차단은 두 표본 모두 유지(66건: 러그 19/21 차단, 대박 6/19 동반 차단, 평균 +12.2 → +18.5%).
-// 보유 중 감시는 개발자 매도만 — "≥2% 홀더 절반 매도" 는 23건에선 이득, 66건에선 손해(+14.5 → +11.1%, 대박 반토막)라 끔(watchHolderPct 100)
-export const DEFAULT_RUG_POLICY: RugPolicy = { on: 1, maxCreatorPct: 10, maxTop1Pct: 100, maxTop10Pct: 50, maxBundlePct: 15, maxSnipersPct: 30, maxTradesPerWallet5m: 5, minUniqBuyers5m: 0, maxHolders: 120, watchHolderPct: 100, watchSellFrac: 0.5, watchBundle: 0, whaleSellPct: 0, pollMs: 5_000 };
+// 실측(2026-09-29) 최종: 토큰 296·진입 154(러그 34·대박 55). 규칙을 하나씩 빼 보며(leave-one-out) 기여가 있는 것만 남겼다.
+//   홀더>120 −5.0p · 스나이퍼>30 −2.5p · 상위10>50 −0.8p · 지갑당>5 −0.3p (빼면 나빠짐 = 유지)
+//   번들>15 −0.1p(대박 8건 동반 차단) · 개발자>10 +1.9p(빼는 게 낫다) → 끔(100)
+//   남은 네 규칙: 러그 차단 다수, 무작위 절반 200회 중 96~97% 에서 필터가 나음(평균 +7.4p)
+// 보유 중 감시(개발자·홀더 매도 청산)는 가장 큰 표본에서 손해 → 전부 끔. 폴링도 안 한다
+export const DEFAULT_RUG_POLICY: RugPolicy = { on: 1, maxCreatorPct: 100, maxTop1Pct: 100, maxTop10Pct: 50, maxBundlePct: 100, maxSnipersPct: 30, maxTradesPerWallet5m: 5, minUniqBuyers5m: 0, maxHolders: 120, watchHolderPct: 100, watchSellFrac: 0.5, watchBundle: 0, watchCreator: 0, whaleSellPct: 0, pollMs: 5_000 };
+/** 보유 중 감시가 하나라도 켜져 있나 — 다 꺼져 있으면 폴링(API 호출)도 안 한다 */
+export const watchEnabled = (p: RugPolicy) => p.watchCreator >= 1 || p.watchBundle >= 1 || p.watchHolderPct < 100 || p.whaleSellPct > 0;
 
 export interface RugVerdict { block: boolean; reasons: string[]; features: RugFeatures | null; unknown: boolean }
 export function rugVerdict(f: RugFeatures, p: RugPolicy): RugVerdict {
@@ -156,7 +162,7 @@ export function watchSet(trades: RugTrade[], creator: string | null, p: RugPolic
   const net = new Map<string, number>(); const first = trades.length ? trades[0].ts : 0; const early = new Set<string>();
   for (const x of trades) { net.set(x.wallet, (net.get(x.wallet) ?? 0) + x.side * x.tokens); if (x.side > 0 && x.ts - first <= 3_000) early.add(x.wallet); }
   const out = new Map<string, number>();
-  for (const [w, v] of net) if (v > 0 && (w === creator || (p.watchBundle >= 1 && early.has(w)) || (v / SUPPLY) * 100 >= p.watchHolderPct)) out.set(w, v);
+  for (const [w, v] of net) if (v > 0 && ((p.watchCreator >= 1 && w === creator) || (p.watchBundle >= 1 && early.has(w)) || (v / SUPPLY) * 100 >= p.watchHolderPct)) out.set(w, v);
   return out;
 }
 
@@ -168,7 +174,7 @@ export function dumpSignal(newTrades: RugTrade[], watch: Map<string, number>, so
     const held = watch.get(x.wallet);
     if (held === undefined) continue;
     const s = (soldSoFar.get(x.wallet) ?? 0) + x.tokens; soldSoFar.set(x.wallet, s);
-    if (x.wallet === creator) return `creator sold ${((x.tokens / SUPPLY) * 100).toFixed(2)}% of supply`;
+    if (p.watchCreator >= 1 && x.wallet === creator) return `creator sold ${((x.tokens / SUPPLY) * 100).toFixed(2)}% of supply`;
     if (s >= p.watchSellFrac * held) return `watched holder ${x.wallet.slice(0, 4)}… sold ${Math.round((s / held) * 100)}% of its ${((held / SUPPLY) * 100).toFixed(1)}%`;
   }
   return null;
