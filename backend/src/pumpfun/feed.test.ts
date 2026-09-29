@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalize } from "./feed.js";
+import { normalize, PumpPortalFeed } from "./feed.js";
 
 describe("normalize (PumpPortal message shapes captured 2026-09-25)", () => {
   it("maps a create event", () => {
@@ -12,5 +12,23 @@ describe("normalize (PumpPortal message shapes captured 2026-09-25)", () => {
   });
   it("ignores server notices", () => {
     expect(normalize({ message: "Successfully subscribed to token creation events." })).toBeNull();
+  });
+});
+
+describe("metered status", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const feed = () => new PumpPortalFeed("wss://x", "key") as any;
+  it("a refusal is cleared by the real success notice ('Successfully subscribed to keys.')", () => {
+    const f = feed();
+    f.onMessage(JSON.stringify({ message: "'subscribeTokenTrade' and 'subscribeAccountTrade' methods are only available when connecting with an API key funded with at least 0.02 SOL." }));
+    expect(f.status().metered.ok).toBe(false);
+    f.onMessage(JSON.stringify({ message: "Successfully subscribed to keys." }));
+    expect(f.status().metered).toMatchObject({ ok: true, note: null });
+  });
+  it("a paid trade event also proves the stream is live", () => {
+    const f = feed();
+    f.onMessage(JSON.stringify({ message: "only available when connecting with an API key funded with at least 0.02 SOL" }));
+    f.onMessage(JSON.stringify({ signature: "s", mint: "m", traderPublicKey: "w", txType: "buy", tokenAmount: 1, solAmount: 0.1, newTokenBalance: 1, bondingCurveKey: "b", vTokensInBondingCurve: 1e9, vSolInBondingCurve: 31, marketCapSol: 31 }));
+    expect(f.status().metered.ok).toBe(true);
   });
 });

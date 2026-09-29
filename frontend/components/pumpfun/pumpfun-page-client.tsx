@@ -274,10 +274,10 @@ export function PumpfunPageClient() {
 
       {data.paused && <Card className="p-3 text-xs text-destructive">정지됨 — {data.pausedReason} ({data.pausedAt ? t(data.pausedAt) : ""}). 신규 진입 없음, 유료 구독(토큰·지갑 거래 스트림) 중단. 보유 로트의 청산 규칙은 무료 마킹(RPC·시총)으로 계속 돈다.</Card>}
       {!data.feed.metered.hasKey && <Card className="p-3 text-xs text-muted-foreground">관측 전용: PUMPFUN_API_KEY 가 없어 거래 스트림(토큰·지갑)이 없다. 신규 토큰·이주만 기록 중 — 카피는 키(PumpPortal, 0.02 SOL 이상 충전)를 넣어야 시작된다. 수동 시드 지갑도 키 없이는 체결을 볼 수 없다.</Card>}
-      {data.feed.metered.hasKey && data.feed.metered.ok === false && <Card className="p-3 text-xs text-destructive">거래 스트림 거부: {data.feed.metered.note}</Card>}
+      {data.feed.metered.hasKey && data.feed.metered.ok === false && <Card className="p-3 text-xs text-destructive">거래 스트림 거부: {data.feed.metered.note}<br /><span className="text-muted-foreground">PumpPortal 은 API 키에 연결된 지갑의 <b>네이티브 SOL</b> 이 0.02 이상인지 <b>연결할 때</b> 본다(USDC 불포함). 지갑 SOL {data.live.walletSol.toFixed(4)}{data.live.walletPubkey ? ` (${data.live.walletPubkey.slice(0, 4)}…)` : ""} — 이 지갑이 키의 지갑과 같은지, 0.02 넘는지 확인. 채우면 2~10분 안에 자동 재연결해 풀린다.</span></Card>}
 
       <RealModeCard live={data.live} onChanged={() => mutate()} />
-      <ApprovalCard live={data.live} onChanged={() => mutate()} />
+      {((data.live.policy.manualApproval ?? 0) >= 1 || (data.live.pending ?? []).length > 0) && <ApprovalCard live={data.live} onChanged={() => mutate()} />}
 
       {data.mode === "real" && (
         <div className="grid gap-4 xl:grid-cols-2">

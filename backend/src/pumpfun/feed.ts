@@ -89,6 +89,17 @@ export class PumpPortalFeed extends EventEmitter {
     });
   }
 
+  private refundTimer: NodeJS.Timeout | null = null;
+  private refundWaitMs = 2 * 60_000;
+  private markMeteredOk() { this.st.metered.ok = true; this.st.metered.note = null; this.refundWaitMs = 2 * 60_000; if (this.refundTimer) { clearTimeout(this.refundTimer); this.refundTimer = null; } }
+  /** 거부됐으면 2분 뒤(최대 10분 간격) 재연결 — 그사이 키 지갑이 채워졌으면 자동으로 살아난다 */
+  private scheduleRefundCheck() {
+    if (this.refundTimer || this.stopped || !this.apiKey || !(this.tokenSubs.size || this.accountSubs.size)) return;
+    const wait = this.refundWaitMs; this.refundWaitMs = Math.min(10 * 60_000, this.refundWaitMs * 2);
+    this.refundTimer = setTimeout(() => { this.refundTimer = null; if (this.st.metered.ok === false && !this.stopped) { logger.info("[pumpfun] re-connecting to re-check API key funding"); this.ws?.close(); } }, wait);
+    this.refundTimer.unref();
+  }
+
   private send(msg: Record<string, unknown>) { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg)); }
 
   private resubscribe() {
@@ -113,8 +124,13 @@ export class PumpPortalFeed extends EventEmitter {
     try { raw = JSON.parse(text) as Raw; } catch { return; }
     if (typeof raw.message === "string" && raw.txType === undefined) {
       const m = raw.message;
-      if (/api key/i.test(m)) { this.st.metered.ok = false; this.st.metered.note = m; logger.warn("[pumpfun] metered subscription refused", { message: m }); }
-      else if (/subscribed to .*trade|subscribed to token trade|subscribed to account/i.test(m)) { this.st.metered.ok = true; this.st.metered.note = null; }
+      if (/api key/i.test(m)) {
+        this.st.metered.ok = false; this.st.metered.note = m; logger.warn("[pumpfun] metered subscription refused", { message: m });
+        // PumpPortal 은 연결할 때 키 지갑의 잔고를 본다 — 나중에 채워도 이 연결은 계속 거부. 주기적으로 다시 연결해 잔고를 다시 확인받는다
+        this.scheduleRefundCheck();
+      }
+      // 실측(2026-09-29): 토큰·지갑 거래 구독 성공 응답은 "Successfully subscribed to keys." — 예전 정규식이 못 잡아 거부 표시가 영영 남았다
+      else if (/subscribed to keys|subscribed to .*trade|subscribed to account/i.test(m)) { this.markMeteredOk(); }
       this.emit("notice", m);
       return;
     }
@@ -123,6 +139,7 @@ export class PumpPortalFeed extends EventEmitter {
     this.st.events[ev.kind] += 1;
     // 거래 이벤트는 유료 구독(토큰·지갑)에서만 온다 — 그게 과금 단위
     if (ev.kind === "trade") {
+      if (this.st.metered.ok !== true) this.markMeteredOk(); // 유료 거래 이벤트가 온다 = 구독이 살아 있다
       this.rollMeteredDay(); const m = this.st.metered; m.todayMsgs += 1; m.totalMsgs += 1; m.todaySol = +(m.todayMsgs * METERED_SOL_PER_MSG).toFixed(5); m.totalSol = +(m.totalMsgs * METERED_SOL_PER_MSG).toFixed(5);
       // 탄력 제어의 재료 — 전역 분당 메시지 수와 토큰별 최근 60초 카운트
       const now = Date.now(); this.recentMsgTs.push(now); if (this.recentMsgTs.length > 20_000) this.recentMsgTs.splice(0, this.recentMsgTs.length - 20_000);

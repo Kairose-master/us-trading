@@ -18,11 +18,11 @@ beforeAll(async () => {
   d = (await import("./desk.js")).pumpfunDesk;
   d.modeSt = { mode: "real", since: null, by: null, walletPubkey: "WalletPubkey1111111111111111111111111111111" };
   d.liveSt.walletSol = 2;
+  d.setLivePolicy({ manualApproval: 1 }); // 기본은 OFF — 관문 동작은 켜서 검증
 });
 
 describe("manual approval gate", () => {
-  it("is on by default and only proposes — nothing is sent to the chain", async () => {
-    expect(d.liveSt.policy.manualApproval).toBe(1);
+  it("when on, only proposes — nothing is sent to the chain", async () => {
     await d.applyLive(buy("MintA"), ev("MintA"), 1, 1, 40);
     expect(trades).toHaveLength(0);
     const list = d.pendingList();

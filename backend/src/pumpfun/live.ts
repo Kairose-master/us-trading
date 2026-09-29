@@ -23,7 +23,7 @@ export interface LivePolicy {
   dailyStopPct: number;
   /** 실모드를 켜려면 지갑에 이만큼은 있어야 한다 */
   minWalletSol: number;
-  /** 지갑에 항상 남겨 둘 SOL (매도 트랜잭션 비용·데이터 요금) */
+  /** 지갑에 항상 남겨 둘 SOL (매도 트랜잭션 비용·데이터 요금). PumpPortal 은 키 지갑 네이티브 SOL ≥ 0.02 여야 거래 스트림을 준다 — 그 위로 여유를 둔다 */
   reserveSol: number;
   /** 평가액이 이 아래인 로트는 팔지 않고 먼지로 지운다 — 수수료보다 싸다 (실측: 0.0007 SOL 짜리 매도가 시뮬레이션 실패로 219번 재시도됐다) */
   dustSol: number;
@@ -33,7 +33,7 @@ export interface LivePolicy {
   approvalTtlMin: number;
 }
 // 러그가 기본값인 시장 — 살아남는 건 손절이 아니라 크기다 (owner 합의, 2026-09-25 저녁). 포지션당 8% × standing(최대 16%), 총 60%, 일 손실 15%
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 0, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003, manualApproval: 1, approvalTtlMin: 10 };
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 0, minWalletSol: 0.05, reserveSol: 0.035, dustSol: 0.003, manualApproval: 0, approvalTtlMin: 10 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 

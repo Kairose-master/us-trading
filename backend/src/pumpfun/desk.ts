@@ -47,7 +47,7 @@ const TX_TIMEOUT_MS = 90_000;
 const RECONCILE_MS = 2 * 60_000;
 export type PumpMode = "paper" | "real";
 interface ModeState { mode: PumpMode; since: string | null; by: string | null; walletPubkey: string | null }
-interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; approvedMints?: Record<string, string>; stats: { buys: number; sells: number; failed: number } }
+interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; approvedMints?: Record<string, string>; approvalOffMigrated?: boolean; stats: { buys: number; sells: number; failed: number } }
 interface Pending {
   id: string; mint: string; symbol: string | null; createdAt: string; expiresAt: string; suggestedSol: number; priceAtProposal: number;
   via: string; reason: string; score: number | null; votes: string[];
@@ -156,6 +156,10 @@ class PumpfunDesk extends EventEmitter {
     if (!this.liveSt.approvedMints) { this.liveSt.approvedMints = {}; for (const l of this.liveSt.ledger.lots ?? []) this.liveSt.approvedMints[l.mint] = new Date().toISOString(); }
     this.liveSt.policy = { ...DEFAULT_LIVE_POLICY, ...this.liveSt.policy };
     // 저장된 옛 기본값(25/100/20) → 러그 시장용 기본값으로 이전
+    // 예비 0.02 는 PumpPortal 거래 스트림 문턱(키 지갑 ≥ 0.02 SOL)과 같아 매수 뒤 수수료만으로 거부됐다 → 0.035
+    if (this.liveSt.policy.reserveSol === 0.02) this.liveSt.policy.reserveSol = DEFAULT_LIVE_POLICY.reserveSol;
+    // 수동 검수는 owner 판단으로 기본 OFF(2026-09-29 "안 좋은 아이디어") — 저장된 ON 을 한 번만 끈다
+    if (!this.liveSt.approvalOffMigrated) { this.liveSt.policy.manualApproval = 0; this.liveSt.approvalOffMigrated = true; }
     if (this.liveSt.policy.maxPositionPct === 25 && this.liveSt.policy.grossMaxPct === 100) { this.liveSt.policy.maxPositionPct = DEFAULT_LIVE_POLICY.maxPositionPct; this.liveSt.policy.grossMaxPct = DEFAULT_LIVE_POLICY.grossMaxPct; }
     // 일 손실 정지 폐지 — 저장된 옛 기본값(15·20)은 끔(0)으로, 그 사유로 정지돼 있으면 해제 (owner 가 직접 감시)
     if (this.liveSt.policy.dailyStopPct === 15 || this.liveSt.policy.dailyStopPct === 20) this.liveSt.policy.dailyStopPct = 0;
