@@ -1,13 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import useSWR from "swr"
 import { toast } from "sonner"
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 import { Copy, Pause, Play, Plus, Radio, RefreshCw, ShieldAlert, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Card, EmptyState, Skeleton } from "@/components/primitives"
-import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunFlatten, pumpfunPause, pumpfunReconcile, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpStatus } from "@/lib/api"
+import { ApiError, getPumpfun, getPumpfunEquity, getPumpfunWallets, isBackendNotConfigured, pumpfunAddWallet, pumpfunApprove, pumpfunFlatten, pumpfunReject, pumpfunSetLivePolicy, pumpfunPause, pumpfunReconcile, pumpfunRemoveWallet, pumpfunRescore, pumpfunResume, setPumpfunMode, type PumpLive, type PumpPending, type PumpStatus } from "@/lib/api"
 
 /**
  * pump.fun 카피 트레이딩 데스크 — 페이퍼(SOL). 체인이 공개라 "꾸준히 버는 지갑"을 셀 수 있고, 그 지갑의 매수·매도를
@@ -50,6 +50,111 @@ function FeedBadge({ s }: { s: PumpStatus }) {
     <span className={cn("inline-flex items-center gap-1.5 rounded-md px-2 py-1 font-mono text-[11px] font-semibold", f.connected ? "bg-chart-1/15 text-chart-1" : "bg-destructive/15 text-destructive")} title={f.metered.note ?? undefined}>
       <Radio className="size-3" aria-hidden="true" /> PUMPPORTAL {f.connected ? "LIVE" : "DOWN"} · {metered} · 마지막 메시지 {ago(f.lastMessageAt)}
     </span>
+  )
+}
+
+/** 짧은 알림음 — 승인 대기가 새로 뜨면 */
+function beep() {
+  try {
+    const Ctx = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!Ctx) return
+    const ctx = new Ctx(); const o = ctx.createOscillator(); const g = ctx.createGain()
+    o.frequency.value = 880; g.gain.setValueAtTime(0.15, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
+    o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.4)
+  } catch { /* 소리 없이 */ }
+}
+
+function PendingRow({ p, onDone }: { p: PumpPending; onDone: () => Promise<unknown> }) {
+  const [amount, setAmount] = useState(String(p.suggestedSol))
+  const [busy, setBusy] = useState(false)
+  const left = Math.max(0, Math.round((Date.parse(p.expiresAt) - Date.now()) / 1000))
+  const name = p.symbol ?? short(p.mint)
+  const c = p.community
+  const approve = async () => {
+    const sol = Number(amount)
+    if (!(sol >= 0.01)) { toast.error("0.01 SOL 이상"); return }
+    if (!confirm(`${name} 을 ${sol} SOL 실매수합니다. 계속?`)) return
+    setBusy(true)
+    try { const r = await pumpfunApprove(p.id, sol); if (r.bought) toast.success(`${name} 매수 체결`); else toast.warning(`${name}: 체결 확인 안 됨 — ${r.note ?? ""}`) }
+    catch (e) { toast.error(e instanceof ApiError ? e.message : "승인 실패") } finally { setBusy(false); await onDone() }
+  }
+  const reject = async () => { setBusy(true); try { await pumpfunReject(p.id); toast.success(`${name} 거절 — 1시간 동안 다시 안 올림`) } catch (e) { toast.error(e instanceof ApiError ? e.message : "거절 실패") } finally { setBusy(false); await onDone() } }
+  const link = (href: string, label: string) => <a href={href} target="_blank" rel="noreferrer" className="underline decoration-dotted underline-offset-2">{label}</a>
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-border p-3 text-[11px]">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-semibold">{name}</span>
+        <span className="font-mono text-muted-foreground" title={p.mint}>{short(p.mint)}</span>
+        {p.score !== null && <span className="rounded-sm bg-chart-1/15 px-1.5 py-0.5 font-mono text-chart-1">점수 {p.score}</span>}
+        <span className="font-mono text-muted-foreground">{p.via === "rule:conviction" ? "몰빵 후보" : p.via === "rule:ensemble" ? "복합 후보" : `카피 ${short(p.via)}`}</span>
+        <span className={cn("ml-auto font-mono", left < 60 ? "text-destructive" : "text-muted-foreground")}>남은 {Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-muted-foreground">
+        {link(`https://pump.fun/coin/${p.mint}`, "pump.fun")}{link(`https://dexscreener.com/solana/${p.mint}`, "DexScreener")}{link(`https://solscan.io/token/${p.mint}`, "Solscan")}
+        {c?.twitter && link(c.twitter, "X")}{c?.telegram && link(c.telegram, "Telegram")}{c?.website && link(c.website, "웹사이트")}
+      </div>
+      <div className="font-mono text-muted-foreground">엔진: {p.votes.length ? p.votes.join(" · ") : "—"}</div>
+      <div className="font-mono">
+        커뮤니티: {c ? <><span className={scoreClass(c.score)}>{c.score}{c.unknown ? "?" : ""}</span>{c.creatorSharePct !== null && <span className={c.creatorSharePct >= 4 ? " text-destructive" : " text-muted-foreground"}> · 개발자 보유 {c.creatorSharePct}%</span>}<span className="text-muted-foreground"> · {c.reasons.join(" · ") || "특이사항 없음"}</span></> : <span className="text-muted-foreground">아직 안 읽음 — 링크로 직접 확인</span>}
+      </div>
+      <div className="font-mono">제안 후 가격 {p.movePct === null ? "—" : <span className={cn(pnlClass(p.movePct), p.movePct >= 30 && "font-bold")}>{signed(p.movePct, 1)}{p.movePct >= 30 ? " · 추격 주의" : ""}</span>}</div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-1 font-mono">매수 <input type="number" step="0.01" min={0.01} value={amount} onChange={(e) => setAmount(e.target.value)} className="w-20 rounded-md border border-border bg-transparent px-1.5 py-0.5 text-right" /> SOL</label>
+        <span className="text-muted-foreground">(제안 {p.suggestedSol} SOL)</span>
+        <button type="button" disabled={busy} onClick={() => void approve()} className="ml-auto rounded-md bg-destructive px-2.5 py-1 font-semibold text-white disabled:opacity-50">승인 — 실매수</button>
+        <button type="button" disabled={busy} onClick={() => void reject()} className="rounded-md border border-border px-2.5 py-1 disabled:opacity-50">거절</button>
+      </div>
+    </div>
+  )
+}
+
+/** 수동 검수 — 봇은 후보만 올리고 실매수는 owner 가 승인한 것만. 청산은 계속 자동 */
+function ApprovalCard({ live, onChanged }: { live: PumpLive; onChanged: () => Promise<unknown> }) {
+  const pending = live.pending ?? []
+  const on = (live.policy.manualApproval ?? 1) >= 1
+  const [, setTick] = useState(0)
+  const seen = useRef<Set<string> | null>(null)
+  const baseTitle = useRef<string | null>(null)
+  const [notify, setNotify] = useState(false)
+  useEffect(() => { const i = setInterval(() => setTick((x) => x + 1), 1000); return () => clearInterval(i) }, [])
+  useEffect(() => { if (typeof Notification !== "undefined") setNotify(Notification.permission === "granted") }, [])
+  useEffect(() => {
+    if (baseTitle.current === null) baseTitle.current = document.title
+    document.title = pending.length ? `(${pending.length}) 승인 대기 · ${baseTitle.current}` : baseTitle.current
+    const ids = new Set(pending.map((p) => p.id))
+    if (seen.current) {
+      const fresh = pending.filter((p) => !seen.current!.has(p.id))
+      if (fresh.length) {
+        beep()
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") for (const p of fresh) new Notification("pump.fun 매수 승인 대기", { body: `${p.symbol ?? p.mint.slice(0, 6)} · 점수 ${p.score ?? "—"} · 제안 ${p.suggestedSol} SOL` })
+      }
+    }
+    seen.current = ids
+  }, [pending])
+  useEffect(() => () => { if (baseTitle.current !== null) document.title = baseTitle.current }, [])
+  const toggle = async () => {
+    if (on && !confirm("수동 검수를 끄면 봇이 승인 없이 실매수합니다. 끌까요?")) return
+    try { await pumpfunSetLivePolicy({ manualApproval: on ? 0 : 1 }); toast.success(on ? "수동 검수 OFF — 자동 매수" : "수동 검수 ON"); await onChanged() } catch (e) { toast.error(e instanceof ApiError ? e.message : "실패") }
+  }
+  const askNotify = async () => { if (typeof Notification === "undefined") { toast.error("이 브라우저는 알림을 지원하지 않는다"); return } setNotify((await Notification.requestPermission()) === "granted") }
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+        <h2 className="text-sm font-semibold">매수 승인 대기 — 수동 검수</h2>
+        <span className={cn("rounded-sm px-1.5 py-0.5 font-mono text-[10px] font-semibold", on ? "bg-chart-1/15 text-chart-1" : "bg-destructive/15 text-destructive")}>{on ? "ON — 승인한 것만 실매수" : "OFF — 봇이 자동 실매수"}</span>
+        <span className="font-mono text-[10px] text-muted-foreground">제안 유효 {live.policy.approvalTtlMin ?? 10}분 · 청산(손절·익절·러그 감시)은 자동 · 페이퍼는 봇 단독 판단(그림자)</span>
+        <div className="ml-auto flex gap-2">
+          {!notify && <button type="button" onClick={() => void askNotify()} className="rounded-md border border-border px-2 py-1 text-[11px]">브라우저 알림 켜기</button>}
+          <button type="button" onClick={() => void toggle()} className="rounded-md border border-border px-2 py-1 text-[11px]">{on ? "검수 끄기…" : "검수 켜기"}</button>
+        </div>
+      </div>
+      <div className="flex flex-col gap-2 p-4">
+        {live.mode !== "real" ? <p className="text-xs text-muted-foreground">실모드일 때만 제안이 올라온다.</p>
+          : !on ? <p className="text-xs text-muted-foreground">검수가 꺼져 있다 — 봇이 판단한 매수가 바로 나간다.</p>
+          : pending.length === 0 ? <p className="text-xs text-muted-foreground">대기 없음 — 봇이 진입 후보를 찾으면 여기에 뜨고 소리가 난다. 차트·개발자 보유·소셜을 보고 승인하거나 거절한다(거절한 토큰은 1시간 동안 다시 안 올림).</p>
+          : pending.map((p) => <PendingRow key={p.id} p={p} onDone={onChanged} />)}
+      </div>
+    </Card>
   )
 }
 
@@ -163,6 +268,7 @@ export function PumpfunPageClient() {
       {data.feed.metered.hasKey && data.feed.metered.ok === false && <Card className="p-3 text-xs text-destructive">거래 스트림 거부: {data.feed.metered.note}</Card>}
 
       <RealModeCard live={data.live} onChanged={() => mutate()} />
+      <ApprovalCard live={data.live} onChanged={() => mutate()} />
 
       {data.mode === "real" && (
         <div className="grid gap-4 xl:grid-cols-2">

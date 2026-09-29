@@ -931,17 +931,24 @@ export async function pumpfunRescore(): Promise<{ at: string; wallets: number; e
 export async function pumpfunPause(): Promise<{ ok: true }> { return write("pumpfun/pause", "POST", { reason: "operator" }) }
 export async function pumpfunResume(): Promise<{ ok: true }> { return write("pumpfun/resume", "POST", {}) }
 export async function pumpfunSetPolicy(patch: Partial<PumpPolicy>): Promise<{ ok: true; policy: PumpPolicy }> { return write("pumpfun/policy", "POST", patch) }
-export interface PumpLivePolicy { maxPositionPct: number; grossMaxPct: number; maxPositionSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number; dustSol?: number }
+export interface PumpLivePolicy { maxPositionPct: number; grossMaxPct: number; maxPositionSol: number; maxLots: number; slippagePct: number; priorityFeeSol: number; dailyStopPct: number; minWalletSol: number; reserveSol: number; dustSol?: number; manualApproval?: number; approvalTtlMin?: number }
 export interface PumpLive {
   mode: "paper" | "real"; since: string | null; by: string | null; walletPubkey: string | null; hasKey: boolean; localSign: boolean; execVia: "local" | "lightning" | "none"
   walletSol: number; usdc: number; solUsd: number; usdcInSol: number; syncedAt: string | null; equitySol: number; positionsSol: number;
   day: { date: string; startEquitySol: number }; dayPct: number
-  policy: PumpLivePolicy; stats: { buys: number; sells: number; failed: number }; inflight: string[]; error: string | null
+  policy: PumpLivePolicy; stats: { buys: number; sells: number; failed: number }; inflight: string[]; error: string | null; pending?: PumpPending[]
   lots: PumpLot[]; orders: PumpOrder[]
 }
 export async function getPumpfunMode(): Promise<PumpLive> { return req("pumpfun/mode") }
 export async function setPumpfunMode(mode: "paper" | "real", walletPubkey?: string): Promise<{ ok: true } & PumpLive> { return write("pumpfun/mode", "POST", mode === "real" ? { mode, confirm: "REAL", walletPubkey } : { mode }) }
 export async function pumpfunFlatten(): Promise<{ ok: true; sold: number; pending: number }> { return write("pumpfun/live/flatten", "POST", {}) }
+export interface PumpPending {
+  id: string; mint: string; symbol: string | null; createdAt: string; expiresAt: string; suggestedSol: number; priceAtProposal: number; priceNow: number | null; movePct: number | null
+  via: string; reason: string; score: number | null; votes: string[]
+  community: { score: number; unknown: boolean; block: boolean; reasons: string[]; creatorSharePct: number | null; twitter: string | null; telegram: string | null; website: string | null } | null
+}
+export async function pumpfunApprove(id: string, sol?: number): Promise<{ ok: true; bought?: boolean; note?: string | null }> { return write(`pumpfun/approvals/${encodeURIComponent(id)}/approve`, "POST", sol === undefined ? {} : { sol }) }
+export async function pumpfunReject(id: string): Promise<{ ok: true }> { return write(`pumpfun/approvals/${encodeURIComponent(id)}/reject`, "POST", {}) }
 export async function pumpfunSetLivePolicy(patch: Partial<PumpLivePolicy>): Promise<{ ok: true; policy: PumpLivePolicy }> { return write("pumpfun/live/policy", "POST", patch) }
 export async function pumpfunReconcile(): Promise<{ ok: true; adopted: string[]; closed: string[] }> { return write("pumpfun/live/reconcile", "POST", {}) }
 

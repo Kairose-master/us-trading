@@ -48,6 +48,14 @@ const RECONCILE_MS = 2 * 60_000;
 export type PumpMode = "paper" | "real";
 interface ModeState { mode: PumpMode; since: string | null; by: string | null; walletPubkey: string | null }
 interface LiveState { ledger: LedgerSnapshot; policy: LivePolicy; day: { date: string; startEquitySol: number }; walletSol: number; usdc: number; solUsd: number; syncedAt: string | null; stats: { buys: number; sells: number; failed: number } }
+interface Pending {
+  id: string; mint: string; symbol: string | null; createdAt: string; expiresAt: string; suggestedSol: number; priceAtProposal: number;
+  via: string; reason: string; score: number | null; votes: string[];
+  community: { score: number; unknown: boolean; block: boolean; reasons: string[]; creatorSharePct: number | null; twitter: string | null; telegram: string | null; website: string | null } | null;
+  action: Extract<CopyAction, { type: "buy" }>; args: { mult: number; standingOverride?: number; pctOverride?: number };
+  /** 제안 때의 견적 — 승인 시점에 새 견적이 없으면(후보 목록에서 빠짐) 이걸로 보낸다. 체결 수량·원가는 어차피 체인에서 읽는다 */
+  ev: Extract<FeedEvent, { kind: "trade" }>;
+}
 const EQUITY_SNAPSHOT_MS = 5 * 60_000;
 const MARK_STALE_MS = 10_000;
 const TRADE_BUFFER_H = 48;
@@ -492,7 +500,7 @@ class PumpfunDesk extends EventEmitter {
       await this.syncWallet();
     } catch (e) { this.liveError = `usdc swap: ${(e as Error).message}`; logger.warn("[pumpfun] USDC→SOL swap failed", { error: this.liveError }); }
   }
-  private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1, standingOverride?: number, pctOverride?: number) {
+  private async applyLive(a: CopyAction, ev?: Extract<FeedEvent, { kind: "trade" }>, mult = 1, standingOverride?: number, pctOverride?: number, approvedSol?: number) {
     if (a.type === "skip") return;
     const P = this.liveSt.policy;
     if (a.type === "buy") {
@@ -510,8 +518,13 @@ class PumpfunDesk extends EventEmitter {
       let want = eq0 * (pol.maxPositionPct / 100) * Math.max(0, standing);
       if (pol.maxPositionSol > 0) want = Math.min(want, pol.maxPositionSol);
       want = Math.min(want, eq0 * (pol.grossMaxPct / 100) - openCost);
-      await this.ensureWalletSol(want + pol.reserveSol + pol.priorityFeeSol);
-      const { sol, why } = liveBuySize(pol, this.liveEquitySol(), standing, this.liveSt.walletSol, openCost, open.length);
+      // 수동 검수 — 승인 없이는 실매수하지 않는다. 후보와 제안 크기만 올리고 끝
+      if (P.manualApproval >= 1 && approvedSol === undefined) { this.propose(a, ev, q.price, Math.max(0, Math.floor(want * 1e4) / 1e4), { mult, standingOverride, pctOverride }); return; }
+      await this.ensureWalletSol((approvedSol ?? want) + pol.reserveSol + pol.priorityFeeSol);
+      // 승인 크기는 owner 가 정한 값 그대로 — 지갑 여유(예비·수수료 제외)만 넘지 않게 자른다
+      const { sol, why } = approvedSol !== undefined
+        ? (() => { const room = this.liveSt.walletSol - pol.reserveSol - pol.priorityFeeSol; const v = Math.floor(Math.min(approvedSol, room) * 1e4) / 1e4; return v >= 0.01 ? { sol: v, why: null } : { sol: 0, why: `live: approved ${approvedSol} but wallet room ${room.toFixed(4)}` }; })()
+        : liveBuySize(pol, this.liveEquitySol(), standing, this.liveSt.walletSol, openCost, open.length);
       if (!sol) { logger.info("[pumpfun] live buy skipped", { mint: ev.mint.slice(0, 8), why }); this.noteBlock(ev.mint, why ?? "live: size 0"); return; }
       this.inflight.add(`buy:${ev.mint}`);
       const solBefore = this.liveSt.walletSol;
@@ -695,6 +708,68 @@ class PumpfunDesk extends EventEmitter {
     await Promise.all(lots.map((l) => this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason })));
     return { sold: lots.length - this.liveLedger.lots.size, pending: this.liveLedger.lots.size };
   }
+  // ===== 수동 검수 대기열 =====
+  private pending = new Map<string, Pending>();
+  private rejected = new Map<string, number>(); // mint → 이 시각까지 다시 안 올림
+  private pendingSeq = 0;
+  private prunePending() {
+    const now = Date.now();
+    for (const [id, p] of this.pending) if (Date.parse(p.expiresAt) < now) { this.pending.delete(id); this.noteBlock(p.mint, "approval expired"); }
+    for (const [m, until] of this.rejected) if (until < now) this.rejected.delete(m);
+  }
+  private propose(a: Extract<CopyAction, { type: "buy" }>, ev: Extract<FeedEvent, { kind: "trade" }>, price: number, suggestedSol: number, args: { mult: number; standingOverride?: number; pctOverride?: number }) {
+    this.prunePending();
+    const mint = ev.mint;
+    if (this.rejected.has(mint)) return;
+    if ([...this.pending.values()].some((p) => p.mint === mint)) return;
+    if (this.liveLedger.lotsOf(mint).length) return;
+    const now = Date.now(); const ttl = Math.max(1, this.liveSt.policy.approvalTtlMin) * 60_000;
+    const ens = this.lastEnsemble.get(mint); const comm = communityDesk.cached(mint);
+    const id = `p${now.toString(36)}${(this.pendingSeq++).toString(36)}`;
+    this.pending.set(id, {
+      id, mint, symbol: this.screen.get(mint)?.symbol ?? null, createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttl).toISOString(),
+      suggestedSol, priceAtProposal: price, via: a.via, reason: a.reason, score: ens?.score ?? null,
+      votes: ens ? ens.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`) : [],
+      community: comm ? { score: comm.score, unknown: comm.unknown, block: comm.block, reasons: comm.reasons.slice(0, 5), creatorSharePct: comm.facts.creatorSharePct, twitter: comm.facts.twitter, telegram: comm.facts.telegram, website: comm.facts.website } : null,
+      action: a, args, ev,
+    });
+    while (this.pending.size > 8) { const first = this.pending.keys().next().value; if (first) this.pending.delete(first); else break; }
+    logger.warn("[pumpfun] buy proposed — waiting for owner approval", { mint: mint.slice(0, 8), suggestedSol, via: a.via });
+    this.emit("proposal", this.pending.get(id));
+  }
+  pendingList() {
+    this.prunePending();
+    return [...this.pending.values()].reverse().map(({ action: _a, args: _g, ev: _e, ...p }) => {
+      const q = this.lastQuote.get(p.mint) ?? this.quoteFromCandidate(p.mint);
+      const nowPrice = q?.price ?? null;
+      return { ...p, priceNow: nowPrice, movePct: nowPrice && p.priceAtProposal > 0 ? +(((nowPrice - p.priceAtProposal) / p.priceAtProposal) * 100).toFixed(1) : null };
+    });
+  }
+  /** owner 승인 — 제안 때 크기 또는 owner 가 고친 크기로 실매수. 결과(샀는지)를 돌려준다 */
+  async approvePending(id: string, sol: number | undefined, by: string): Promise<{ error?: string; bought?: boolean; note?: string | null }> {
+    this.prunePending();
+    const p = this.pending.get(id);
+    if (!p) return { error: "없거나 만료된 제안" };
+    if (this.modeSt.mode !== "real") return { error: "실모드가 아니다" };
+    if (this.isProtectedMint(p.mint)) { this.pending.delete(id); return { error: "보호 종목" }; }
+    const size = sol !== undefined ? sol : p.suggestedSol;
+    if (!(size >= 0.01)) return { error: "매수 크기는 0.01 SOL 이상" };
+    this.pending.delete(id);
+    logger.warn("[pumpfun] buy APPROVED by owner", { mint: p.mint.slice(0, 8), sol: size, by });
+    const before = this.liveLedger.lotsOf(p.mint).length; this.liveError = null;
+    const fresh = this.lastQuote.has(p.mint) || this.quoteFromCandidate(p.mint) !== null;
+    await this.applyLive({ ...p.action, reason: `${p.action.reason} · approved by ${by}` }, fresh ? undefined : p.ev, p.args.mult, p.args.standingOverride, p.args.pctOverride, size);
+    const bought = this.liveLedger.lotsOf(p.mint).length > before;
+    return { bought, note: bought ? null : (this.liveError ?? this.buyBlocks.filter((b) => b.mint === p.mint).pop()?.why ?? "체결 확인 안 됨 — reconcile 이 편입할 수 있다") };
+  }
+  rejectPending(id: string, by: string): { error?: string } {
+    const p = this.pending.get(id);
+    if (!p) return { error: "없거나 만료된 제안" };
+    this.pending.delete(id); this.rejected.set(p.mint, Date.now() + 60 * 60_000);
+    logger.info("[pumpfun] buy rejected by owner", { mint: p.mint.slice(0, 8), by });
+    return {};
+  }
+
   liveStatus() {
     const eq = this.liveEquitySol();
     return {
@@ -702,7 +777,7 @@ class PumpfunDesk extends EventEmitter {
       localSign: hasSigner(), execVia: hasSigner() ? "local" : (this.feed.hasKey ? "lightning" : "none"),
       walletSol: +this.liveSt.walletSol.toFixed(6), usdc: +this.liveSt.usdc.toFixed(4), solUsd: this.liveSt.solUsd, usdcInSol: +this.usdcInSol().toFixed(6), syncedAt: this.liveSt.syncedAt, equitySol: +eq.toFixed(6), positionsSol: +this.liveLedger.positionsSol().toFixed(6),
       day: this.liveSt.day, dayPct: this.liveSt.day.startEquitySol > 0 ? +(((eq - this.liveSt.day.startEquitySol) / this.liveSt.day.startEquitySol) * 100).toFixed(2) : 0,
-      policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError,
+      policy: this.liveSt.policy, stats: this.liveSt.stats, inflight: [...this.inflight], error: this.liveError, pending: this.pendingList(),
       lots: [...this.liveLedger.lots.values()].map((l) => ({ ...l, curve: undefined, pnlPct: l.costSol > 0 ? +(((l.markSol - l.costSol) / l.costSol) * 100).toFixed(2) : 0, holdMin: +((Date.now() - Date.parse(l.openedAt)) / 60_000).toFixed(1), community: this.communityOf(l.mint) })),
       orders: this.liveLedger.orders.slice(-50).reverse(),
     };

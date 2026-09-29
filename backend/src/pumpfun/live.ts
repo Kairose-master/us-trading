@@ -27,9 +27,13 @@ export interface LivePolicy {
   reserveSol: number;
   /** 평가액이 이 아래인 로트는 팔지 않고 먼지로 지운다 — 수수료보다 싸다 (실측: 0.0007 SOL 짜리 매도가 시뮬레이션 실패로 219번 재시도됐다) */
   dustSol: number;
+  /** 수동 검수 — 1 이면 봇은 매수 후보만 올리고, owner 가 승인한 것만 실매수한다(청산은 계속 자동). 러그는 사람 눈이 더 잘 거른다 (owner, 2026-09-29) */
+  manualApproval: number;
+  /** 승인 대기 유효 시간(분) — 밈코인은 몇 분이면 판이 바뀐다. 지나면 자동 폐기 */
+  approvalTtlMin: number;
 }
 // 러그가 기본값인 시장 — 살아남는 건 손절이 아니라 크기다 (owner 합의, 2026-09-25 저녁). 포지션당 8% × standing(최대 16%), 총 60%, 일 손실 15%
-export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 0, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003 };
+export const DEFAULT_LIVE_POLICY: LivePolicy = { maxPositionPct: 8, grossMaxPct: 60, maxPositionSol: 0, maxLots: 0, slippagePct: 15, priorityFeeSol: 0.0005, dailyStopPct: 0, minWalletSol: 0.05, reserveSol: 0.02, dustSol: 0.003, manualApproval: 1, approvalTtlMin: 10 };
 
 export interface TradeRequest { action: "buy" | "sell"; mint: string; amount: number | string; denominatedInSol: boolean; slippage: number; priorityFee: number; pool: string }
 

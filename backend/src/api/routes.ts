@@ -498,6 +498,20 @@ router.post("/pumpfun/mode", requireSession, requireOwner, async (req, res) => {
   res.json({ ok: true, ...pumpfunDesk.liveStatus() });
 });
 router.post("/pumpfun/live/policy", requireSession, requireOwner, (req, res) => { res.json({ ok: true, policy: pumpfunDesk.setLivePolicy(req.body ?? {}) }); });
+// 수동 검수 — 봇이 올린 매수 후보를 owner 가 승인/거절. 승인하면 그 크기(선택: body.sol)로 실매수
+router.get("/pumpfun/approvals", (_req, res) => { res.json({ pending: pumpfunDesk.pendingList() }); });
+router.post("/pumpfun/approvals/:id/approve", requireSession, requireOwner, async (req, res) => {
+  const raw = req.body?.sol; const sol = raw === undefined || raw === null || raw === "" ? undefined : Number(raw);
+  if (sol !== undefined && !(Number.isFinite(sol) && sol > 0)) return res.status(400).json({ error: "sol 은 양수" });
+  const r = await pumpfunDesk.approvePending(String(req.params.id), sol, (req as AuthedRequest).user?.email ?? "owner");
+  if (r.error) return res.status(422).json({ error: r.error });
+  res.json({ ok: true, ...r });
+});
+router.post("/pumpfun/approvals/:id/reject", requireSession, requireOwner, (req, res) => {
+  const r = pumpfunDesk.rejectPending(String(req.params.id), (req as AuthedRequest).user?.email ?? "owner");
+  if (r.error) return res.status(422).json({ error: r.error });
+  res.json({ ok: true });
+});
 // 체인 대조 — 지갑의 실제 토큰 잔고와 장부를 맞춘다 (확정 조회 실패로 빠진 체결 편입)
 router.post("/pumpfun/live/reconcile", requireSession, requireOwner, async (_req, res) => { res.json({ ok: true, ...(await pumpfunDesk.reconcileLive()), live: pumpfunDesk.liveStatus() }); });
 // SCAM 발행 — 정직한 버전만 (launch.ts). 미리보기는 체인에 아무것도 안 보낸다. 발행은 owner + confirm:"LAUNCH"
