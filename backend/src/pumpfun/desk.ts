@@ -210,19 +210,19 @@ class PumpfunDesk extends EventEmitter {
     this.feed.subscribeNewToken(true);
     this.feed.subscribeMigration(true);
     this.feed.start();
-    this.timers.push(setInterval(() => void this.tick(), 15_000));
+    this.timers.push(setInterval(() => this.guard(this.tick(), "tick"), 15_000));
     this.timers.push(setInterval(() => this.snapshotEquity(), EQUITY_SNAPSHOT_MS));
     this.timers.push(setInterval(() => this.rescore(), this.st.policy.rescoreMin * 60_000));
     // 첫 채점은 기동 3분 뒤 — 30분을 빈손으로 기다리지 않게
     setTimeout(() => { if (this.trades.length) this.rescore(); }, 3 * 60_000).unref();
     this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.syncWallet(); }, LIVE_SYNC_MS));
-    this.timers.push(setInterval(() => void this.pollHeldCommunity(), 60_000));
+    this.timers.push(setInterval(() => this.guard(this.pollHeldCommunity(), "pollHeldCommunity"), 60_000));
     this.timers.push(setInterval(() => void this.screen.poll().then(() => this.syncSubscriptions()), 30_000));
-    this.timers.push(setInterval(() => void this.evaluateEnsemble(), 15_000));
-    this.timers.push(setInterval(() => void this.pollRugWatch(), (this.st.rug ?? DEFAULT_RUG_POLICY).pollMs));
+    this.timers.push(setInterval(() => this.guard(this.evaluateEnsemble(), "evaluateEnsemble"), 15_000));
+    this.timers.push(setInterval(() => this.guard(this.pollRugWatch(), "pollRugWatch"), (this.st.rug ?? DEFAULT_RUG_POLICY).pollMs));
     setTimeout(() => void this.screen.poll().then(() => this.syncSubscriptions()), 5_000).unref();
-    this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") void this.reconcileLive(); }, RECONCILE_MS));
-    if (this.modeSt.mode === "real") setTimeout(() => void this.reconcileLive(), 10_000).unref();
+    this.timers.push(setInterval(() => { if (this.modeSt.mode === "real") this.guard(this.reconcileLive(), "reconcileLive"); }, RECONCILE_MS));
+    if (this.modeSt.mode === "real") setTimeout(() => this.guard(this.reconcileLive(), "reconcileLive"), 10_000).unref();
     if (this.modeSt.mode === "real") { logger.warn("[pumpfun] REAL mode active", { wallet: this.modeSt.walletPubkey }); void this.syncWallet(); }
     for (const t of this.timers) t.unref();
     logger.info("[pumpfun] desk started (paper, SOL)", { startSol: this.ledger.startSol, follows: Object.keys(this.st.follows).length, seeds: this.st.seeds.length, key: this.feed.hasKey });
@@ -337,7 +337,7 @@ class PumpfunDesk extends EventEmitter {
     if (ev.side === "sell" && this.heldCreators().has(ev.wallet) && (this.ledger.lotsOf(ev.mint).length || this.liveLedger.lotsOf(ev.mint).length) && communityDesk.cached(ev.mint)?.facts.creator === ev.wallet) {
       logger.warn("[pumpfun] creator sold a held token — exiting", { mint: ev.mint, sol: ev.sol });
       for (const l of this.ledger.lotsOf(ev.mint)) this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: `dev sold ${ev.sol.toFixed(3)} SOL` }, ev);
-      if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(ev.mint)) void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: `dev sold ${ev.sol.toFixed(3)} SOL` }, ev);
+      if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(ev.mint)) this.guardLive({ type: "sell", lotId: l.id, fraction: 1, reason: `dev sold ${ev.sol.toFixed(3)} SOL` }, ev);
     }
     // 추종 지갑이면 카피 규칙 — 매수는 커뮤니티를 읽은 뒤(비동기), 매도는 즉시
     const follow = this.st.follows[ev.wallet];
@@ -358,9 +358,9 @@ class PumpfunDesk extends EventEmitter {
     if (this.modeSt.mode === "real") {
       if (follow) {
         const acts = onLeaderTrade(ev, { policy: this.st.policy, follow, lots: [...this.liveLedger.lots.values()], equitySol: this.liveEquitySol(), cashSol: this.liveSt.walletSol, positionsSol: this.liveLedger.positionsSol(), paused: this.st.paused, recent: recent ?? (ev.side === "buy" ? this.leaderRecent(ev.wallet, ev.mint) : undefined) });
-        for (const a of acts) { if (a.type === "buy") { if (this.st.policy.directCopy >= 1) void this.copyBuy(a, ev, "live"); } else void this.applyLive(a, ev); }
+        for (const a of acts) { if (a.type === "buy") { if (this.st.policy.directCopy >= 1) void this.copyBuy(a, ev, "live"); } else this.guardLive(a, ev); }
       }
-      for (const a of lotExits(this.liveLedger.lotsOf(ev.mint), this.st.policy)) void this.applyLive(a, ev);
+      for (const a of lotExits(this.liveLedger.lotsOf(ev.mint), this.st.policy)) this.guardLive(a, ev);
     }
   }
 
@@ -413,7 +413,7 @@ class PumpfunDesk extends EventEmitter {
       else if (r.action === "exit") {
         this.ensembleStats.exits += 1;
         for (const l of this.ledger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "rule:conviction") this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
-        if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "rule:conviction" || l.via === "chain:adopted") void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
+        if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) if (l.via === "rule:ensemble" || l.via === "rule:conviction" || l.via === "chain:adopted") this.guardLive({ type: "sell", lotId: l.id, fraction: 1, reason: r.why });
       }
     }
     // 진입 집행 — 기본은 자격 후보를 각각 basePct 로. 확신 집중 모드면 점수 최상위 하나(들)에만 크게 몰고 나머지는 버린다
@@ -448,7 +448,7 @@ class PumpfunDesk extends EventEmitter {
       }
       if (this.modeSt.mode === "real") {
         if (eligible.length && !liveSlots) this.noteBlock(eligible[0].mint, `conviction: live slot full (${conv.maxConvictionLots} open)`);
-        for (const e of eligible.slice(0, liveSlots)) void this.applyLive(mk(e), undefined, 1, 1, conv.convictionPct); // 몰빵은 점수·커뮤니티 배수로 깎지 않는다 — 에쿼티 × convictionPct 그대로(러그 차단은 blocked 로 이미 거름)
+        for (const e of eligible.slice(0, liveSlots)) this.guardLive(mk(e), undefined, 1, 1, conv.convictionPct); // 몰빵은 점수·커뮤니티 배수로 깎지 않는다 — 에쿼티 × convictionPct 그대로(러그 차단은 blocked 로 이미 거름)
       }
     } else {
       for (const e of entries) {
@@ -456,7 +456,7 @@ class PumpfunDesk extends EventEmitter {
         const a = { type: "buy" as const, mint: e.mint, solIn, via: "rule:ensemble", reason: `ensemble ${e.r.score}: ${e.votes.filter((v) => !v.abstain).map((v) => `${v.engine} ${v.score}`).join(" · ")}` };
         const lotId = this.apply(a);
         if (lotId) { this.st.entryVotes![lotId] = e.votes; this.ensembleStats.entries += 1; this.armRugWatch(e.mint); this.syncSubscriptions(); }
-        if (this.modeSt.mode === "real") void this.applyLive(a, undefined, e.r.sizeMult, 1);
+        if (this.modeSt.mode === "real") this.guardLive(a, undefined, e.r.sizeMult, 1);
       }
     }
     for (const [m] of this.lastEnsemble) if (!mints.includes(m)) this.lastEnsemble.delete(m);
@@ -495,7 +495,7 @@ class PumpfunDesk extends EventEmitter {
         if (r.facts.ok && r.facts.securityVerdict && r.facts.securityVerdict !== "allow") {
           logger.warn("[pumpfun] security verdict changed on a held token — exiting", { mint: m, verdict: r.facts.securityVerdict });
           for (const l of this.ledger.lotsOf(m)) this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: `security verdict ${r.facts.securityVerdict}` });
-          if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(m)) void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: `security verdict ${r.facts.securityVerdict}` });
+          if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(m)) this.guardLive({ type: "sell", lotId: l.id, fraction: 1, reason: `security verdict ${r.facts.securityVerdict}` });
         }
       } catch (e) { this.lastError = (e as Error).message; }
     }
@@ -743,6 +743,10 @@ class PumpfunDesk extends EventEmitter {
     await Promise.all(lots.map((l) => this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason })));
     return { sold: lots.length - this.liveLedger.lots.size, pending: this.liveLedger.lots.size };
   }
+  /** 주기 작업의 비동기 오류를 기록만 하고 삼킨다 — 한 작업의 실패가 프로세스를 죽이지 않게 */
+  private guard(p: Promise<unknown>, what: string) { p.catch((e) => { this.lastError = `${what}: ${(e as Error).message}`; logger.error(`[pumpfun] ${what} failed`, { error: (e as Error).stack?.slice(0, 1500) ?? String(e) }); }); }
+  private guardLive(...args: Parameters<PumpfunDesk["applyLive"]>) { this.guard(this.applyLive(...args), "applyLive"); }
+
   // ===== 러그 스크린·덤프 감시 (rugscreen.ts) =====
   private rugCache = new Map<string, { at: number; verdict: RugVerdict; trades: RugTrade[]; creator: string | null }>();
   private rugWatch = new Map<string, { watch: Map<string, number>; sold: Map<string, number>; creator: string | null; seen: Set<string>; lastTs: number }>();
@@ -763,7 +767,8 @@ class PumpfunDesk extends EventEmitter {
       const verdict = rugVerdict(f, P);
       this.rugStats.screened += 1; if (verdict.unknown) this.rugStats.unknown += 1;
       this.rugCache.set(mint, { at: Date.now(), verdict, trades, creator });
-      if (this.rugCache.size > 300) { const k = this.rugCache.keys().next().value; if (k) this.rugCache.delete(k); }
+      // 토큰당 거래 최대 2000건을 들고 있다 — 작은 인스턴스 메모리를 생각해 60개만 (감시는 산 토큰만 쓰고, 사면 watchSet 으로 요약된다)
+      while (this.rugCache.size > 60) { const k = this.rugCache.keys().next().value; if (!k) break; this.rugCache.delete(k); }
       this.noteRug(mint, verdict.block ? "block" : "pass", verdict.block ? verdict.reasons.join("; ") : `ok — creator ${f.creatorPct?.toFixed(1) ?? "?"}% · top10 ${f.top10Pct.toFixed(0)}% · bundle ${f.bundle3sPct.toFixed(1)}%${f.complete ? "" : " (history incomplete)"}`);
       return verdict;
     } catch (e) {
@@ -803,7 +808,7 @@ class PumpfunDesk extends EventEmitter {
       this.rugStats.dumps += 1; this.noteRug(mint, "dump", why);
       logger.warn("[pumpfun] RUG DUMP detected — exiting", { mint: mint.slice(0, 8), why });
       for (const l of this.ledger.lotsOf(mint)) this.apply({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG DUMP: ${why}` });
-      if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) void this.applyLive({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG DUMP: ${why}` });
+      if (this.modeSt.mode === "real") for (const l of this.liveLedger.lotsOf(mint)) this.guardLive({ type: "sell", lotId: l.id, fraction: 1, reason: `RUG DUMP: ${why}` });
       this.rugWatch.delete(mint);
     }
   }
@@ -953,7 +958,7 @@ class PumpfunDesk extends EventEmitter {
       } catch (e) { this.lastError = (e as Error).message; }
     }
     for (const a of lotExits([...this.ledger.lots.values()], this.st.policy)) this.apply(a);
-    if (this.modeSt.mode === "real") for (const a of lotExits([...this.liveLedger.lots.values()], this.st.policy)) void this.applyLive(a);
+    if (this.modeSt.mode === "real") for (const a of lotExits([...this.liveLedger.lots.values()], this.st.policy)) this.guardLive(a);
     this.syncSubscriptions();
     this.checkDailyStop();
   }

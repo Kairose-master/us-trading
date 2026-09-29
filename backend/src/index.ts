@@ -23,6 +23,11 @@ import { pumpfunDesk } from "./pumpfun/desk.js";
 import { benchmarkStore } from "./control/benchmark-store.js";
 import { controlPlane } from "./control/plane.js";
 
+// 한 모듈의 처리 안 된 비동기 오류가 서버 전체(모든 데스크·대시보드 API)를 죽이지 않게 — Node 22 기본값은 프로세스 종료다.
+// 실측(2026-09-29): Railway 가 "Application failed to respond" — 재시작 한도(5회)를 넘겨 멈춘 것으로 보인다. 기록하고 계속 돈다
+process.on("unhandledRejection", (reason) => { logger.error("[process] unhandled rejection (kept running)", { error: reason instanceof Error ? `${reason.message}\n${reason.stack ?? ""}`.slice(0, 2000) : String(reason) }); });
+process.on("uncaughtException", (err) => { logger.error("[process] uncaught exception (kept running)", { error: `${err.message}\n${err.stack ?? ""}`.slice(0, 2000) }); });
+
 const app = express();
 app.use(cors({ origin: config.corsOrigins, credentials: false }));
 app.use(express.json());
